@@ -53,7 +53,9 @@ jobs:
         run: xmake f -p linux --with_tests=y -y
 
       - name: Build
-        run: xmake build -y mjt-mcp mjt_mcp_unittest
+        run: xmake build -y mjt-mcp
+      - name: Build tests
+        run: xmake build -y mjt_mcp_unittest
 
       - name: Run unit tests
         run: xmake run mjt_mcp_unittest --gtest_brief=1
@@ -90,7 +92,10 @@ jobs:
 
       - name: Build
         shell: bash
-        run: xmake build -y mjt-mcp mjt_mcp_unittest
+        run: xmake build -y mjt-mcp
+      - name: Build tests
+        shell: bash
+        run: xmake build -y mjt_mcp_unittest
 
       - name: Run unit tests
         shell: bash
