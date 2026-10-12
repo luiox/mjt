@@ -50,7 +50,7 @@ std::string firstError(const std::vector<jhasm::error::Error>& errors)
 
 TEST(JhasmJvmPrinterTest, RoundTripsAllUpstreamLegalJvmFixtures)
 {
-    const std::filesystem::path root  = "libs/libjhasm/test_resource/jasm";
+    const std::filesystem::path root  = "unittest/jhasm/test_resource/jasm";
     ca::usize                   count = 0;
     for (const auto& entry : std::filesystem::directory_iterator(root)) {
         if (!entry.is_regular_file() || entry.path().extension() != ".jasm") continue;
