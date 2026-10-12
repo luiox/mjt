@@ -1,0 +1,97 @@
+# mjt CI（Linux + Windows）
+#
+# 范围：mjt-mcp 链路 + mjt_mcp_unittest。
+# 依赖：luiox-repo git 直连包（libca/libmcp/libjstr/libjbytecode/libjzip/
+# libgarena/libjclassfile），由 CI 显式注册（root xmake.lua 不声明
+# add_repositories 到 luiox-repo 以外的远端）；gtest/libarchive/zlib 走 xrepo。
+
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test-linux:
+    name: build & test (linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build
+
+      - name: Setup xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: v3.0.9
+          actions-cache-folder: '.xmake-cache'
+
+      - name: Cache xrepo packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.xmake/packages
+            ~/.local/share/xmake
+          key: mjt-xrepo-linux-x64-xmake309-${{ hashFiles('xmake.lua') }}
+          restore-keys: |
+            mjt-xrepo-linux-x64-xmake309-
+
+      - name: Register luiox-repo
+        run: xmake repo --add luiox-repo https://github.com/luiox/luiox-repo.git
+
+      - name: Configure (with tests)
+        run: xmake f -p linux --with_tests=y -y
+
+      - name: Build
+        run: xmake build -y mjt-mcp mjt_mcp_unittest
+
+      - name: Run unit tests
+        run: xmake run mjt_mcp_unittest --gtest_brief=1
+
+  build-and-test-windows:
+    name: build & test (windows)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: v3.0.9
+          actions-cache-folder: '.xmake-cache'
+
+      - name: Cache xrepo packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/AppData/Local/.xmake/packages
+          key: mjt-xrepo-windows-x64-xmake309-${{ hashFiles('xmake.lua') }}
+          restore-keys: |
+            mjt-xrepo-windows-x64-xmake309-
+
+      - name: Register luiox-repo
+        shell: bash
+        run: xmake repo --add luiox-repo https://github.com/luiox/luiox-repo.git
+
+      - name: Configure (with tests)
+        shell: bash
+        run: xmake f -p windows --with_tests=y -y
+
+      - name: Build
+        shell: bash
+        run: xmake build -y mjt-mcp mjt_mcp_unittest
+
+      - name: Run unit tests
+        shell: bash
+        run: xmake run mjt_mcp_unittest --gtest_brief=1

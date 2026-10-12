@@ -1,0 +1,623 @@
+# mjt_shared translations (zh_CN is the source language and superset)
+# Namespace: mjt.shared.err.* = mjt/src/shared error messages
+# {n} are positional placeholders, repeatable/reorderable
+
+# ── decompiler ──────────────────────────────────────────────
+mjt.shared.err.pipe=failed to set up the decompiler output pipe
+mjt.shared.err.cancelled=decompiler task was cancelled
+mjt.shared.err.timeout=decompiler execution timed out ({0} ms)
+mjt.shared.err.no_java_output=the decompiler produced no Java source files
+mjt.shared.err.mkdir_output=failed to create the output directory: {0}
+mjt.shared.err.write_result=failed to write the decompilation result: {0}
+mjt.shared.err.mkdir_vineflower=failed to create the Vineflower source directory: {0}
+mjt.shared.err.unpack_vineflower=failed to unpack Vineflower sources: {0}
+mjt.shared.err.vineflower_no_java=no Java files in the Vineflower source archive
+mjt.shared.err.relpath=failed to resolve the decompiled source relative path
+mjt.shared.err.mkdir_sources=failed to create the source output directory: {0}
+mjt.shared.err.write_sources=failed to write the decompiled sources: {0}
+mjt.shared.err.unknown_decompiler=unknown decompiler: {0} (expected cfr or vineflower)
+mjt.shared.err.missing_io=decompile input or output path is missing
+mjt.shared.err.input_missing=decompile input does not exist: {0}
+mjt.shared.err.input_kind=decompile input must be a .class or .jar file
+mjt.shared.err.output_java=single-class output must be a .java file
+mjt.shared.err.premap_jar_only=mapping pre-remap currently supports JAR input only
+mjt.shared.err.mapping_format_required=a mapping format is required when using a mapping
+mjt.shared.err.positive_limits=timeout and max-memory must be greater than zero
+mjt.shared.err.decompiler_jar_missing={0} JAR not found; specify the path via --decompiler-jar, {1}, or MJT_DECOMPILER_HOME
+mjt.shared.err.decompiler_jar_probed=Probed (in order): {0}
+mjt.shared.err.exec_failed={0} execution failed with exit code {1}
+mjt.shared.err.decompile_long_name_hint=the class name likely exceeds the Windows path limit and could not be written (offending file: {0}). Work around with zip output: -o <out>.zip (vineflower only)
+mjt.shared.err.zip_output_vineflower_only=zip output is only supported with the vineflower decompiler (current: {0})
+mjt.shared.err.orchestration_exception=decompilation orchestration failed: {0}
+mjt.shared.err.orchestration_unknown=decompilation orchestration failed: unknown exception
+
+# ── jar_remapper ────────────────────────────────────────────
+mjt.shared.err.ws_remap_missing=workspace remap is missing the mapping format or text
+mjt.shared.err.unknown_mapping_format=unknown mapping format: {0}
+mjt.shared.err.unknown_remap_policy=unknown remap policy: {0}; expected bytecode-only, reflection, metadata, or all
+mjt.shared.err.parse_mapping_failed=failed to parse the mapping: {0}
+mjt.shared.err.remap_missing_args=JAR remap is missing input, output, mapping, or format
+mjt.shared.err.remap_jar_ext=JAR remap input and output must be .jar files
+mjt.shared.err.read_mapping_failed=failed to read the mapping file: {0}
+mjt.shared.err.remap_exception=JAR remap failed: {0}
+mjt.shared.err.remap_failed=JAR remap failed
+
+# ── mjt CLI usage/command table (main.cpp) ─────────────────
+mjt.cli.usage.banner=mjt — JVM Bytecode MCP Server
+mjt.cli.usage.header=Usage:
+mjt.cli.usage.line=  mjt <command> -i <jar> [args]
+mjt.cli.usage.commands=Commands:
+mjt.cli.usage.options=Options:
+mjt.cli.usage.help_flag=-h, --help|Show this help
+mjt.cli.usage.version_flag=--version|Show version
+mjt.cli.usage.lang_flag=--lang <code>|Select language (zh_CN/en_US)
+mjt.cli.usage.tail=All commands use -i <jar> for the input JAR (parsed by each subcommand).
+mjt.cli.err.no_command=Error: no command specified.
+mjt.cli.err.unknown_command=Error: unknown command '{0}'.
+
+mjt.cmd.strings.summary=Extract all string constants
+mjt.cmd.strings.help=strings|Extract all string constants
+mjt.cmd.grep.summary=Search strings by pattern
+mjt.cmd.grep.help=grep <pattern>|Search strings by pattern
+mjt.cmd.classes.summary=List all classes
+mjt.cmd.classes.help=classes|List all classes
+mjt.cmd.info.summary=Show JAR overview or class details
+mjt.cmd.info.help=info|Show JAR overview or class details
+mjt.cmd.subs.summary=Find subclasses / interface implementors
+mjt.cmd.subs.help=subs|Find subclasses / interface implementors
+mjt.cmd.diff.summary=Compare two JARs
+mjt.cmd.diff.help=diff <jar2>|Compare two JARs
+mjt.cmd.hexdump.summary=Hex dump raw class bytes
+mjt.cmd.hexdump.help=hexdump <class>|Hex dump raw class bytes
+mjt.cmd.jar.summary=JAR entry list/extract/fix
+mjt.cmd.jar.help=jar fix|Fix/rebuild damaged JAR\njar list|List JAR entries\njar extract <path>|Extract entry from JAR
+mjt.cmd.disasm.summary=Bytecode disassembler
+mjt.cmd.disasm.help=disasm|Bytecode disassembler
+mjt.cmd.xref.summary=Cross-class reference index
+mjt.cmd.xref.help=xref|Cross-class reference index
+mjt.cmd.callgraph.summary=Call graph: CHA/RTA virtual dispatch + entry reachability
+mjt.cmd.callgraph.help=callgraph|Call graph: CHA/RTA virtual dispatch + entry reachability
+mjt.cmd.eval.summary=Evaluate an expression
+mjt.cmd.eval.help=eval <expr>|Constant-fold expression evaluator
+mjt.cmd.opt.summary=Optimize bytecode (passes/pipelines)
+mjt.cmd.opt.help=opt|Optimize bytecode (passes/pipelines)
+mjt.cmd.mapping.summary=Mapping format list/convert utilities
+mjt.cmd.mapping.help=mapping|Mapping format list/convert utilities
+mjt.cmd.decompile.summary=Decompile class or JAR with CFR/Vineflower
+mjt.cmd.decompile.help=decompile|Decompile class or JAR with CFR/Vineflower
+mjt.cmd.cfg.summary=Dump SIR CFG as Graphviz dot
+mjt.cmd.cfg.help=cfg|Dump SIR CFG as Graphviz dot
+mjt.cmd.dataflow.summary=Method-local dataflow queries (def-use chains, SSA liveness)
+mjt.cmd.dataflow.help=dataflow du|Def-use chains of a method's SSA values\ndataflow live|SSA liveness: entry live set and per-point live sets
+mjt.cmd.reflect.summary=Analyze reflection call sites (sink binding)
+mjt.cmd.reflect.help=reflect -i <jar>|Analyze reflection sinks and resolve targets (fail-closed)
+
+# cmd_strings / cmd_grep / cmd_classes / cmd_info i18n fragment (batch a)
+mjt.cmd.strings.desc=Extract all string constants
+mjt.cmd.strings.param.input.desc=Input JAR
+mjt.cmd.strings.param.encrypted_only.desc=Only output suspected encrypted strings
+mjt.cmd.strings.param.show_class.desc=Show source class name
+mjt.cmd.strings.param.dedup.desc=Deduplicate
+mjt.cmd.strings.param.min_length.desc=Minimum length (default 2)
+mjt.cmd.strings.param.max_length.desc=Maximum length (default 65535)
+mjt.cmd.strings.param.format.desc=Output format: plain, json, csv
+mjt.cmd.strings.err.invalid_length_range=Error: --min-length/--max-length must be non-negative and min <= max.
+mjt.cmd.strings.err.jar_open_failed=Error: {0}
+mjt.cmd.grep.desc=Search strings by pattern
+mjt.cmd.grep.param.input.desc=Input JAR
+mjt.cmd.grep.param.pattern.desc=Search pattern
+mjt.cmd.grep.param.regex.desc=Pattern is a regex (default)
+mjt.cmd.grep.param.fixed_strings.desc=Pattern is a fixed string
+mjt.cmd.grep.param.ignore_case.desc=Ignore case
+mjt.cmd.grep.param.class_only.desc=Search CONSTANT_Class only
+mjt.cmd.grep.param.utf8_only.desc=Search CONSTANT_Utf8 only
+mjt.cmd.grep.param.string_only.desc=Search CONSTANT_String only
+mjt.cmd.grep.param.show_class.desc=Show source class name
+mjt.cmd.grep.param.show_context.desc=Context length
+mjt.cmd.grep.param.count.desc=Only output match counts per class
+mjt.cmd.grep.param.files_with_matches.desc=Only output matching class names
+mjt.cmd.grep.param.decrypt_map.desc=Decryption dictionary file
+mjt.cmd.grep.err.decrypt_map_open_failed=Warning: cannot open decrypt map '{0}'.
+mjt.cmd.grep.err.missing_pattern=Error: <pattern> is required.
+mjt.cmd.grep.err.invalid_regex=Error: invalid regex '{0}': {1}
+mjt.cmd.grep.err.jar_open_failed=Error: {0}
+mjt.cmd.grep.out.loaded_decrypt_mappings=# Loaded {0} decrypt mappings
+mjt.cmd.classes.desc=List all classes in the JAR
+mjt.cmd.classes.param.input.desc=Input JAR
+mjt.cmd.classes.param.show_size.desc=Show decompressed size
+mjt.cmd.classes.param.show_super.desc=Show superclass name
+mjt.cmd.classes.param.filter.desc=Class name filter (substring match)
+mjt.cmd.classes.param.sort.desc=Sort field: name, size
+mjt.cmd.classes.param.format.desc=Output format: plain, json, csv
+mjt.cmd.classes.err.jar_open_failed=Error: {0}
+mjt.cmd.classes.out.size_bytes=({0} bytes)
+mjt.cmd.info.desc=Show class info / JAR overview (without -c shows the overview, with -c shows class details)
+mjt.cmd.info.param.input.desc=Input JAR
+mjt.cmd.info.param.class.desc=Target class
+mjt.cmd.info.param.constants.desc=Show constant pool
+mjt.cmd.info.param.methods.desc=Show method signatures
+mjt.cmd.info.param.fields.desc=Show fields
+mjt.cmd.info.param.instructions.desc=Show method bytecode (disassembly)
+mjt.cmd.info.param.hex.desc=Show hexdump of the full class bytes
+mjt.cmd.info.param.resolve.desc=Resolve FieldRef/MethodRef chains (with --constants)
+mjt.cmd.info.param.with_values.desc=Show ConstantValue (with --fields)
+mjt.cmd.info.param.switch_table.desc=Annotate switch dispatch tables (with --instructions)
+mjt.cmd.info.param.verbose.desc=Verbose output
+mjt.cmd.info.err.jar_open_failed=Error: {0}
+mjt.cmd.info.err.class_not_found=Error: class '{0}' not found in JAR.
+mjt.cmd.info.out.jar_label=JAR: {0}
+mjt.cmd.info.out.total_entries_label=Total entries: {0}
+mjt.cmd.info.out.class_files_label=Class files:   {0}
+mjt.cmd.info.out.total_size_label=Total size:    {0} bytes
+mjt.cmd.info.out.strings_label=Strings:       {0}
+mjt.cmd.info.out.constant_pool_unavailable=(constant pool unavailable)
+mjt.cmd.info.out.cp_entries_label=CP entries: {0}
+mjt.cmd.info.out.cp_entry_damaged=(damaged: CP#{0})
+mjt.cmd.info.out.fields_unavailable=(fields unavailable)
+mjt.cmd.info.out.methods_unavailable=(methods unavailable)
+mjt.cmd.info.out.method_label=Method: {0}{1}
+mjt.cmd.info.out.hexdump_header=Bytecode dump (full class hex):
+mjt.cmd.info.out.class_label=Class: {0}
+mjt.cmd.info.out.size_label=Size: {0} bytes
+mjt.cmd.info.out.class_header_unavailable=(class header unavailable: damaged or unparseable)
+mjt.cmd.info.out.version_label=Version: {0}
+mjt.cmd.info.out.this_label=This: {0}
+mjt.cmd.info.out.super_label=Super: {0}
+mjt.cmd.info.out.interfaces_header=Interfaces:
+mjt.cmd.info.out.constants_header=Constant Pool:
+mjt.cmd.info.out.fields_header=Fields:
+mjt.cmd.info.out.methods_header=Methods:
+mjt.cmd.info.out.instructions_header=Instructions:
+# mjt batch b translation fragment: subs / diff / hexdump / jar commands (zh_CN is the source language)
+# Namespace: mjt.cmd.<command>.[desc | param.<id>.desc | err.* | out.*]
+# {n} are positional placeholders, repeatable/reorderable; \n means newline
+
+# ── subs ────────────────────────────────────────────────────
+mjt.cmd.subs.desc=Find subclasses / interface implementors
+mjt.cmd.subs.param.input.desc=Input JAR
+mjt.cmd.subs.param.super.desc=Find subclasses of the given class
+mjt.cmd.subs.param.interface.desc=Find implementors of the given interface
+mjt.cmd.subs.param.indirect.desc=Include indirect subclasses (recursive)
+mjt.cmd.subs.err.open_failed=Error: {0}
+mjt.cmd.subs.out.no_subclasses=(no subclasses found for '{0}')
+
+# ── diff ────────────────────────────────────────────────────
+mjt.cmd.diff.desc=Compare two JARs
+mjt.cmd.diff.param.input.desc=Input JAR 1
+mjt.cmd.diff.param.jar2.desc=The second JAR to compare
+mjt.cmd.diff.param.shrink_only.desc=Only show shrunken entries
+mjt.cmd.diff.param.grow_only.desc=Only show grown entries
+mjt.cmd.diff.param.added_only.desc=Only show added entries
+mjt.cmd.diff.param.removed_only.desc=Only show removed entries
+mjt.cmd.diff.param.threshold.desc=Minimum change in bytes (default 0)
+mjt.cmd.diff.param.verbose.desc=Show change details
+mjt.cmd.diff.err.open_failed=Error opening '{0}': {1}
+mjt.cmd.diff.err.missing_jar2=Error: <jar2> is required.
+mjt.cmd.diff.out.removed=  - {0} (removed)
+mjt.cmd.diff.out.shrunk=  ~ {0} (shrunk: {1} bytes)
+mjt.cmd.diff.out.grown=  ~ {0} (grown: {1} bytes)
+mjt.cmd.diff.out.added=  + {0} (added)
+mjt.cmd.diff.out.size_change=    before: {0}  after: {1}
+mjt.cmd.diff.out.no_differences=(no differences)
+mjt.cmd.diff.out.summary=\nSummary: +{0} -{1} ~{2} (shrunk) ~{3} (grown)
+
+# ── hexdump ──────────────────────────────────────────────────
+mjt.cmd.hexdump.desc=View raw bytes
+mjt.cmd.hexdump.param.input.desc=Input JAR
+mjt.cmd.hexdump.param.class.desc=Target class
+mjt.cmd.hexdump.param.offset.desc=Start offset (default 0)
+mjt.cmd.hexdump.param.length.desc=Number of bytes to show (default: the whole class)
+mjt.cmd.hexdump.param.width.desc=Bytes per line (default 16)
+mjt.cmd.hexdump.param.no_ascii.desc=Hide the ASCII column on the right
+mjt.cmd.hexdump.err.offset_negative=Error: --offset must be non-negative.
+mjt.cmd.hexdump.err.width_not_positive=Error: --width must be greater than zero.
+mjt.cmd.hexdump.err.length_invalid=Error: --length must be -1 (whole class) or non-negative.
+mjt.cmd.hexdump.err.missing_class=Error: <class> is required.
+mjt.cmd.hexdump.err.open_failed=Error: {0}
+mjt.cmd.hexdump.err.class_not_found=Error: class '{0}' not found.
+mjt.cmd.hexdump.out.offset_past_end=(empty — offset past end)
+
+# ── jar dispatch ─────────────────────────────────────────────
+mjt.cmd.jar.err.subcommand_required=Error: jar subcommand required. Use: fix, list, extract
+mjt.cmd.jar.err.unknown_subcommand=Error: unknown jar subcommand '{0}'.
+mjt.cmd.jar.err.available=Available: fix, list, extract
+
+# ── jar fix ──────────────────────────────────────────────────
+mjt.cmd.jar.sub.fix.desc=Fix/rebuild a damaged JAR
+mjt.cmd.jar.sub.fix.param.input.desc=Input JAR
+mjt.cmd.jar.sub.fix.param.output.desc=Output path (default input.fixed.jar)
+mjt.cmd.jar.sub.fix.param.dry_run.desc=Check only, do not write output
+mjt.cmd.jar.sub.fix.param.keep_manifest.desc=Keep MANIFEST.MF (default)
+mjt.cmd.jar.sub.fix.param.no_manifest.desc=Discard MANIFEST.MF (overrides the default keep behavior)
+mjt.cmd.jar.sub.fix.param.force.desc=Overwrite the output file
+mjt.cmd.jar.sub.fix.out.reading=Reading {0} ...
+mjt.cmd.jar.sub.fix.err.read_failed=Error reading JAR: {0}
+mjt.cmd.jar.sub.fix.out.total_entries=  Total entries:  {0}
+mjt.cmd.jar.sub.fix.out.class_files=  Class files:    {0}
+mjt.cmd.jar.sub.fix.out.bad_magic=  Bad magic:      {0}
+mjt.cmd.jar.sub.fix.out.truncated=  Truncated:      {0}
+mjt.cmd.jar.sub.fix.out.corrupt_markers=  Corrupt markers:{0}
+mjt.cmd.jar.sub.fix.out.status=  Status: {0}
+mjt.cmd.jar.sub.fix.out.status_issues=issues found
+mjt.cmd.jar.sub.fix.out.status_ok=OK
+mjt.cmd.jar.sub.fix.out.writing=\nWriting {0} ...
+mjt.cmd.jar.sub.fix.err.write_failed=Error writing JAR: {0}
+mjt.cmd.jar.sub.fix.out.done=  Done.
+mjt.cmd.jar.sub.fix.param.verbose.desc=List every ZIP anomaly (default: grouped summary)
+mjt.cmd.jar.sub.fix.out.anomaly_summary=  ZIP anomalies: {0} total, {1} kinds
+mjt.cmd.jar.sub.fix.out.anomaly_kind=    - {0} x{1}
+mjt.cmd.jar.sub.fix.out.anomaly_example=        {0} @{1}
+mjt.cmd.jar.sub.fix.out.anomaly_item=    [{0}] {1} @{2}
+mjt.cmd.jar.sub.fix.out.anomaly_omitted=        ... {0} more of this kind omitted
+mjt.zip.anomaly.prefix_junk=junk data before first entry
+mjt.zip.anomaly.eocd_offset_mismatch=EOCD directory offset mismatch
+mjt.zip.anomaly.base_offset_fallback=base offset auto-corrected
+mjt.zip.anomaly.local_signature_miss=entry header not found at CEN offset
+mjt.zip.anomaly.local_read_failed=entry header damaged (repaired via CEN)
+mjt.zip.anomaly.sizes_adopted=LOC/CEN size mismatch (CEN wins)
+mjt.zip.anomaly.duplicate_loc=multiple CEN records share one entry
+mjt.zip.anomaly.rejected_eocd=bogus EOCD ignored
+mjt.zip.anomaly.trailing_garbage=extra data after end of archive
+mjt.zip.anomaly.suspicious_name=suspicious entry name
+mjt.zip.anomaly.unknown=unknown anomaly
+
+# ── jar list ─────────────────────────────────────────────────
+mjt.cmd.jar.sub.list.desc=List all JAR entries
+mjt.cmd.jar.sub.list.param.input.desc=Input JAR
+mjt.cmd.jar.sub.list.param.class_only.desc=Only show .class files
+mjt.cmd.jar.sub.list.param.resource_only.desc=Only show non-class resources
+mjt.cmd.jar.sub.list.param.show_size.desc=Show uncompressed size
+mjt.cmd.jar.sub.list.param.show_ratio.desc=Show compression ratio
+mjt.cmd.jar.sub.list.param.format.desc=Output format: plain, json
+mjt.cmd.jar.sub.list.err.read_failed=Error reading JAR: {0}
+mjt.cmd.jar.sub.list.out.size_note= ({0} bytes)
+
+# ── jar --lenient-names（#1110 族 opt-in，list/extract/info 共用） ──
+mjt.cmd.jar.param.lenient_names.desc=Decode non-UTF-8 (GBK) entry names leniently to UTF-8 (default: raw bytes passthrough)
+
+# ── jar extract ──────────────────────────────────────────────
+mjt.cmd.jar.sub.extract.desc=Extract entries to files
+mjt.cmd.jar.sub.extract.param.input.desc=Input JAR
+mjt.cmd.jar.sub.extract.param.path.desc=Entry path (or use --recursive)
+mjt.cmd.jar.sub.extract.param.output.desc=Output directory (default .)
+mjt.cmd.jar.sub.extract.param.recursive.desc=Recursively extract the whole JAR
+mjt.cmd.jar.sub.extract.param.flat.desc=Write over-long entries flat under safe names with mapping.json
+mjt.cmd.jar.sub.extract.err.missing_path=Error: <path> is required (or use --recursive).
+mjt.cmd.jar.sub.extract.err.read_failed=Error reading JAR: {0}
+mjt.cmd.jar.sub.extract.err.skip_unsafe=  (skip unsafe entry path: {0})
+# #1110 family: entry-name hard-crash fix — invalid byte names fail with a clear
+# diagnostic instead of terminate() (default), or decode with --lenient-names.
+mjt.cmd.jar.sub.extract.err.entry_name_not_utf8=  (entry name is not valid UTF-8, not written: {0}; use --lenient-names to decode)
+mjt.cmd.jar.sub.extract.err.entry_failed=Failed to extract entry {0}: {1}
+mjt.cmd.jar.sub.extract.out.not_found=  (not found: {0})
+mjt.cmd.jar.sub.extract.out.skip_unsupported=  (skip unsupported resource type: {0})
+mjt.cmd.jar.sub.extract.out.empty=  (empty: {0})
+mjt.cmd.jar.sub.extract.err.write_failed=Cannot write {0} -> {1} ({2})
+# Write-path pre-check (#1110): explicit error when a component > 255 or total > 32767
+mjt.cmd.jar.sub.extract.err.path_too_long=Error: target path exceeds limits (total length {0}), not written {1} ({2})
+mjt.cmd.jar.sub.extract.out.same_error_more=  ({0} more error(s) of the same kind: {1})
+mjt.cmd.jar.sub.extract.out.flat_mapping=  ({0} over-long entry(ies) written under safe names, mapping file: {1})
+mjt.cmd.jar.sub.extract.out.write_failures=  {0} entries failed to write
+mjt.cmd.jar.sub.list.out.ratio_note= (compressed to {0} bytes, {1}%)
+mjt.cmd.jar.sub.extract.out.extracted=Extracted {0} file(s) to {1}
+mjt.shared.jctx.err.list_dir_failed=Failed to list class directory.
+mjt.shared.jctx.err.read_class_failed=Failed to read class file: {0}
+mjt.shared.jctx.err.no_class_files=Directory contains no .class files.
+mjt.shared.jctx.err.open_jar_failed=Failed to open JAR: {0}
+mjt.shared.jctx.err.open_jar_failed_unknown=Failed to open JAR (unknown exception).
+mjt.shared.jctx.err.empty_jar=JAR is empty or contains no readable entries.
+
+# mjt batch c translation fragment: disasm / xref / cfg / eval commands (zh_CN is the source language)
+# Namespace: mjt.cmd.<command>.[desc | param.<id>.desc | err.* | out.*]
+# {n} are positional placeholders, repeatable/reorderable; \n means newline
+
+# ── disasm ───────────────────────────────────────────────────
+mjt.cmd.disasm.desc=Jasm bytecode disassembler
+mjt.cmd.disasm.param.input.desc=Input JAR
+mjt.cmd.disasm.param.class.desc=Target class (omit with --out-dir batch mode)
+mjt.cmd.disasm.param.legacy.desc=Use the legacy per-instruction rendering format
+mjt.cmd.disasm.param.method.desc=Only show the specified method
+mjt.cmd.disasm.param.raw.desc=Tolerate corrupted descriptors
+mjt.cmd.disasm.param.byte_offset.desc=Show byte offsets (legacy: 4-digit hex prefix; default jasm mode: `; @0xNNN` at instruction line end + `; bytes 0x0000-0xNNNN` at method headers)
+mjt.cmd.disasm.param.switch_table.desc=Annotate tableswitch/lookupswitch
+mjt.cmd.disasm.param.length.desc=Only show the first n instructions
+mjt.cmd.disasm.param.verbose.desc=Show the exception table and line number table
+mjt.cmd.disasm.err.legacy_required=Error: --method/--raw/--switch-table/--length/--verbose require --legacy.
+mjt.cmd.disasm.err.open_failed=Error: {0}
+mjt.cmd.disasm.err.class_not_found=Error: class '{0}' not found in JAR.
+mjt.cmd.disasm.err.jasm_diagnostic=Error: {0}
+mjt.cmd.disasm.err.jasm_failed=Error: failed to disassemble class as Jasm.
+mjt.cmd.disasm.out.class_label=Class: {0}
+mjt.cmd.disasm.out.method_label=Method: {0}{1}
+mjt.cmd.disasm.out.method_no_code=Method: {0} (native/abstract, no code)
+mjt.cmd.disasm.out.exception_table=  Exception table:
+
+# ── xref ─────────────────────────────────────────────────────
+mjt.cmd.xref.desc=Cross-class reference index
+mjt.cmd.xref.param.input.desc=Input JAR
+mjt.cmd.xref.param.field.desc=Target field name
+mjt.cmd.xref.param.method.desc=Target method name
+mjt.cmd.xref.param.class.desc=Target class name
+mjt.cmd.xref.param.callers.desc=Only show callers
+mjt.cmd.xref.param.callees.desc=Only show callees
+mjt.cmd.xref.param.values.desc=Resolve actual getstatic field values
+mjt.cmd.xref.param.recursive.desc=Recursively trace the call chain
+mjt.cmd.xref.param.max_depth.desc=Maximum recursion depth (default 5)
+mjt.cmd.xref.param.format.desc=Output format: plain, json, csv (in json/csv mode progress stats go to stderr to keep stdout parseable)
+mjt.cmd.xref.param.cache_stats.desc=Print in-process xref cache statistics
+mjt.cmd.xref.param.persist.desc=Enable the disk cache (default off: no files are written next to the input JAR)
+mjt.cmd.xref.param.cache_dir.desc=Disk cache directory (requires --persist; default <jar>/.xref-cache/)
+mjt.cmd.xref.err.unsupported_format=Error: unsupported format '{0}'.
+mjt.cmd.xref.err.open_failed=Error: {0}
+mjt.cmd.xref.err.build_failed=Error: failed to build xref index: {0}
+mjt.cmd.xref.err.jar_open_failed=Error: {0}
+mjt.cmd.xref.warn.class_no_match=Warning: --class matched no type references (check class name spelling/encoding; 'jar list' shows actual names). Pattern:
+mjt.cmd.xref.out.indexed_summary=# Indexed {0} method refs, {1} field refs, {2} type refs from input
+mjt.cmd.xref.out.source_label=Source: {0}
+mjt.cmd.xref.out.target_label=Target: {0}
+mjt.cmd.xref.out.source=Source
+mjt.cmd.xref.out.target=Target
+mjt.cmd.xref.out.no_matches=  (no matches for '{0}')
+
+# ── callgraph ────────────────────────────────────────────────
+mjt.cmd.callgraph.desc=Call graph: CHA virtual dispatch resolution plus entry reachability closure (signature-level over-approximation); --rta switches to the RTA tier (instantiated types narrow virtual dispatch via parent-chain resolution; remaining under-approximation: reflection instantiation/native/out-of-classpath instantiation).
+mjt.cmd.callgraph.param.input.desc=Input JAR
+mjt.cmd.callgraph.param.entry.desc=Append entry points <class>[.<method>] (repeatable or comma separated; a bare class makes all its declared methods entries; default entries are all public static void main(String[]) in the container)
+mjt.cmd.callgraph.param.entry_annotation.desc=Append entries from annotation-marked classes <annotation> (repeatable or comma separated; internal/source/descriptor forms accepted; classes carrying the class-scoped annotation (class/field scope) contribute all declared methods; method-level annotations do not trigger)
+mjt.cmd.callgraph.param.rta.desc=RTA precision tier on top of CHA: entry-reachability driven closure plus instantiated-type narrowing of virtual dispatch through parent-chain resolution (inherited unoverridden superclass/interface-default entries stay reachable; overriding stops resolution at the subclass); off by default (CHA over-approximates; remaining RTA under-approximation: reflection instantiation/native/out-of-classpath instantiation)
+mjt.cmd.callgraph.param.cache_stats.desc=Print resolved-edge cache statistics (memory LRU and disk layers)
+mjt.cmd.callgraph.param.persist.desc=Persist the resolved edge set to disk (default off: no files are written next to the input JAR); invalidation is whole-graph on jar content or option fingerprint change; the rta summary counters are serialized with the edge set, so a disk-cache hit reports the real values
+mjt.cmd.callgraph.param.cache_dir.desc=Disk cache directory (requires --persist; default <jar>/.callgraph-cache/)
+mjt.cmd.callgraph.param.json.desc=Print the full resolved edge table as JSON (call-site location, kind, encoded and resolved targets)
+mjt.cmd.callgraph.param.reachable.desc=List methods reachable from the entries
+mjt.cmd.callgraph.param.reflect.desc=Run the reflection binding analyzer first and weave method-level Resolved bindings (Method.invoke/newInstance) into the call graph; off by default
+mjt.cmd.callgraph.param.to.desc=Reverse query: methods that can reach any declared method of the class
+mjt.cmd.callgraph.param.format.desc=Output format: plain, json, csv (data modes only; summary lines go to stderr in json mode)
+mjt.cmd.callgraph.err.unsupported_format=Error: unsupported format '{0}'.
+mjt.cmd.callgraph.err.format_conflict=Error: --json already pins JSON output and cannot be combined with another --format.
+mjt.cmd.callgraph.err.open_failed=Error: {0}
+mjt.cmd.callgraph.err.build_failed=Error: failed to build the call graph: {0}
+mjt.cmd.callgraph.err.entry_unresolved=Error: entry '{0}' does not resolve to a method declared in the container.
+mjt.cmd.callgraph.err.entry_annotation_unresolved=Error: annotation '{0}' does not match any annotated class in the container.
+mjt.cmd.callgraph.err.class_not_found=Error: class '{0}' not found or has no declared methods.
+mjt.cmd.callgraph.out.summary_nodes=nodes {0} (declared {1}, external {2})
+mjt.cmd.callgraph.out.summary_edges=resolved edges {0} (static {1}, special {2}, virtual {3}, interface {4}, unresolved {5}; expanded virtual targets {6})
+mjt.cmd.callgraph.out.summary_reflect=reflect weave sinks {0} (resolved {1}, woven edges {2}, dropped {3}; classes {4})
+mjt.cmd.callgraph.out.summary_rta=rta tier: instantiated types {0}, entry-reachable methods {1}
+mjt.cmd.callgraph.out.summary_entries=entry methods {0}
+mjt.cmd.callgraph.out.summary_reachable=reachable declared methods {0}/{1} ({2}%), {3} including external targets
+mjt.cmd.callgraph.out.external_suffix= [external]
+mjt.cmd.callgraph.out.reverse_label=Methods that can reach {0}:
+
+# ── cfg ──────────────────────────────────────────────────────
+mjt.cmd.cfg.desc=Dump a method's SIR CFG as Graphviz dot (like dot4j).
+mjt.cmd.cfg.param.input.desc=Input .jar or .class file
+mjt.cmd.cfg.param.class.desc=Class internal name (required for .jar input)
+mjt.cmd.cfg.param.method.desc=Method to visualize (default: first method)
+mjt.cmd.cfg.param.output.desc=Output .dot file (default: stdout)
+mjt.cmd.cfg.err.input_required=Error: -i/--input is required.
+mjt.cmd.cfg.err.class_required_for_jar=Error: -c/--class is required for .jar input.
+mjt.cmd.cfg.err.open_failed=Error: {0}
+mjt.cmd.cfg.err.class_not_readable=Error: class '{0}' not found or unreadable: {1}
+mjt.cmd.cfg.err.read_failed=Error: cannot read '{0}'.
+mjt.cmd.cfg.err.invalid_class_file=Error: '{0}' is not a valid class file: {1}
+mjt.cmd.cfg.err.no_methods=Error: class '{0}' has no methods.
+mjt.cmd.cfg.err.ambiguous_method=Error: multiple methods match '{0}'. Use name:descriptor.
+mjt.cmd.cfg.err.method_not_found=Error: method '{0}' not found in class '{1}'.
+mjt.cmd.cfg.err.write_failed=Error: cannot write '{0}'.
+
+# ── eval ─────────────────────────────────────────────────────
+mjt.cmd.eval.desc=Evaluate or simplify a mathematical expression
+mjt.cmd.eval.param.expression.desc=Expression
+mjt.cmd.eval.param.simplify.desc=Apply MBA algebraic simplification
+mjt.cmd.eval.param.vars.desc=Variable bindings (e.g. x=5,y=10)
+mjt.cmd.eval.err.invalid_var_spec=Error: invalid variable spec '{0}'. Use k=v,k2=v2.
+mjt.cmd.eval.err.missing_expression=Error: no expression specified.
+mjt.cmd.eval.err.parse_failed=Error: cannot parse expression: {0}
+mjt.cmd.eval.err.eval_failed=Error: {0}
+mjt.cmd.eval.out.usage=Usage: mjt eval [options] <expression>\n\nEvaluate or simplify a mathematical expression.\nIf the expression has unbound variables, prints the simplified form.\n\nOptions:\n  -s, --simplify         Apply MBA algebra simplification\n  -v, --vars <k=v,...>   Variable bindings (e.g. x=5,y=10)\n  -h, --help             Show this help\n\nOperators:\n  + - * / % & | ^ ~ << >> >>>\n  Parentheses, decimal and hex (0xFF) literals, variables\n\nExamples:\n  mjt eval "1 + 2 * 3"                  # 7\n  mjt eval "x + 0"                       # x (printed as S-expr)\n  mjt eval -s "x + 0"                    # (var x)\n  mjt eval -s "(x ^ y) + 2*(x & y)"     # simplified\n  mjt eval -v x=10,y=20 "x + y"          # 30\n
+# mjt i18n batch d: cmd_decompile / cmd_opt / cmd_mapping
+# Namespace: mjt.cmd.<command>.[desc | param.<id>.desc | err.* | out.*]
+
+# ── decompile ───────────────────────────────────────────────
+mjt.cmd.decompile.desc=Decompile JVM class/JAR into Java sources with CFR or Vineflower
+mjt.cmd.decompile.param.input.desc=Input class or JAR
+mjt.cmd.decompile.param.output.desc=Java file, source directory, or source zip (zip requires JAR input + vineflower)
+mjt.cmd.decompile.param.decompiler.desc=cfr or vineflower
+mjt.cmd.decompile.param.decompiler_jar.desc=Decompiler JAR path
+mjt.cmd.decompile.param.java.desc=Java executable
+mjt.cmd.decompile.param.timeout.desc=Timeout in seconds
+mjt.cmd.decompile.param.max_memory.desc=Maximum JVM heap memory
+mjt.cmd.decompile.param.mapping.desc=Mapping applied before decompilation
+mjt.cmd.decompile.param.mapping_format.desc=Mapping format
+mjt.cmd.decompile.param.mapping_policy.desc=Mapping rewrite policy
+mjt.cmd.decompile.param.temp_dir.desc=Temp directory root path
+mjt.cmd.decompile.err.input_duplicated=Error: input must be specified exactly once.
+mjt.cmd.decompile.err.input_required=Error: class or JAR input is required.
+mjt.cmd.decompile.err.kind_failed_prefix=Error:
+mjt.cmd.decompile.err.decompile_failed_prefix=Error:
+mjt.cmd.decompile.out.done=Decompiled with {0} -> {1}
+
+# ── opt ─────────────────────────────────────────────────────
+mjt.cmd.opt.desc=Optimize JVM bytecode (nop removal + instruction simplification)
+mjt.cmd.opt.param.input.desc=Input .jar or .class file
+mjt.cmd.opt.param.output.desc=Output path (type follows the input)
+mjt.cmd.opt.param.jdk.desc=JDK home (enables COMPUTE_FRAMES)
+mjt.cmd.opt.param.pass.desc=Comma-separated pass name list, run one by one
+mjt.cmd.opt.param.pipeline.desc=Registered pipeline name (mutually exclusive with -p)
+mjt.cmd.opt.param.config.desc=v1 Opt JSON config (mutually exclusive with -p/--pipeline)
+mjt.cmd.opt.param.class.desc=Only process matching classes (internal name substring)
+mjt.cmd.opt.param.method.desc=Only process matching methods (name or name()I)
+mjt.cmd.opt.param.quiet.desc=Fully silent; only print the final summary line
+mjt.cmd.opt.param.verbose.desc=Also print line-based stage logs without a TTY
+mjt.cmd.opt.param.list.desc=List all available pipelines and passes, then exit
+mjt.cmd.opt.param.list_passes.desc=List all available pass names, then exit
+mjt.cmd.opt.param.list_pipelines.desc=List all available pipeline names, then exit
+mjt.cmd.opt.param.describe.desc=Print the details of a pipeline, then exit
+mjt.cmd.opt.err.config_failed=Error: {0}
+mjt.cmd.opt.err.unknown_pipeline=Error: unknown pipeline '{0}'. Use --list-pipelines to see options.
+mjt.cmd.opt.err.unknown_pass=Error: unknown pass '{0}'. Use --list-passes to see options.
+mjt.cmd.opt.err.missing_io=Error: -i/--input and -o/--output are required.
+mjt.cmd.opt.err.mutually_exclusive=Error: --config, -p/--pass and --pipeline are mutually exclusive.
+mjt.cmd.opt.err.config_empty_path=Error: --config requires a non-empty file path.
+mjt.cmd.opt.err.pass_required=Error: -p/--pass requires at least one non-empty pass name.
+mjt.cmd.opt.err.output_exists=Error: -o/--output must name a file that does not already exist.
+mjt.cmd.opt.out.scan_jdk=Scanning {0} for class hierarchy...
+mjt.cmd.opt.out.scan_found=  found {0} class mappings
+mjt.cmd.opt.out.available_passes=Available passes (-p):
+mjt.cmd.opt.out.available_pipelines=Available pipelines (--pipeline):
+mjt.cmd.opt.out.describe_pipeline=Pipeline: {0}
+mjt.cmd.opt.out.describe_stability=  Stability: {0}
+mjt.cmd.opt.out.describe_description=  Description: {0}
+mjt.cmd.opt.out.describe_passes=\n  Passes ({0}):
+mjt.cmd.opt.out.run_header=mjt opt: input={0} output={1} mode={2}
+mjt.cmd.opt.out.run_class= class={0}
+mjt.cmd.opt.out.run_method= method={0}
+mjt.cmd.opt.out.summary=mjt opt summary: mode={0} processed={1} failed={2}
+mjt.cmd.opt.param.dry_run.desc=Dry-run (issue #1024): run the pipeline in memory only and print a preview to stdout, writing no files; mode: json (machine) | counts (summary) | diff (jasm diff of changed classes); -o not required and the exists check is skipped
+mjt.cmd.opt.param.dry_run_diff_limit.desc=Global diff line budget for --dry-run diff mode (default 200)
+mjt.cmd.opt.err.missing_input=Error: -i/--input is required.
+mjt.cmd.opt.err.dryrun_mode=Error: --dry-run mode must be one of json, counts, diff (got '{0}').
+mjt.cmd.opt.err.dryrun_diff_limit=Error: --dry-run-diff-limit must be a positive integer (got {0}).
+mjt.cmd.opt.out.dryrun_header=mjt opt dry-run: input={0} mode={1}
+mjt.cmd.opt.out.dryrun_pass_line=  pass {0} [{1}]: processed={2} changed={3} failed={4} time={5}ms
+mjt.cmd.opt.out.dryrun_classes_line=  classes: processed={0} changed={1} failed={2}
+mjt.cmd.opt.out.dryrun_changed_header=  changed classes ({0}):
+mjt.cmd.opt.out.dryrun_no_changes=  no classes changed
+mjt.cmd.opt.out.dryrun_diff_header=mjt opt dry-run diff: input={0} mode={1} changed={2}/{3}
+mjt.cmd.opt.out.dryrun_diff_render_failed=  ! {0}: jasm render failed: {1}
+mjt.cmd.opt.out.dryrun_diff_text_identical=  (bytes differ, jasm text identical)
+mjt.cmd.opt.out.dryrun_diff_truncated=  ... diff output truncated at the {0}-line budget
+mjt.cmd.opt.out.dryrun_diff_skipped=  diff budget exhausted: {0} changed class(es) not shown
+
+# ── mapping ─────────────────────────────────────────────────
+mjt.cmd.mapping.desc=List or convert mapping text formats, or rewrite a JAR by mapping
+mjt.cmd.mapping.param.list_formats.desc=List registered mapping formats
+mjt.cmd.mapping.param.remap_jar.desc=Rewrite the input JAR by mapping
+mjt.cmd.mapping.param.from.desc=Input mapping format
+mjt.cmd.mapping.param.to.desc=Output mapping format
+mjt.cmd.mapping.param.mapping.desc=Mapping file used in remap mode
+mjt.cmd.mapping.param.policy.desc=remap policy: bytecode-only, reflection, metadata, all
+mjt.cmd.mapping.param.input.desc=Input mapping file or JAR
+mjt.cmd.mapping.param.output.desc=Output mapping file or JAR
+mjt.cmd.mapping.err.remap_missing=Error: --remap-jar requires --from, --mapping, -i/--input and -o/--output.
+mjt.cmd.mapping.err.to_invalid=Error: --to is only valid for mapping text conversion.
+mjt.cmd.mapping.err.remap_failed=Error: {0}
+mjt.cmd.mapping.err.convert_missing=Error: --from, --to, -i/--input and -o/--output are required unless --list-formats is used.
+mjt.cmd.mapping.err.unknown_format=Error: unknown mapping format '{0}'. Use --list-formats to see options.
+mjt.cmd.mapping.err.read_failed=Error: cannot read mapping file '{0}'.
+mjt.cmd.mapping.err.write_failed=Error: cannot write mapping file '{0}'.
+mjt.cmd.mapping.err.convert_failed=Error: mapping conversion failed: {0}
+mjt.cmd.mapping.out.formats_header=Mapping formats:
+mjt.cmd.mapping.out.remapped=Remapped JAR: changed={0} policy={1} -> {2}
+mjt.cmd.mapping.out.converted=Converted mapping: {0} -> {1}
+
+# ── ihc tool (tools/ihc) ────────────────────────────────────
+mjt.ihc.usage.build=Scan .class from a JAR/JMOD or directory and build ihc
+mjt.ihc.usage.info=Inspect the ihc file contents
+mjt.ihc.usage.help=Show this help
+
+# ── reflect (issue #1026 reflection binding analyzer, first cut) ──
+mjt.cmd.reflect.desc=Analyze reflection sink call sites and resolve their targets (fail-closed: prefer Pending over false positives)
+mjt.cmd.reflect.param.input.desc=Input .jar or .class directory
+mjt.cmd.reflect.param.json.desc=Output all bindings as JSON (summary lines go to stderr)
+mjt.cmd.reflect.param.unresolved.desc=Show only Pending bindings (with reason classification)
+mjt.cmd.reflect.param.bindings_of.desc=Show bindings of one source class only (internal/dotted name)
+mjt.cmd.reflect.err.jar_open_failed=Error: cannot open input: {0}
+mjt.cmd.reflect.err.build_failed=Error: analysis failed: {0}
+mjt.cmd.reflect.out.scanned=reflect: {0} ({1} classes)
+mjt.cmd.reflect.out.sink_summary={0} sink call sites: resolved {1} / pending {2} / unsupported {3}, resolution rate {4}%
+mjt.cmd.reflect.out.api_dist=API distribution: {0}
+mjt.cmd.reflect.out.none=No matching bindings.
+
+# ── rename (issue #1032 P4 AI suggestion loading) ───────────
+mjt.cmd.rename.summary=Load and apply AI name suggestions (plan-only review by default)
+mjt.cmd.rename.help=rename -i <jar> --suggestions <file.json> [-o <jar>] [--apply] [--policy <name>] [--mapping-out <file>] [--mapping-format <name>] [--json]
+mjt.cmd.rename.desc=Load an AI name suggestion file and rename through the unified renamer engine (plan-only member listing for human review by default)
+mjt.cmd.rename.param.input.desc=Input .jar
+mjt.cmd.rename.param.suggestions.desc=Suggestion JSON file (version=1 schema)
+mjt.cmd.rename.param.output.desc=Output .jar (required with --apply)
+mjt.cmd.rename.param.apply.desc=Apply renames and write the JAR (default plan-only report, container untouched)
+mjt.cmd.rename.param.policy.desc=Apply policy: bytecode-only, reflection, metadata, all
+mjt.cmd.rename.param.mapping_out.desc=Export mapping file (rollback anchor)
+mjt.cmd.rename.param.mapping_format.desc=Mapping export format (default Tiny-V2)
+mjt.cmd.rename.param.json.desc=Output accepted/rejected ledger as JSON (summary lines to stderr)
+mjt.cmd.rename.err.missing_args=Error: rename requires -i/--input and --suggestions; --apply requires -o/--output.
+mjt.cmd.rename.err.jar_open_failed=Error: cannot read JAR: {0}
+mjt.cmd.rename.err.suggestions_invalid=Error: failed to load suggestion file: {0}
+mjt.cmd.rename.err.unknown_policy=Error: unknown policy "{0}". Options: bytecode-only, reflection, metadata, all.
+mjt.cmd.rename.err.unknown_mapping_format=Error: unknown mapping format "{0}".
+mjt.cmd.rename.err.apply_failed=Error: apply failed: {0}
+mjt.cmd.rename.err.output_exists=Error: refusing to overwrite existing output "{0}" (delete it first to overwrite).
+mjt.cmd.rename.err.mapping_write_failed=Error: cannot write mapping file "{0}".
+mjt.cmd.rename.out.stats=rename: proposed={0} accepted={1} rejected={2} renamedMembers={3} suffixResolved={4} applied={5}
+mjt.cmd.rename.out.accepted_header=Accepted:
+mjt.cmd.rename.out.rejected_header=Rejected:
+mjt.cmd.rename.out.none=No applicable suggestions.
+mjt.cmd.rename.out.written=Wrote JAR: {0}
+mjt.cmd.rename.out.mapping_written=Wrote mapping: {0}
+
+# ── dataflow (method-local dataflow queries: du / live) ─────
+mjt.cmd.dataflow.desc=Query method-local dataflow: def-use chains and SSA liveness
+mjt.cmd.dataflow.err.subcommand_required=Error: dataflow subcommand required. Use: du, live
+mjt.cmd.dataflow.err.unknown_subcommand=Error: unknown dataflow subcommand '{0}'.
+mjt.cmd.dataflow.err.available=Available: du, live
+mjt.cmd.dataflow.sub.du.desc=Print def-use chains of a method's SSA values
+mjt.cmd.dataflow.sub.live.desc=Print SSA liveness: entry live set and per-point live sets
+mjt.cmd.dataflow.param.input.desc=Input .jar or .class file
+mjt.cmd.dataflow.param.class.desc=Class internal name (required for .jar input)
+mjt.cmd.dataflow.param.method.desc=Target method (default: first method with code)
+mjt.cmd.dataflow.param.json.desc=Output as JSON
+mjt.cmd.dataflow.err.input_required=Error: -i/--input is required.
+mjt.cmd.dataflow.err.class_required_for_jar=Error: -c/--class is required for .jar input.
+mjt.cmd.dataflow.err.open_failed=Error: {0}
+mjt.cmd.dataflow.err.class_not_readable=Error: class '{0}' not found or unreadable: {1}
+mjt.cmd.dataflow.err.read_failed=Error: cannot read '{0}'.
+mjt.cmd.dataflow.err.invalid_class_file=Error: '{0}' is not a valid class file: {1}
+mjt.cmd.dataflow.err.no_methods=Error: class '{0}' has no methods.
+mjt.cmd.dataflow.err.ambiguous_method=Error: multiple methods match '{0}'. Use name:descriptor.
+mjt.cmd.dataflow.err.method_not_found=Error: method '{0}' not found in class '{1}'.
+mjt.cmd.dataflow.err.no_code=Error: method '{0}' in class '{1}' has no body (abstract/native or missing code attribute); no CFG to analyze.
+
+# ── shadow（#1072 shadow name 显示层别名）────────────────────────
+mjt.cmd.shadow.summary=Manage display-only shadow name sidecar (generate / prune / list)
+mjt.cmd.shadow.help=shadow -i <jar> [--shadow <file>] [--prune | --list] [--json]
+mjt.cmd.shadow.desc=Generate mechanical placeholder shadow names (Class_N/Method_N/Field_N, stable lexicographic order, idempotent merge), prune stale entries, or list the sidecar; the sidecar is display-only and the JAR is never written
+mjt.cmd.shadow.param.input.desc=Input .jar
+mjt.cmd.shadow.param.shadow.desc=Shadow sidecar file (default: <jar>.mjt-shadow next to the JAR)
+mjt.cmd.shadow.param.prune.desc=Prune entries whose raw symbol no longer exists (instead of generating)
+mjt.cmd.shadow.param.list.desc=List sidecar entries (instead of generating)
+mjt.cmd.shadow.param.json.desc=Machine-readable JSON summary (list/prune/generate)
+mjt.cmd.shadow.err.jar_open_failed=Error: cannot read JAR: {0}
+mjt.cmd.shadow.err.sidecar_is_jar=Error: --shadow path must not be the input JAR itself; pick a different sidecar path.
+mjt.cmd.shadow.err.sidecar_invalid=Warning: failed to load shadow sidecar "{0}" ({1}); continuing without shadow names.
+mjt.cmd.shadow.err.sidecar_write_failed=Error: cannot write shadow sidecar "{0}": {1}
+mjt.cmd.shadow.err.generate_failed=Error: shadow name generation failed: {0}
+mjt.cmd.shadow.out.sidecar_label=shadow sidecar: {0} (entries={1})
+mjt.cmd.shadow.out.assigned=assigned: classes={0} methods={1} fields={2}; kept={3}; total={4}
+mjt.cmd.shadow.out.pruned=pruned: removed={0}; total={1}
+
+# shadow 显示层参数（#1072）
+mjt.cmd.disasm.param.shadow.desc=Shadow sidecar file (default: <jar>.mjt-shadow next to the JAR); display names render as `shadow (raw)`
+mjt.cmd.disasm.param.no_shadow.desc=Disable shadow name display (print raw names only; same as --names raw)
+mjt.cmd.disasm.out.shadow_legend=; shadow aliases (display-only; --no-shadow disables):
+mjt.cmd.disasm.param.comment_style.desc=Legacy instruction comment style: terse (default trial; #CP-index + shadow name only; raw names/descriptors hoisted into a one-time header symbol table), full (explicit fallback, compatibility), none (no comments)
+mjt.cmd.disasm.err.comment_style=Error: --comment-style only accepts full, terse or none (got "{0}").
+mjt.cmd.disasm.out.terse_symbol_table=; terse symbol table (raw names/descriptors live here; instruction comments keep #index + shadow name only)
+# --names / --escape-unicode / output targets (#1106 P1)
+mjt.cmd.disasm.param.names.desc=Name display mode: both (default, shadow with raw alongside), shadow (display surface carries shadow short references only, raw names omitted), raw (raw names only; same as --no-shadow)
+mjt.cmd.disasm.err.names=Error: --names only accepts shadow, raw or both (got "{0}").
+mjt.cmd.disasm.param.escape_unicode.desc=Non-ASCII escaping: auto (default, unchanged), off (decode escapes back to raw text, grep-friendly), on (escape all non-ASCII as canonical uppercase hex, re-assemblable)
+mjt.cmd.disasm.err.escape_unicode=Error: --escape-unicode only accepts auto, on or off (got "{0}").
+mjt.cmd.disasm.param.output.desc=Write output to a file (default: stdout)
+mjt.cmd.disasm.param.out_dir.desc=Batch mode: dump every class to <dir>/<shadow name>.jasm (header keeps the symbol table) and write mapping.json (shadow/raw/file)
+mjt.cmd.disasm.err.out_conflict=Error: --out-dir batch mode cannot be combined with -o or -c.
+mjt.cmd.disasm.err.out_dir_legacy=Error: --out-dir only supports the default jasm mode (--legacy is not supported).
+mjt.cmd.disasm.err.class_required=Error: missing --class (required for single-class mode; use --out-dir for whole-JAR batch).
+mjt.cmd.disasm.err.write_failed=Error: cannot write {0}.
+mjt.cmd.disasm.err.byte_offset_unavailable=Warning: --byte-offset class file parse failed; skipping offset annotations.
+mjt.cmd.disasm.out.written=Wrote {0} classes and mapping.json to {1}
+mjt.cmd.info.param.shadow.desc=Shadow sidecar file (default: <jar>.mjt-shadow next to the JAR); display names render as `shadow (raw)`
+mjt.cmd.info.param.no_shadow.desc=Disable shadow name display (print raw names only)
+mjt.cmd.rename.param.shadow.desc=Shadow sidecar file (default: <jar>.mjt-shadow next to the JAR); owner/old-name render as `shadow (raw)`, plan target names take precedence
+mjt.cmd.rename.param.no_shadow.desc=Disable shadow name display (print raw names only)

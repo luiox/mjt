@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- CLI exe 统一 activeCodePage=UTF-8 + longPathAware manifest（D36）。
+     由规则 mjt.win_utf8_manifest 经 /MANIFESTINPUT 嵌入 exe，勿手工嵌。
+     语义与前提见 xmake/win_utf8_manifest.lua 头注。 -->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity type="win32" name="mjt.CLI.Utf8Argv" version="1.0.0.0"/>
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+      <!-- longPathAware（#1110 构建面）：声明进程可感知长路径，注册表
+           LongPathsEnabled=1 时 Win32 宽字符 API 放开 260 限制；与代码侧
+           \\?\ 扩展前缀（mjt/src/shared/long_path.hpp）双保险。未开注册表
+           的机器上无害（忽略），\\?\ 链路独立生效。 -->
+      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+    </windowsSettings>
+  </application>
+</assembly>

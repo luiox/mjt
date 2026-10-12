@@ -1,0 +1,624 @@
+# mjt_shared 翻译表(zh_CN 为源语言,必须是 en_US 的超集)
+# 命名空间:mjt.shared.err.* = mjt/src/shared 错误消息
+# {n} 为位置占位符,可重复/换序
+
+# ── decompiler ──────────────────────────────────────────────
+mjt.shared.err.pipe=无法建立反编译器输出管道
+mjt.shared.err.cancelled=反编译器任务已取消
+mjt.shared.err.timeout=反编译器执行超时（{0} ms）
+mjt.shared.err.no_java_output=反编译器未生成 Java 源文件
+mjt.shared.err.mkdir_output=无法创建输出目录: {0}
+mjt.shared.err.write_result=无法写入反编译结果: {0}
+mjt.shared.err.mkdir_vineflower=无法创建 Vineflower 源码目录: {0}
+mjt.shared.err.unpack_vineflower=无法解包 Vineflower 源码: {0}
+mjt.shared.err.vineflower_no_java=Vineflower 源码归档中没有 Java 文件
+mjt.shared.err.relpath=无法确定反编译源码相对路径
+mjt.shared.err.mkdir_sources=无法创建源码输出目录: {0}
+mjt.shared.err.write_sources=无法写入反编译源码: {0}
+mjt.shared.err.unknown_decompiler=未知反编译器: {0}（可选 cfr 或 vineflower）
+mjt.shared.err.missing_io=缺少反编译输入或输出路径
+mjt.shared.err.input_missing=反编译输入不存在: {0}
+mjt.shared.err.input_kind=反编译输入必须是 .class 或 .jar
+mjt.shared.err.output_java=单 class 输出必须是 .java 文件
+mjt.shared.err.premap_jar_only=mapping 预重映射目前只支持 JAR 输入
+mjt.shared.err.mapping_format_required=使用 mapping 时必须指定 mapping 格式
+mjt.shared.err.positive_limits=timeout 和 max-memory 必须大于零
+mjt.shared.err.decompiler_jar_missing={0} JAR 未找到；请使用 --decompiler-jar、{1} 或 MJT_DECOMPILER_HOME 指定路径
+mjt.shared.err.decompiler_jar_probed=已探测（按序）：{0}
+mjt.shared.err.exec_failed={0} 执行失败，退出码 {1}
+mjt.shared.err.decompile_long_name_hint=疑似类名超出 Windows 路径限制导致写入失败（肇事文件: {0}）。可改用 zip 输出绕过: -o <输出>.zip（仅 vineflower 支持）
+mjt.shared.err.zip_output_vineflower_only=zip 输出仅支持 vineflower 反编译器（当前: {0}）
+mjt.shared.err.orchestration_exception=反编译编排失败: {0}
+mjt.shared.err.orchestration_unknown=反编译编排失败: 未知异常
+
+# ── jar_remapper ────────────────────────────────────────────
+mjt.shared.err.ws_remap_missing=Workspace remap 缺少 mapping 格式或文本
+mjt.shared.err.unknown_mapping_format=未知 mapping 格式: {0}
+mjt.shared.err.unknown_remap_policy=未知 remap 策略: {0}；可选 bytecode-only、reflection、metadata 或 all
+mjt.shared.err.parse_mapping_failed=解析 mapping 失败: {0}
+mjt.shared.err.remap_missing_args=JAR remap 缺少输入、输出、mapping 或格式
+mjt.shared.err.remap_jar_ext=JAR remap 输入和输出必须是 .jar
+mjt.shared.err.read_mapping_failed=无法读取 mapping 文件: {0}
+mjt.shared.err.remap_exception=JAR remap 失败: {0}
+mjt.shared.err.remap_failed=JAR remap 失败
+
+# ── mjt CLI usage/命令表(main.cpp)──────────────────────────
+mjt.cli.usage.banner=mjt — JVM Bytecode MCP Server
+mjt.cli.usage.header=Usage:
+mjt.cli.usage.line=  mjt <command> -i <jar> [args]
+mjt.cli.usage.commands=Commands:
+mjt.cli.usage.options=Options:
+mjt.cli.usage.help_flag=-h, --help|显示本帮助
+mjt.cli.usage.version_flag=--version|显示版本
+mjt.cli.usage.lang_flag=--lang <code>|选择语言（zh_CN/en_US）
+mjt.cli.usage.tail=所有命令均以 -i <jar> 指定输入 JAR（由各子命令解析）。
+mjt.cli.err.no_command=错误：未指定命令。
+mjt.cli.err.unknown_command=错误：未知命令 “{0}”。
+
+mjt.cmd.strings.summary=提取全部字符串常量
+mjt.cmd.strings.help=strings|提取全部字符串常量
+mjt.cmd.grep.summary=按模式搜索字符串
+mjt.cmd.grep.help=grep <pattern>|按模式搜索字符串
+mjt.cmd.classes.summary=列出全部类
+mjt.cmd.classes.help=classes|列出全部类
+mjt.cmd.info.summary=显示 JAR 概览或类详情
+mjt.cmd.info.help=info|显示 JAR 概览或类详情
+mjt.cmd.subs.summary=查找子类/接口实现
+mjt.cmd.subs.help=subs|查找子类/接口实现
+mjt.cmd.diff.summary=对比两个 JAR
+mjt.cmd.diff.help=diff <jar2>|对比两个 JAR
+mjt.cmd.hexdump.summary=十六进制转储类原始字节
+mjt.cmd.hexdump.help=hexdump <class>|十六进制转储类原始字节
+mjt.cmd.jar.summary=JAR 条目列出/提取/修复
+mjt.cmd.jar.help=jar fix|修复/重建受损 JAR\njar list|列出 JAR 条目\njar extract <path>|从 JAR 提取条目
+mjt.cmd.disasm.summary=字节码反汇编器
+mjt.cmd.disasm.help=disasm|字节码反汇编器
+mjt.cmd.xref.summary=跨类引用索引
+mjt.cmd.xref.help=xref|跨类引用索引
+mjt.cmd.callgraph.summary=调用图：CHA/RTA 虚分派 + 入口可达性
+mjt.cmd.callgraph.help=callgraph|调用图：CHA/RTA 虚分派 + 入口可达性
+mjt.cmd.eval.summary=求值表达式
+mjt.cmd.eval.help=eval <expr>|常量折叠求值器
+mjt.cmd.opt.summary=优化字节码（pass/管线）
+mjt.cmd.opt.help=opt|优化字节码（pass/管线）
+mjt.cmd.mapping.summary=Mapping 格式列出/转换工具
+mjt.cmd.mapping.help=mapping|Mapping 格式列出/转换工具
+mjt.cmd.decompile.summary=用 CFR/Vineflower 反编译 class 或 JAR
+mjt.cmd.decompile.help=decompile|用 CFR/Vineflower 反编译 class 或 JAR
+mjt.cmd.cfg.summary=以 Graphviz dot 导出 SIR CFG
+mjt.cmd.cfg.help=cfg|以 Graphviz dot 导出 SIR CFG
+mjt.cmd.dataflow.summary=方法内数据流查询（def-use 链、SSA 活跃变量）
+mjt.cmd.dataflow.help=dataflow du|方法内 SSA value 的 def-use 链\ndataflow live|SSA 活跃变量：入口活跃集与各点 live 集
+mjt.cmd.reflect.summary=反射调用分析（sink 落解）
+mjt.cmd.reflect.help=reflect -i <jar>|反射调用分析（sink 目录+方法内值流落解，fail-closed）
+
+# cmd_strings / cmd_grep / cmd_classes / cmd_info i18n 片段（batch a）
+mjt.cmd.strings.desc=提取所有字符串常量
+mjt.cmd.strings.param.input.desc=输入 JAR
+mjt.cmd.strings.param.encrypted_only.desc=只输出疑似密文
+mjt.cmd.strings.param.show_class.desc=显示来源类名
+mjt.cmd.strings.param.dedup.desc=去重
+mjt.cmd.strings.param.min_length.desc=最小长度（默认 2）
+mjt.cmd.strings.param.max_length.desc=最大长度（默认 65535）
+mjt.cmd.strings.param.format.desc=输出格式: plain, json, csv
+mjt.cmd.strings.err.invalid_length_range=错误：--min-length/--max-length 必须非负且 min <= max。
+mjt.cmd.strings.err.jar_open_failed=错误：{0}
+mjt.cmd.grep.desc=按模式搜索字符串
+mjt.cmd.grep.param.input.desc=输入 JAR
+mjt.cmd.grep.param.pattern.desc=搜索模式
+mjt.cmd.grep.param.regex.desc=模式为正则（默认）
+mjt.cmd.grep.param.fixed_strings.desc=模式为固定字符串
+mjt.cmd.grep.param.ignore_case.desc=忽略大小写
+mjt.cmd.grep.param.class_only.desc=只搜 CONSTANT_Class
+mjt.cmd.grep.param.utf8_only.desc=只搜 CONSTANT_Utf8
+mjt.cmd.grep.param.string_only.desc=只搜 CONSTANT_String
+mjt.cmd.grep.param.show_class.desc=显示来源类名
+mjt.cmd.grep.param.show_context.desc=上下文长度
+mjt.cmd.grep.param.count.desc=只输出每个类的匹配数
+mjt.cmd.grep.param.files_with_matches.desc=只输出匹配的类名
+mjt.cmd.grep.param.decrypt_map.desc=解密字典文件
+mjt.cmd.grep.err.decrypt_map_open_failed=警告：无法打开解密字典“{0}”。
+mjt.cmd.grep.err.missing_pattern=错误：必须提供 <pattern>。
+mjt.cmd.grep.err.invalid_regex=错误：无效的正则表达式“{0}”：{1}
+mjt.cmd.grep.err.jar_open_failed=错误：{0}
+mjt.cmd.grep.out.loaded_decrypt_mappings=# 已加载 {0} 条解密映射
+mjt.cmd.grep.out.context_strings=# {1} 中有 {0} 个字符串
+mjt.cmd.jar.sub.list.out.ratio_note=（压缩后 {0} 字节，{1}%）
+mjt.cmd.jar.sub.extract.err.write_failed=错误：无法写入 {0} -> {1}（{2}）
+# 写前路径预检（#1110）：单组件 > 255 / 总长 > 32767 时给明确错误而非底层模糊失败
+mjt.cmd.jar.sub.extract.err.path_too_long=错误：目标路径超限（全长 {0} 字符），未写入 {1}（{2}）
+mjt.cmd.jar.sub.extract.out.same_error_more=  （同类错误另外 {0} 条：{1}）
+mjt.cmd.jar.sub.extract.out.flat_mapping=  （{0} 个超长条目已按安全名落盘，原始名映射：{1}）
+mjt.cmd.jar.sub.extract.out.write_failures=  {0} 个条目写入失败
+mjt.shared.jctx.err.list_dir_failed=无法列出类目录。
+mjt.shared.jctx.err.read_class_failed=读取类文件失败：{0}
+mjt.shared.jctx.err.no_class_files=目录中没有 .class 文件。
+mjt.shared.jctx.err.open_jar_failed=打开 JAR 失败：{0}
+mjt.shared.jctx.err.open_jar_failed_unknown=打开 JAR 失败（未知异常）。
+mjt.shared.jctx.err.empty_jar=JAR 为空或没有可读条目。
+mjt.cmd.classes.desc=列出 JAR 内所有类
+mjt.cmd.classes.param.input.desc=输入 JAR
+mjt.cmd.classes.param.show_size.desc=显示解压后大小
+mjt.cmd.classes.param.show_super.desc=显示父类名
+mjt.cmd.classes.param.filter.desc=类名过滤（子串匹配）
+mjt.cmd.classes.param.sort.desc=排序字段: name, size
+mjt.cmd.classes.param.format.desc=输出格式: plain, json, csv
+mjt.cmd.classes.err.jar_open_failed=错误：{0}
+mjt.cmd.classes.out.size_bytes=（{0} 字节）
+mjt.cmd.info.desc=查看类信息 / JAR 概览（无 -c 显示概览，有 -c 显示类详情）
+mjt.cmd.info.param.input.desc=输入 JAR
+mjt.cmd.info.param.class.desc=目标类
+mjt.cmd.info.param.constants.desc=显示常量池
+mjt.cmd.info.param.methods.desc=显示方法签名
+mjt.cmd.info.param.fields.desc=显示字段
+mjt.cmd.info.param.instructions.desc=显示方法字节码（反汇编）
+mjt.cmd.info.param.hex.desc=显示整 class 字节 hexdump
+mjt.cmd.info.param.resolve.desc=解析 FieldRef/MethodRef 链（配合 --constants）
+mjt.cmd.info.param.with_values.desc=显示 ConstantValue（配合 --fields）
+mjt.cmd.info.param.switch_table.desc=标注 switch dispatch 表（配合 --instructions）
+mjt.cmd.info.param.verbose.desc=详细输出
+mjt.cmd.info.err.jar_open_failed=错误：{0}
+mjt.cmd.info.err.class_not_found=错误：JAR 中不存在类“{0}”。
+mjt.cmd.info.out.jar_label=JAR：{0}
+mjt.cmd.info.out.total_entries_label=总条目数：{0}
+mjt.cmd.info.out.class_files_label=类文件数：{0}
+mjt.cmd.info.out.total_size_label=总大小：{0} 字节
+mjt.cmd.info.out.strings_label=字符串数：{0}
+mjt.cmd.info.out.constant_pool_unavailable=（常量池不可用）
+mjt.cmd.info.out.cp_entries_label=常量池条目数：{0}
+mjt.cmd.info.out.cp_entry_damaged=(损坏: CP#{0})
+mjt.cmd.info.out.fields_unavailable=（字段不可用）
+mjt.cmd.info.out.methods_unavailable=（方法不可用）
+mjt.cmd.info.out.method_label=方法：{0}{1}
+mjt.cmd.info.out.hexdump_header=字节码转储（完整 class 十六进制）：
+mjt.cmd.info.out.class_label=类：{0}
+mjt.cmd.info.out.size_label=大小：{0} 字节
+mjt.cmd.info.out.class_header_unavailable=（类头不可用：已损坏或无法解析）
+mjt.cmd.info.out.version_label=版本：{0}
+mjt.cmd.info.out.this_label=本类：{0}
+mjt.cmd.info.out.super_label=父类：{0}
+mjt.cmd.info.out.interfaces_header=接口：
+mjt.cmd.info.out.constants_header=常量池：
+mjt.cmd.info.out.fields_header=字段：
+mjt.cmd.info.out.methods_header=方法：
+mjt.cmd.info.out.instructions_header=指令：
+# mjt batch b 翻译片段：subs / diff / hexdump / jar 命令（zh_CN 为源语言）
+# 命名空间：mjt.cmd.<command>.[desc | param.<id>.desc | err.* | out.*]
+# {n} 为位置占位符，可重复/换序；\n 表示换行
+
+# ── subs ────────────────────────────────────────────────────
+mjt.cmd.subs.desc=查找子类 / 接口实现者
+mjt.cmd.subs.param.input.desc=输入 JAR
+mjt.cmd.subs.param.super.desc=查找指定类的子类
+mjt.cmd.subs.param.interface.desc=查找指定接口的实现者
+mjt.cmd.subs.param.indirect.desc=包含间接子类（递归）
+mjt.cmd.subs.err.open_failed=错误：{0}
+mjt.cmd.subs.out.no_subclasses=（未找到 “{0}” 的子类）
+
+# ── diff ────────────────────────────────────────────────────
+mjt.cmd.diff.desc=对比两个 JAR
+mjt.cmd.diff.param.input.desc=输入 JAR 1
+mjt.cmd.diff.param.jar2.desc=对比的 JAR 2
+mjt.cmd.diff.param.shrink_only.desc=只显示缩小的条目
+mjt.cmd.diff.param.grow_only.desc=只显示增大的条目
+mjt.cmd.diff.param.added_only.desc=只显示新增的条目
+mjt.cmd.diff.param.removed_only.desc=只显示删除的条目
+mjt.cmd.diff.param.threshold.desc=最小变化字节数（默认 0）
+mjt.cmd.diff.param.verbose.desc=显示变更详情
+mjt.cmd.diff.err.open_failed=错误：无法打开 “{0}”：{1}
+mjt.cmd.diff.err.missing_jar2=错误：必须指定 <jar2>。
+mjt.cmd.diff.out.removed=  - {0}（已删除）
+mjt.cmd.diff.out.shrunk=  ~ {0}（缩小 {1} 字节）
+mjt.cmd.diff.out.grown=  ~ {0}（增大 {1} 字节）
+mjt.cmd.diff.out.added=  + {0}（已新增）
+mjt.cmd.diff.out.size_change=    之前：{0}  之后：{1}
+mjt.cmd.diff.out.no_differences=（无差异）
+mjt.cmd.diff.out.summary=\n汇总：+{0} -{1} ~{2}（缩小）~{3}（增大）
+
+# ── hexdump ──────────────────────────────────────────────────
+mjt.cmd.hexdump.desc=原始字节查看
+mjt.cmd.hexdump.param.input.desc=输入 JAR
+mjt.cmd.hexdump.param.class.desc=目标类
+mjt.cmd.hexdump.param.offset.desc=起始偏移（默认 0）
+mjt.cmd.hexdump.param.length.desc=显示字节数（默认整个 class）
+mjt.cmd.hexdump.param.width.desc=每行字节数（默认 16）
+mjt.cmd.hexdump.param.no_ascii.desc=不显示右侧 ASCII 列
+mjt.cmd.hexdump.err.offset_negative=错误：--offset 必须大于等于 0。
+mjt.cmd.hexdump.err.width_not_positive=错误：--width 必须大于 0。
+mjt.cmd.hexdump.err.length_invalid=错误：--length 必须为 -1（整个 class）或非负。
+mjt.cmd.hexdump.err.missing_class=错误：必须指定 <class>。
+mjt.cmd.hexdump.err.open_failed=错误：{0}
+mjt.cmd.hexdump.err.class_not_found=错误：未找到类 “{0}”。
+mjt.cmd.hexdump.out.offset_past_end=（空 — 偏移超过末尾）
+
+# ── jar 分发 ─────────────────────────────────────────────────
+mjt.cmd.jar.err.subcommand_required=错误：必须指定 jar 子命令。可用：fix、list、extract
+mjt.cmd.jar.err.unknown_subcommand=错误：未知的 jar 子命令 “{0}”。
+mjt.cmd.jar.err.available=可用：fix、list、extract
+
+# ── jar fix ──────────────────────────────────────────────────
+mjt.cmd.jar.sub.fix.desc=修复/重建损坏 JAR
+mjt.cmd.jar.sub.fix.param.input.desc=输入 JAR
+mjt.cmd.jar.sub.fix.param.output.desc=输出路径（默认 input.fixed.jar）
+mjt.cmd.jar.sub.fix.param.dry_run.desc=只检查不写出
+mjt.cmd.jar.sub.fix.param.keep_manifest.desc=保留 MANIFEST.MF（默认）
+mjt.cmd.jar.sub.fix.param.no_manifest.desc=丢弃 MANIFEST.MF（覆盖默认保留行为）
+mjt.cmd.jar.sub.fix.param.force.desc=覆盖输出文件
+mjt.cmd.jar.sub.fix.out.reading=正在读取 {0} ...
+mjt.cmd.jar.sub.fix.err.read_failed=错误：读取 JAR 失败：{0}
+mjt.cmd.jar.sub.fix.out.total_entries=  条目总数：{0}
+mjt.cmd.jar.sub.fix.out.class_files=  class 文件数：{0}
+mjt.cmd.jar.sub.fix.out.bad_magic=  错误魔数：{0}
+mjt.cmd.jar.sub.fix.out.truncated=  截断条目：{0}
+mjt.cmd.jar.sub.fix.out.corrupt_markers=  损坏标记：{0}
+mjt.cmd.jar.sub.fix.out.status=  状态：{0}
+mjt.cmd.jar.sub.fix.out.status_issues=发现问题
+mjt.cmd.jar.sub.fix.out.status_ok=OK
+mjt.cmd.jar.sub.fix.out.writing=\n正在写入 {0} ...
+mjt.cmd.jar.sub.fix.err.write_failed=错误：写入 JAR 失败：{0}
+mjt.cmd.jar.sub.fix.out.done=  完成。
+mjt.cmd.jar.sub.fix.param.verbose.desc=逐条列出全部结构异常（默认按类型聚合）
+mjt.cmd.jar.sub.fix.out.anomaly_summary=  结构异常：共 {0} 条，{1} 类
+mjt.cmd.jar.sub.fix.out.anomaly_kind=    · {0} ×{1}
+mjt.cmd.jar.sub.fix.out.anomaly_example=        {0} @{1}
+mjt.cmd.jar.sub.fix.out.anomaly_item=    [{0}] {1} @{2}
+mjt.cmd.jar.sub.fix.out.anomaly_omitted=        … 其余 {0} 条同类问题从略
+mjt.zip.anomaly.prefix_junk=条目前存在垃圾数据
+mjt.zip.anomaly.eocd_offset_mismatch=EOCD 目录偏移不一致
+mjt.zip.anomaly.base_offset_fallback=偏移基准自动修正
+mjt.zip.anomaly.local_signature_miss=条目头定位失败
+mjt.zip.anomaly.local_read_failed=条目头损坏（已按 CEN 修复）
+mjt.zip.anomaly.sizes_adopted=LOC 与 CEN 尺寸不一致（以 CEN 为准）
+mjt.zip.anomaly.duplicate_loc=多个 CEN 记录指向同一条目
+mjt.zip.anomaly.rejected_eocd=虚假 EOCD（已忽略）
+mjt.zip.anomaly.trailing_garbage=文件尾部存在多余数据
+mjt.zip.anomaly.suspicious_name=可疑条目名
+mjt.zip.anomaly.unknown=未知异常
+
+# ── jar list ─────────────────────────────────────────────────
+mjt.cmd.jar.sub.list.desc=列出所有 JAR 条目
+mjt.cmd.jar.sub.list.param.input.desc=输入 JAR
+mjt.cmd.jar.sub.list.param.class_only.desc=只显示 .class 文件
+mjt.cmd.jar.sub.list.param.resource_only.desc=只显示非 class 资源
+mjt.cmd.jar.sub.list.param.show_size.desc=显示解压后大小
+mjt.cmd.jar.sub.list.param.show_ratio.desc=显示压缩率
+mjt.cmd.jar.sub.list.param.format.desc=输出格式: plain, json
+mjt.cmd.jar.sub.list.err.read_failed=错误：读取 JAR 失败：{0}
+mjt.cmd.jar.sub.list.out.size_note=（{0} 字节）
+
+# ── jar --lenient-names（#1110 族 opt-in，list/extract/info 共用） ──
+mjt.cmd.jar.param.lenient_names.desc=把非 UTF-8（GBK）条目名宽容解码为 UTF-8（缺省：原始字节直通）
+
+# ── jar extract ──────────────────────────────────────────────
+mjt.cmd.jar.sub.extract.desc=提取条目到文件
+mjt.cmd.jar.sub.extract.param.input.desc=输入 JAR
+mjt.cmd.jar.sub.extract.param.path.desc=条目路径（或用 --recursive）
+mjt.cmd.jar.sub.extract.param.output.desc=输出目录（默认 .）
+mjt.cmd.jar.sub.extract.param.recursive.desc=递归解压整个 JAR
+mjt.cmd.jar.sub.extract.param.flat.desc=超长条目以安全名平铺落盘并写 mapping.json
+mjt.cmd.jar.sub.extract.err.missing_path=错误：必须指定 <path>（或使用 --recursive）。
+mjt.cmd.jar.sub.extract.err.read_failed=错误：读取 JAR 失败：{0}
+mjt.cmd.jar.sub.extract.err.skip_unsafe=  （跳过不安全的条目路径：{0}）
+# #1110 族：条目名硬崩修复——非法字节名缺省给明确诊断失败（不再 terminate 硬崩），
+# 或用 --lenient-names 宽容解码。
+mjt.cmd.jar.sub.extract.err.entry_name_not_utf8=  （条目名不是合法 UTF-8，未写入：{0}；可用 --lenient-names 解码）
+mjt.cmd.jar.sub.extract.err.entry_failed=提取条目 {0} 失败：{1}
+mjt.cmd.jar.sub.extract.out.not_found=  （未找到：{0}）
+mjt.cmd.jar.sub.extract.out.skip_unsupported=  （跳过不支持的资源类型：{0}）
+mjt.cmd.jar.sub.extract.out.empty=  （空：{0}）
+mjt.cmd.jar.sub.extract.out.extracted=已提取 {0} 个文件到 {1}
+
+# mjt batch c 翻译片段：disasm / xref / cfg / eval 命令（zh_CN 为源语言）
+# 命名空间：mjt.cmd.<command>.[desc | param.<id>.desc | err.* | out.*]
+# {n} 为位置占位符，可重复/换序；\n 表示换行
+
+# ── disasm ───────────────────────────────────────────────────
+mjt.cmd.disasm.desc=Jasm 字节码反汇编
+mjt.cmd.disasm.param.input.desc=输入 JAR
+mjt.cmd.disasm.param.class.desc=目标类（--out-dir 批量模式可省略）
+mjt.cmd.disasm.param.legacy.desc=使用旧的逐指令渲染格式
+mjt.cmd.disasm.param.method.desc=只显示指定方法
+mjt.cmd.disasm.param.raw.desc=容错损坏 descriptor
+mjt.cmd.disasm.param.byte_offset.desc=显示字节偏移（legacy：行首 4 位 hex；缺省 jasm 模式：指令行尾 `; @0xNNN` + 方法头 `; bytes 0x0000-0xNNNN`）
+mjt.cmd.disasm.param.switch_table.desc=标注 tableswitch/lookupswitch
+mjt.cmd.disasm.param.length.desc=只显示前 n 条指令
+mjt.cmd.disasm.param.verbose.desc=显示异常表、行号表
+mjt.cmd.disasm.err.legacy_required=错误：--method/--raw/--switch-table/--length/--verbose 需要 --legacy。
+mjt.cmd.disasm.err.open_failed=错误：{0}
+mjt.cmd.disasm.err.class_not_found=错误：JAR 中未找到类“{0}”。
+mjt.cmd.disasm.err.jasm_diagnostic=错误：{0}
+mjt.cmd.disasm.err.jasm_failed=错误：无法将类反汇编为 Jasm。
+mjt.cmd.disasm.out.class_label=类：{0}
+mjt.cmd.disasm.out.method_label=方法：{0}{1}
+mjt.cmd.disasm.out.method_no_code=方法：{0}（native/abstract，无代码）
+mjt.cmd.disasm.out.exception_table=  异常表：
+
+# ── xref ─────────────────────────────────────────────────────
+mjt.cmd.xref.desc=跨类引用索引
+mjt.cmd.xref.param.input.desc=输入 JAR
+mjt.cmd.xref.param.field.desc=目标字段名
+mjt.cmd.xref.param.method.desc=目标方法名
+mjt.cmd.xref.param.class.desc=目标类名
+mjt.cmd.xref.param.callers.desc=只显示调用者
+mjt.cmd.xref.param.callees.desc=只显示被调用者
+mjt.cmd.xref.param.values.desc=解析 getstatic 字段实际值
+mjt.cmd.xref.param.recursive.desc=递归追踪调用链
+mjt.cmd.xref.param.max_depth.desc=递归最大深度（默认 5）
+mjt.cmd.xref.param.format.desc=输出格式: plain, json, csv（json/csv 模式下进度统计写到 stderr，避免污染可解析输出）
+mjt.cmd.xref.param.cache_stats.desc=输出进程内 xref cache 统计
+mjt.cmd.xref.param.persist.desc=启用磁盘 cache（默认关闭：不在输入 JAR 目录旁写文件）
+mjt.cmd.xref.param.cache_dir.desc=磁盘 cache 目录（需 --persist；默认 <jar>/.xref-cache/）
+mjt.cmd.xref.err.unsupported_format=错误：不支持的格式“{0}”。
+mjt.cmd.xref.err.open_failed=错误：{0}
+mjt.cmd.xref.err.build_failed=错误：构建 xref 索引失败：{0}
+mjt.cmd.xref.err.jar_open_failed=错误：{0}
+mjt.cmd.xref.warn.class_no_match=警告：--class 零命中（无任何类型引用匹配；请核对类名拼写/编码，可用 jar list 查看实际类名）。匹配串：
+mjt.cmd.xref.out.indexed_summary=# 已索引 {0} 个方法引用、{1} 个字段引用、{2} 个类型引用（来自输入）
+mjt.cmd.xref.out.source_label=来源：{0}
+mjt.cmd.xref.out.target_label=目标：{0}
+mjt.cmd.xref.out.source=来源
+mjt.cmd.xref.out.target=目标
+mjt.cmd.xref.out.no_matches=  （无匹配“{0}”）
+
+# ── callgraph ────────────────────────────────────────────────
+mjt.cmd.callgraph.desc=调用图：CHA 虚分派解析 + 入口可达性闭包（签名级过近似）；--rta 切 RTA 精度档（已实例化类型沿父链 dispatch 收窄虚分派，剩余欠近似面在反射实例化/native/classpath 外实例化。
+mjt.cmd.callgraph.param.input.desc=输入 JAR
+mjt.cmd.callgraph.param.entry.desc=追加入口 <class>[.<method>]（可重复或逗号分隔；类名单独给出时该类全部声明方法为入口；默认入口为容器内全部 public static void main(String[])）
+mjt.cmd.callgraph.param.entry_annotation.desc=注解标记类追加入口 <annotation>（可重复或逗号分隔；internal/source/descriptor 三种写法均可；命中类级注解（类级/字段级作用域）的声明类，其全部声明方法为入口；方法级注解不触发）
+mjt.cmd.callgraph.param.rta.desc=在 CHA 之上启用 RTA 精度档：入口可达性驱动闭包 + 已实例化类型沿父链 dispatch 收窄虚分派（继承未覆写的父类/接口 default 条目保持可达，覆写时解析停在子类）；默认关（CHA 过近似，RTA 剩余欠近似面在反射实例化/native/classpath 外实例化）
+mjt.cmd.callgraph.param.cache_stats.desc=输出解析边集 cache 统计（内存 LRU 与磁盘两层）
+mjt.cmd.callgraph.param.persist.desc=把解析边集持久化到磁盘（默认关闭：不在输入 JAR 目录旁写文件）；jar 内容或选项指纹变化即整图失效重算；RTA 摘要计数随边集一并序列化，磁盘命中进程的摘要行输出真实值
+mjt.cmd.callgraph.param.cache_dir.desc=磁盘 cache 目录（需 --persist；默认 <jar>/.callgraph-cache/）
+mjt.cmd.callgraph.param.json.desc=输出全量解析边表（JSON，含调用点位置/kind/编码目标/解析目标）
+mjt.cmd.callgraph.param.reachable.desc=列出入口可达方法清单
+mjt.cmd.callgraph.param.reflect.desc=先跑反射绑定分析器，把方法级 Resolved 绑定（Method.invoke/newInstance）织入调用图；默认关
+mjt.cmd.callgraph.param.to.desc=反查可到达该类（任一声明方法）的方法闭包
+mjt.cmd.callgraph.param.format.desc=输出格式: plain, json, csv（数据模式专用；json 模式统计行写 stderr）
+mjt.cmd.callgraph.err.unsupported_format=错误：不支持的格式“{0}”。
+mjt.cmd.callgraph.err.format_conflict=错误：--json 已固定 JSON 输出，不能与其它 --format 同用。
+mjt.cmd.callgraph.err.open_failed=错误：{0}
+mjt.cmd.callgraph.err.build_failed=错误：构建调用图失败：{0}
+mjt.cmd.callgraph.err.entry_unresolved=错误：入口“{0}”无法解析到容器内声明的方法。
+mjt.cmd.callgraph.err.entry_annotation_unresolved=错误：注解“{0}”未匹配到容器内任何标注类。
+mjt.cmd.callgraph.err.class_not_found=错误：类“{0}”不存在或没有声明方法。
+mjt.cmd.callgraph.out.summary_nodes=节点 {0}（声明 {1}，外部 {2}）
+mjt.cmd.callgraph.out.summary_edges=解析边 {0}（static {1}，special {2}，virtual {3}，interface {4}，未解析 {5}；虚分派扩展目标边 {6}）
+mjt.cmd.callgraph.out.summary_reflect=反射织入 sink {0}（resolved {1}，织入边 {2}，未落图 {3}；类级 {4}）
+mjt.cmd.callgraph.out.summary_rta=RTA 档：已实例化类型 {0}，入口可达方法 {1}
+mjt.cmd.callgraph.out.summary_entries=入口方法 {0}
+mjt.cmd.callgraph.out.summary_reachable=可达声明方法 {0}/{1}（{2}%），含外部目标共 {3}
+mjt.cmd.callgraph.out.external_suffix= [外部]
+mjt.cmd.callgraph.out.reverse_label=可到达 {0} 的方法：
+
+# ── cfg ──────────────────────────────────────────────────────
+mjt.cmd.cfg.desc=以 Graphviz dot 导出方法的 SIR CFG（类似 dot4j）。
+mjt.cmd.cfg.param.input.desc=输入 .jar 或 .class 文件
+mjt.cmd.cfg.param.class.desc=类内部名（.jar 输入时必填）
+mjt.cmd.cfg.param.method.desc=要可视化的方法（默认：第一个方法）
+mjt.cmd.cfg.param.output.desc=输出 .dot 文件（默认：stdout）
+mjt.cmd.cfg.err.input_required=错误：必须指定 -i/--input。
+mjt.cmd.cfg.err.class_required_for_jar=错误：.jar 输入必须指定 -c/--class。
+mjt.cmd.cfg.err.open_failed=错误：{0}
+mjt.cmd.cfg.err.class_not_readable=错误：类“{0}”不存在或不可读：{1}
+mjt.cmd.cfg.err.read_failed=错误：无法读取“{0}”。
+mjt.cmd.cfg.err.invalid_class_file=错误：“{0}”不是有效的 class 文件：{1}
+mjt.cmd.cfg.err.no_methods=错误：类“{0}”没有方法。
+mjt.cmd.cfg.err.ambiguous_method=错误：多个方法匹配“{0}”。请使用 name:descriptor。
+mjt.cmd.cfg.err.method_not_found=错误：类“{1}”中未找到方法“{0}”。
+mjt.cmd.cfg.err.write_failed=错误：无法写入“{0}”。
+
+# ── eval ─────────────────────────────────────────────────────
+mjt.cmd.eval.desc=求值或化简数学表达式
+mjt.cmd.eval.param.expression.desc=表达式
+mjt.cmd.eval.param.simplify.desc=应用 MBA 代数化简
+mjt.cmd.eval.param.vars.desc=变量绑定（如 x=5,y=10）
+mjt.cmd.eval.err.invalid_var_spec=错误：无效的变量绑定“{0}”。请使用 k=v,k2=v2。
+mjt.cmd.eval.err.missing_expression=错误：未指定表达式。
+mjt.cmd.eval.err.parse_failed=错误：无法解析表达式：{0}
+mjt.cmd.eval.err.eval_failed=错误：{0}
+mjt.cmd.eval.out.usage=用法：mjt eval [选项] <expression>\n\n求值或化简数学表达式。\n若表达式含未绑定变量，则打印化简后的形式。\n\n选项：\n  -s, --simplify         应用 MBA 代数化简\n  -v, --vars <k=v,...>   变量绑定（如 x=5,y=10）\n  -h, --help             显示本帮助\n\n算子：\n  + - * / % & | ^ ~ << >> >>>\n  括号、十进制与十六进制（0xFF）字面量、变量\n\n示例：\n  mjt eval "1 + 2 * 3"                  # 7\n  mjt eval "x + 0"                       # x（以 S-表达式打印）\n  mjt eval -s "x + 0"                    # (var x)\n  mjt eval -s "(x ^ y) + 2*(x & y)"     # 化简结果\n  mjt eval -v x=10,y=20 "x + y"          # 30\n
+# mjt i18n batch d：cmd_decompile / cmd_opt / cmd_mapping
+# 命名空间：mjt.cmd.<command>.[desc | param.<id>.desc | err.* | out.*]
+
+# ── decompile ───────────────────────────────────────────────
+mjt.cmd.decompile.desc=使用 CFR 或 Vineflower 将 JVM class/JAR 反编译为 Java 源码
+mjt.cmd.decompile.param.input.desc=输入 class 或 JAR
+mjt.cmd.decompile.param.output.desc=Java 文件、源码目录或源码 zip（zip 仅限 JAR 输入 + vineflower）
+mjt.cmd.decompile.param.decompiler.desc=cfr 或 vineflower
+mjt.cmd.decompile.param.decompiler_jar.desc=反编译器 JAR 路径
+mjt.cmd.decompile.param.java.desc=Java 可执行程序
+mjt.cmd.decompile.param.timeout.desc=超时秒数
+mjt.cmd.decompile.param.max_memory.desc=JVM 最大堆内存
+mjt.cmd.decompile.param.mapping.desc=反编译前应用的 mapping
+mjt.cmd.decompile.param.mapping_format.desc=mapping 格式
+mjt.cmd.decompile.param.mapping_policy.desc=mapping 重写策略
+mjt.cmd.decompile.param.temp_dir.desc=临时目录根路径
+mjt.cmd.decompile.err.input_duplicated=错误：输入必须且只能指定一次。
+mjt.cmd.decompile.err.input_required=错误：必须提供 class 或 JAR 输入。
+mjt.cmd.decompile.err.kind_failed_prefix=错误：
+mjt.cmd.decompile.err.decompile_failed_prefix=错误：
+mjt.cmd.decompile.out.done=反编译完成：{0} -> {1}
+
+# ── opt ─────────────────────────────────────────────────────
+mjt.cmd.opt.desc=优化 JVM 字节码（nop 清除 + 指令化简）
+mjt.cmd.opt.param.input.desc=输入 .jar 或 .class 文件
+mjt.cmd.opt.param.output.desc=输出路径（类型与输入一致）
+mjt.cmd.opt.param.jdk.desc=JDK home（启用 COMPUTE_FRAMES）
+mjt.cmd.opt.param.pass.desc=单 pass 名列表（逗号分隔），逐个跑
+mjt.cmd.opt.param.pipeline.desc=已注册流水线名（与 -p 互斥）
+mjt.cmd.opt.param.config.desc=v1 Opt JSON 配置（与 -p/--pipeline 互斥）
+mjt.cmd.opt.param.class.desc=只处理匹配的类（internal name 子串）
+mjt.cmd.opt.param.method.desc=只处理匹配的方法（name 或 name()I）
+mjt.cmd.opt.param.quiet.desc=完全静默，仅输出最终总结行
+mjt.cmd.opt.param.verbose.desc=非 TTY 下也输出换行式阶段日志
+mjt.cmd.opt.param.list.desc=列出所有可用流水线和单 pass 后退出
+mjt.cmd.opt.param.list_passes.desc=列出所有可用单 pass 名后退出
+mjt.cmd.opt.param.list_pipelines.desc=列出所有可用流水线名后退出
+mjt.cmd.opt.param.describe.desc=输出某流水线的详情后退出
+mjt.cmd.opt.err.config_failed=错误：{0}
+mjt.cmd.opt.err.unknown_pipeline=错误：未知流水线 “{0}”。请使用 --list-pipelines 查看可选项。
+mjt.cmd.opt.err.unknown_pass=错误：未知 pass “{0}”。请使用 --list-passes 查看可选项。
+mjt.cmd.opt.err.missing_io=错误：必须指定 -i/--input 和 -o/--output。
+mjt.cmd.opt.err.mutually_exclusive=错误：--config、-p/--pass 和 --pipeline 互斥。
+mjt.cmd.opt.err.config_empty_path=错误：--config 需要非空文件路径。
+mjt.cmd.opt.err.pass_required=错误：-p/--pass 需要至少一个非空 pass 名。
+mjt.cmd.opt.err.output_exists=错误：-o/--output 指向的文件必须尚不存在。
+mjt.cmd.opt.out.scan_jdk=正在扫描 {0} 的类层次...
+mjt.cmd.opt.out.scan_found=  找到 {0} 个类映射
+mjt.cmd.opt.out.available_passes=可用 pass（-p）：
+mjt.cmd.opt.out.available_pipelines=可用流水线（--pipeline）：
+mjt.cmd.opt.out.describe_pipeline=流水线：{0}
+mjt.cmd.opt.out.describe_stability=  稳定性：{0}
+mjt.cmd.opt.out.describe_description=  描述：{0}
+mjt.cmd.opt.out.describe_passes=\n  pass（{0}）：
+mjt.cmd.opt.out.run_header=mjt opt：输入={0} 输出={1} 模式={2}
+mjt.cmd.opt.out.run_class= 类={0}
+mjt.cmd.opt.out.run_method= 方法={0}
+mjt.cmd.opt.out.summary=mjt opt 汇总：模式={0} 已处理={1} 失败={2}
+mjt.cmd.opt.param.dry_run.desc=试运行（issue #1024）：只在内存跑管线并按档位输出到 stdout，零落盘；档位 json（机器档）| counts（人读摘要）| diff（仅变更类的前后 jasm 对比）；-o 不要求、"输出已存在"检查跳过
+mjt.cmd.opt.param.dry_run_diff_limit.desc=--dry-run diff 档的差异行全局上限（默认 200）
+mjt.cmd.opt.err.missing_input=错误：缺少 -i/--input。
+mjt.cmd.opt.err.dryrun_mode=错误：--dry-run 档位必须是 json、counts、diff 之一（收到 '{0}'）。
+mjt.cmd.opt.err.dryrun_diff_limit=错误：--dry-run-diff-limit 必须是正整数（收到 {0}）。
+mjt.cmd.opt.out.dryrun_header=mjt opt 试运行：输入={0} 模式={1}
+mjt.cmd.opt.out.dryrun_pass_line=  pass {0} [{1}]：处理={2} 变更={3} 失败={4} 耗时={5}ms
+mjt.cmd.opt.out.dryrun_classes_line=  类：处理={0} 变更={1} 失败={2}
+mjt.cmd.opt.out.dryrun_changed_header=  变更类（{0}）：
+mjt.cmd.opt.out.dryrun_no_changes=  无变更类
+mjt.cmd.opt.out.dryrun_diff_header=mjt opt 试运行差异：输入={0} 模式={1} 变更={2}/{3}
+mjt.cmd.opt.out.dryrun_diff_render_failed=  ！{0}：jasm 渲染失败：{1}
+mjt.cmd.opt.out.dryrun_diff_text_identical=  （字节有差异，jasm 文本相同）
+mjt.cmd.opt.out.dryrun_diff_truncated=  ……差异输出达到 {0} 行上限，已截断
+mjt.cmd.opt.out.dryrun_diff_skipped=  差异预算耗尽：{0} 个变更类未显示
+
+# ── mapping ─────────────────────────────────────────────────
+mjt.cmd.mapping.desc=列出、转换 mapping 文本格式，或按 mapping 重写 JAR
+mjt.cmd.mapping.param.list_formats.desc=列出已注册 mapping 格式
+mjt.cmd.mapping.param.remap_jar.desc=按 mapping 重写输入 JAR
+mjt.cmd.mapping.param.from.desc=输入 mapping 格式
+mjt.cmd.mapping.param.to.desc=输出 mapping 格式
+mjt.cmd.mapping.param.mapping.desc=remap 模式使用的 mapping 文件
+mjt.cmd.mapping.param.policy.desc=remap 策略: bytecode-only, reflection, metadata, all
+mjt.cmd.mapping.param.input.desc=输入 mapping 文件或 JAR
+mjt.cmd.mapping.param.output.desc=输出 mapping 文件或 JAR
+mjt.cmd.mapping.err.remap_missing=错误：--remap-jar 需要 --from、--mapping、-i/--input 和 -o/--output。
+mjt.cmd.mapping.err.to_invalid=错误：--to 仅在 mapping 文本转换中有效。
+mjt.cmd.mapping.err.remap_failed=错误：{0}
+mjt.cmd.mapping.err.convert_missing=错误：除非使用 --list-formats，否则必须指定 --from、--to、-i/--input 和 -o/--output。
+mjt.cmd.mapping.err.unknown_format=错误：未知 mapping 格式 “{0}”。请使用 --list-formats 查看可选项。
+mjt.cmd.mapping.err.read_failed=错误：无法读取 mapping 文件 “{0}”。
+mjt.cmd.mapping.err.write_failed=错误：无法写入 mapping 文件 “{0}”。
+mjt.cmd.mapping.err.convert_failed=错误：mapping 转换失败：{0}
+mjt.cmd.mapping.out.formats_header=Mapping 格式：
+mjt.cmd.mapping.out.remapped=已重映射 JAR：changed={0} policy={1} -> {2}
+mjt.cmd.mapping.out.converted=已转换 mapping：{0} -> {1}
+
+# ── ihc 工具(tools/ihc)──────────────────────────────────────
+mjt.ihc.usage.build=从 JAR/JMOD 或目录扫描 .class 并构建 ihc
+mjt.ihc.usage.info=查看 ihc 文件内容
+mjt.ihc.usage.help=显示此帮助
+
+# ── reflect（issue #1026 反射调用分析器第一刀）────────────────
+mjt.cmd.reflect.desc=分析反射 sink 调用点并落解目标（fail-closed：宁 Pending 不误报）
+mjt.cmd.reflect.param.input.desc=输入 .jar 或 .class 目录
+mjt.cmd.reflect.param.json.desc=以 JSON 输出 bindings 全量（摘要行走 stderr）
+mjt.cmd.reflect.param.unresolved.desc=只显示 Pending 绑定（带原因分类）
+mjt.cmd.reflect.param.bindings_of.desc=只显示指定来源类的绑定（internal/点分名）
+mjt.cmd.reflect.err.jar_open_failed=错误：无法打开输入：{0}
+mjt.cmd.reflect.err.build_failed=错误：分析失败：{0}
+mjt.cmd.reflect.out.scanned=reflect: {0}（{1} 个类）
+mjt.cmd.reflect.out.sink_summary=sink 调用点 {0}：resolved {1} / pending {2} / unsupported {3}，落解率 {4}%
+mjt.cmd.reflect.out.api_dist=API 分布: {0}
+mjt.cmd.reflect.out.none=无匹配绑定。
+
+# ── rename（issue #1032 P4 AI 建议载入）──────────────────────
+mjt.cmd.rename.summary=AI 建议改名载入与应用（默认 plan-only 人审）
+mjt.cmd.rename.help=rename -i <jar> --suggestions <file.json> [-o <jar>] [--apply] [--policy <name>] [--mapping-out <file>] [--mapping-format <name>] [--json]
+mjt.cmd.rename.desc=载入 AI 名字建议文件，经统一 renamer 引擎校验/消解后改名（默认 plan-only 输出清单供人审）
+mjt.cmd.rename.param.input.desc=输入 .jar
+mjt.cmd.rename.param.suggestions.desc=建议 JSON 文件（version=1 schema）
+mjt.cmd.rename.param.output.desc=输出 .jar（--apply 时必填）
+mjt.cmd.rename.param.apply.desc=应用改名并写出 JAR（缺省 plan-only 只出报告，不改容器）
+mjt.cmd.rename.param.policy.desc=应用面策略: bytecode-only, reflection, metadata, all
+mjt.cmd.rename.param.mapping_out.desc=导出映射文件（可回滚锚点）
+mjt.cmd.rename.param.mapping_format.desc=映射导出格式（默认 Tiny-V2）
+mjt.cmd.rename.param.json.desc=以 JSON 输出 accepted/rejected 流水（摘要行走 stderr）
+mjt.cmd.rename.err.missing_args=错误：rename 需要 -i/--input 与 --suggestions；--apply 需搭配 -o/--output。
+mjt.cmd.rename.err.jar_open_failed=错误：无法读取 JAR：{0}
+mjt.cmd.rename.err.suggestions_invalid=错误：建议文件载入失败：{0}
+mjt.cmd.rename.err.unknown_policy=错误：未知策略 “{0}”。可选 bytecode-only, reflection, metadata, all。
+mjt.cmd.rename.err.unknown_mapping_format=错误：未知映射格式 “{0}”。
+mjt.cmd.rename.err.apply_failed=错误：应用失败：{0}
+mjt.cmd.rename.err.output_exists=错误：拒绝覆盖已存在的输出 “{0}”（如需覆盖请先删除后重试）。
+mjt.cmd.rename.err.mapping_write_failed=错误：无法写入映射文件 “{0}”。
+mjt.cmd.rename.out.stats=rename: proposed={0} accepted={1} rejected={2} renamedMembers={3} suffixResolved={4} applied={5}
+mjt.cmd.rename.out.accepted_header=已接受：
+mjt.cmd.rename.out.rejected_header=已拒绝：
+mjt.cmd.rename.out.none=无可应用建议。
+mjt.cmd.rename.out.written=已写出 JAR：{0}
+mjt.cmd.rename.out.mapping_written=已写出映射：{0}
+
+# ── dataflow（方法内数据流查询面：du / live） ────────────────
+mjt.cmd.dataflow.desc=查询方法内数据流：def-use 链与 SSA 活跃变量
+mjt.cmd.dataflow.err.subcommand_required=错误：必须指定 dataflow 子命令。可用：du、live
+mjt.cmd.dataflow.err.unknown_subcommand=错误：未知的 dataflow 子命令 “{0}”。
+mjt.cmd.dataflow.err.available=可用：du、live
+mjt.cmd.dataflow.sub.du.desc=输出方法内各 SSA value 的 def-use 链
+mjt.cmd.dataflow.sub.live.desc=输出方法内 SSA 活跃变量：入口活跃集与各点 live 集
+mjt.cmd.dataflow.param.input.desc=输入 .jar 或 .class 文件
+mjt.cmd.dataflow.param.class.desc=类内部名（.jar 输入时必填）
+mjt.cmd.dataflow.param.method.desc=目标方法（默认：第一个有 code 的方法）
+mjt.cmd.dataflow.param.json.desc=以 JSON 输出
+mjt.cmd.dataflow.err.input_required=错误：必须指定 -i/--input。
+mjt.cmd.dataflow.err.class_required_for_jar=错误：.jar 输入必须指定 -c/--class。
+mjt.cmd.dataflow.err.open_failed=错误：{0}
+mjt.cmd.dataflow.err.class_not_readable=错误：类“{0}”不存在或不可读：{1}
+mjt.cmd.dataflow.err.read_failed=错误：无法读取“{0}”。
+mjt.cmd.dataflow.err.invalid_class_file=错误：“{0}”不是有效的 class 文件：{1}
+mjt.cmd.dataflow.err.no_methods=错误：类“{0}”没有方法。
+mjt.cmd.dataflow.err.ambiguous_method=错误：多个方法匹配“{0}”。请使用 name:descriptor。
+mjt.cmd.dataflow.err.method_not_found=错误：类“{1}”中未找到方法“{0}”。
+mjt.cmd.dataflow.err.no_code=错误：方法“{0}”（类“{1}”）无方法体（abstract/native 或缺 code 属性），无 CFG 可分析。
+
+# ── shadow（#1072 shadow name 显示层别名）────────────────────────
+mjt.cmd.shadow.summary=管理仅显示层 shadow name sidecar（生成 / 清理 / 查看）
+mjt.cmd.shadow.help=shadow -i <jar> [--shadow <file>] [--prune | --list] [--json]
+mjt.cmd.shadow.desc=批量生成机械占位 shadow 名（Class_N/Method_N/Field_N，字典序稳定、幂等合并），或清理过期条目、查看 sidecar；sidecar 仅服务显示层，永不写 JAR
+mjt.cmd.shadow.param.input.desc=输入 .jar
+mjt.cmd.shadow.param.shadow.desc=shadow sidecar 文件（缺省：<jar>.mjt-shadow，与 jar 同目录）
+mjt.cmd.shadow.param.prune.desc=清理指向不存在符号的过期条目（替代默认生成动作）
+mjt.cmd.shadow.param.list.desc=列出 sidecar 条目（替代默认生成动作）
+mjt.cmd.shadow.param.json.desc=机器可读 JSON 摘要（list/prune/生成通用）
+mjt.cmd.shadow.err.jar_open_failed=错误：无法读取 JAR：{0}
+mjt.cmd.shadow.err.sidecar_is_jar=错误：--shadow 路径不得指向输入 JAR 本身，请换一个 sidecar 路径。
+mjt.cmd.shadow.err.sidecar_invalid=警告：shadow sidecar "{0}" 载入失败（{1}），本次不带 shadow 名继续。
+mjt.cmd.shadow.err.sidecar_write_failed=错误：无法写出 shadow sidecar "{0}"：{1}
+mjt.cmd.shadow.err.generate_failed=错误：shadow 名生成失败：{0}
+mjt.cmd.shadow.out.sidecar_label=shadow sidecar：{0}（条目={1}）
+mjt.cmd.shadow.out.assigned=分配：classes={0} methods={1} fields={2}；保留={3}；总计={4}
+mjt.cmd.shadow.out.pruned=清理：移除={0}；总计={1}
+
+# shadow 显示层参数（#1072）
+mjt.cmd.disasm.param.shadow.desc=shadow sidecar 文件（缺省：<jar>.mjt-shadow，与 jar 同目录）；显示名按 `shadow (原始名)` 并列
+mjt.cmd.disasm.param.no_shadow.desc=关闭 shadow 名显示（仅打印原始名；等价 --names raw）
+mjt.cmd.disasm.out.shadow_legend=; shadow 别名（仅显示层；--no-shadow 关闭）：
+mjt.cmd.disasm.param.comment_style.desc=legacy 指令注释风格：terse（缺省试用，只留 #CP索引 + shadow 名，原名/descriptor 收进文件头一次性符号表）、full（显式回退，兼容现网）、none（无注释）
+mjt.cmd.disasm.err.comment_style=错误：--comment-style 只支持 full/terse/none（得到“{0}”）。
+mjt.cmd.disasm.out.terse_symbol_table=; terse 符号表（原名/descriptor 收拢于此；指令注释只留 #索引 + shadow 名）
+# --names / --escape-unicode / 输出目标（#1106 P1）
+mjt.cmd.disasm.param.names.desc=名字显示模式：both（缺省，shadow 并列原名）、shadow（显示面只含 shadow 短引用，原名不出现）、raw（只原名；等价 --no-shadow）
+mjt.cmd.disasm.err.names=错误：--names 只支持 shadow/raw/both（得到“{0}”）。
+mjt.cmd.disasm.param.escape_unicode.desc=非 ASCII 转义口径：auto（缺省，维持现状）、off（转义序列全文还原原文，可 grep）、on（非 ASCII 全文规范大写 hex 转义，可回读/汇编）
+mjt.cmd.disasm.err.escape_unicode=错误：--escape-unicode 只支持 auto/on/off（得到“{0}”）。
+mjt.cmd.disasm.param.output.desc=输出到文件（缺省 stdout）
+mjt.cmd.disasm.param.out_dir.desc=批量模式：整 JAR 按类落盘 <dir>/<shadow 名>.jasm（文件头保留符号表），并写 mapping.json（shadow/原名/文件名）
+mjt.cmd.disasm.err.out_conflict=错误：--out-dir 批量模式不能与 -o 或 -c 同用。
+mjt.cmd.disasm.err.out_dir_legacy=错误：--out-dir 仅支持缺省 jasm 模式（不支持 --legacy）。
+mjt.cmd.disasm.err.class_required=错误：缺少 --class（单类模式必填；整 JAR 批量请改用 --out-dir）。
+mjt.cmd.disasm.err.write_failed=错误：无法写入 {0}。
+mjt.cmd.disasm.err.byte_offset_unavailable=警告：--byte-offset 类文件解析失败，本次跳过偏移标注。
+mjt.cmd.disasm.out.written=已写出 {0} 个类与 mapping.json → {1}
+mjt.cmd.info.param.shadow.desc=shadow sidecar 文件（缺省：<jar>.mjt-shadow，与 jar 同目录）；显示名按 `shadow (原始名)` 并列
+mjt.cmd.info.param.no_shadow.desc=关闭 shadow 名显示（仅打印原始名）
+mjt.cmd.rename.param.shadow.desc=shadow sidecar 文件（缺省：<jar>.mjt-shadow，与 jar 同目录）；owner/旧名按 `shadow (原始名)` 并列，plan 目标名优先
+mjt.cmd.rename.param.no_shadow.desc=关闭 shadow 名显示（仅打印原始名）
