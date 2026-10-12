@@ -123,6 +123,7 @@ add_requires("libjzip 0.0.2")
 add_requires("libgarena 0.0.2")
 add_requires("libjclassfile 0.0.2")
 add_requires("libjstd 0.0.1")
+add_requires("libjdk_finder 0.0.1")
 -- 嵌套 libca 全路径钉定，缺一条就多一个实例。
 add_requireconfs("libmcp.libca",                 {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
 add_requireconfs("libjstr.libca",                {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
@@ -134,6 +135,7 @@ add_requireconfs("libgarena.libca",              {version = LUIOX_LIBCA_VERSION,
 add_requireconfs("libjclassfile.libca",          {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
 add_requireconfs("libjclassfile.libjstr.libca",  {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
 add_requireconfs("libjstd.libca",                {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
+add_requireconfs("libjdk_finder.libca",          {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
 -- i18n/resources 构建规则内嵌（.lang add_files 规则，包安装产物不带规则）。
 includes("xmake/libca_rules.lua")
 
@@ -141,3 +143,4 @@ includes("test_helper")
 includes("libs")
 includes("mbase")
 includes("mjt")
+includes("unittest")

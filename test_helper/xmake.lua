@@ -1,11 +1,10 @@
 target("test_helper")
     set_kind("static")
     set_group("libs/test")
-    -- 通用机制委托 ca::test（#912 下沉）；libjdk_finder 仍保留：
+    -- 通用机制委托 ca::test；libjdk_finder 为 luiox-repo 直连包：
     -- jdk_fixture.hpp 经本目录 include 的消费方依赖其传递可见性。
-     add_deps("libjdk_finder")
     -- test_helper.hpp include libca/test/test.hpp；public 供测试消费方传递。
-    add_packages("libca", {public = true})
+    add_packages("libjdk_finder", "libca", {public = true})
     add_files("test_helper.cpp")
     add_includedirs(".", {public = true})
     if is_plat("windows") then
