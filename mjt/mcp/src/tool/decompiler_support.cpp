@@ -154,7 +154,7 @@ Json decompilerAvailabilityJson(const DecompilerAvailability& availability,
             {"artifact_available", availability.artifactAvailable},
             {"java_available", availability.javaAvailable},
             {"available", availability.artifactAvailable && availability.javaAvailable},
-            {"version", ""},
+            {"version", availability.version},
             {"unavailable_reason", availability.unavailableReason}};
 }
 
