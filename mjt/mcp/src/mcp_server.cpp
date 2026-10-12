@@ -103,7 +103,7 @@ Json fromLibmcpJson(const ca::json::JsonValue& value)
 
     ::mcp::ServerOptions options;
     options.name        = "mjt-mcp";
-    options.version     = "2.1.0";
+    options.version     = "0.1.0";
     options.title       = "mjt JVM analysis workspace";
     options.description = "Transactional JVM bytecode analysis and editing tools";
     auto session        = ::mcp::ServerSession::create(std::move(options));
