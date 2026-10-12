@@ -89,6 +89,9 @@ struct DecompilerAvailability final
     std::string    decompilerJar;
     ///@brief discovery 解析后的 Java 程序。
     std::string    javaProgram;
+    ///@brief JAR 自报版本（MANIFEST Implementation-Version / Specification-Version，
+    ///        缺失时回退 JAR 文件名 `name-<version>.jar` 后缀）；无法确定时为空。
+    std::string    version;
     ///@brief JAR 是否为可读取常规文件。
     bool           artifactAvailable = false;
     ///@brief Java 是否能通过显式路径或 PATH 找到。
@@ -113,6 +116,17 @@ const char* decompilerKindId(DecompilerKind kind) noexcept;
 DecompilerAvailability inspectDecompiler(DecompilerKind kind,
                                          const std::string& decompilerJar = {},
                                          const std::string& javaProgram = {});
+
+///@brief 读取反编译器 JAR 自报版本（导出供 unittest 逐用例钉，先例同
+///        discoverDecompilerJarDetailed）。
+///
+///顺序：MANIFEST `Implementation-Version` → `Specification-Version` → JAR
+///文件名 `name-<version>.jar` 后缀（首段必须以数字开头，避免把
+///`fake-mcp-decompiler.jar` 这类词尾当版本）。读取/解析失败一律返回空串，
+///不抛异常；版本串截断到 64 字节并去掉首尾空白。
+///
+///@param jarPath UTF-8 编码的 JAR 路径。
+std::string decompilerJarVersion(const std::string& jarPath);
 
 ///@brief 反编译器 JAR 发现结果。
 struct DecompilerJarDiscovery final

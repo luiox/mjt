@@ -693,7 +693,128 @@ ca::Status copyJavaTree(const fs::path& generatedRoot, const fs::path& requested
     return ca::OkStatus();
 }
 
+//── 反编译器 JAR 自报版本提取（decompilerJarVersion 的实现件）──────────────
+
+///@brief MANIFEST 读取上限：超出部分不参与版本解析（防超大条目拖慢发现）。
+constexpr std::size_t kManifestMaximumBytes = 64 * 1024;
+///@brief 版本串上限（含超长伪造值的截断兜底）。
+constexpr std::size_t kVersionMaximumBytes = 64;
+
+///@brief JAR MANIFEST 折行展开：规范按 72 字节折行，续行以单空格/制表开头。
+std::vector<std::string> unfoldManifestLines(const std::string& raw)
+{
+    std::vector<std::string> lines;
+    std::size_t              start = 0;
+    while (start <= raw.size()) {
+        const auto end  = raw.find('\n', start);
+        auto       line = raw.substr(start, end == std::string::npos ? std::string::npos : end - start);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (!line.empty() && (line.front() == ' ' || line.front() == '\t') && !lines.empty())
+            lines.back() += line.substr(1);
+        else
+            lines.push_back(std::move(line));
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    return lines;
+}
+
+///@brief 去首尾空白并截断到版本串上限；全空白返回空串。
+std::string trimVersionValue(const std::string& value)
+{
+    const auto isBlank = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
+    std::size_t begin  = 0;
+    std::size_t end    = value.size();
+    while (begin < end && isBlank(value[begin])) ++begin;
+    while (end > begin && isBlank(value[end - 1])) --end;
+    const auto length = std::min(end - begin, kVersionMaximumBytes);
+    return value.substr(begin, length);
+}
+
+///@brief 按 MANIFEST 键名取值；键匹配忽略冒号前空白，值取冒号后首个非空格起。
+std::string manifestAttribute(const std::vector<std::string>& lines, const std::string& key)
+{
+    for (const auto& line : lines) {
+        const auto colon = line.find(':');
+        if (colon == std::string::npos) continue;
+        std::size_t nameEnd = colon;
+        while (nameEnd > 0 && (line[nameEnd - 1] == ' ' || line[nameEnd - 1] == '\t')) --nameEnd;
+        if (line.compare(0, nameEnd, key) != 0) continue;
+        std::size_t valueBegin = colon + 1;
+        while (valueBegin < line.size() && (line[valueBegin] == ' ' || line[valueBegin] == '\t'))
+            ++valueBegin;
+        return trimVersionValue(line.substr(valueBegin));
+    }
+    return {};
+}
+
+///@brief JAR 文件名回退：`name-<version>.jar` 取首个以数字开头段起的余串。
+///
+///`vineflower-1.12.0.jar` → `1.12.0`；`fake-mcp-decompiler.jar` 无数字开头段
+///→ 空串（词尾不冒充版本）。
+std::string versionFromJarFileName(const fs::path& jarPath)
+{
+    const auto stem = jarPath.stem().u8string();
+    std::size_t segment = 0;
+    while (segment < stem.size()) {
+        const auto next = stem.find('-', segment);
+        const auto head = stem[segment];
+        if (head >= '0' && head <= '9')
+            return trimVersionValue(stem.substr(segment));
+        if (next == std::string::npos) break;
+        segment = next + 1;
+    }
+    return {};
+}
+
+std::string versionFromJarFileName(const std::string& jarPath)
+{
+    if (jarPath.empty()) return {};
+    //jarPath 持 discovery 结果（UTF-8 交付契约），显式 u8path 清扫。
+    return versionFromJarFileName(fs::u8path(jarPath));
+}
+
 }   //namespace
+
+std::string decompilerJarVersion(const std::string& jarPath)
+{
+    if (jarPath.empty()) return {};
+    try {
+        ca::zip::ZipFile archive;
+        //需要 Result 语义（构造重载保留异常），先默认构造再 open。
+        if (archive.open(jarPath).is_err()) return versionFromJarFileName(jarPath);
+
+        const ca::zip::ZipEntry* manifestEntry = archive.get_entry("META-INF/MANIFEST.MF");
+        if (manifestEntry == nullptr) {
+            //少数归档条目名大小写/分隔有出入时按序扫一遍。
+            for (const auto& name : archive.entries()) {
+                std::string lowered = name;
+                std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char c) {
+                    return static_cast<char>(c >= 'A' && c <= 'Z' ? c + 32 : c);
+                });
+                if (lowered == "meta-inf/manifest.mf") {
+                    manifestEntry = archive.get_entry(name);
+                    break;
+                }
+            }
+        }
+        if (manifestEntry == nullptr) return versionFromJarFileName(jarPath);
+
+        auto bytesResult = archive.read(*manifestEntry);
+        if (bytesResult.is_err()) return versionFromJarFileName(jarPath);
+        const auto& bytes = bytesResult.unwrap();
+        const auto  length = std::min(bytes.size(), kManifestMaximumBytes);
+        const std::string raw(reinterpret_cast<const char*>(bytes.data()), length);
+
+        const auto lines    = unfoldManifestLines(raw);
+        auto       version  = manifestAttribute(lines, "Implementation-Version");
+        if (version.empty()) version = manifestAttribute(lines, "Specification-Version");
+        if (!version.empty()) return version;
+    } catch (...) {
+        //版本是尽力而为的展示字段：解析失败回退文件名，绝不影响可用性判定。
+    }
+    return versionFromJarFileName(jarPath);
+}
 
 ca::StatusOr<DecompilerKind> parseDecompilerKind(const std::string& name)
 {
@@ -726,6 +847,9 @@ DecompilerAvailability inspectDecompiler(DecompilerKind kind,
     result.javaProgram         = discoverJava(request);
     result.artifactAvailable   = !result.decompilerJar.empty() && isRegularFile(result.decompilerJar);
     result.javaAvailable       = isProgramAvailable(result.javaProgram);
+    //版本是 JAR 自报的展示字段：仅在产物确实存在时读取，尽力而为（内部回退
+    //文件名、失败返空），不影响 artifactAvailable/javaAvailable 判定。
+    if (result.artifactAvailable) result.version = decompilerJarVersion(result.decompilerJar);
     if (!result.artifactAvailable) {
         result.unavailableReason = result.name + " JAR was not found";
     }
