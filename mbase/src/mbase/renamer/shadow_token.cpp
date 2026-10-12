@@ -1,6 +1,7 @@
 #include "mbase/renamer/shadow_token.hpp"
 
 #include <algorithm>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -64,10 +65,12 @@ std::string quoted(std::string_view value)
 
 ///类条目按 (Class_ 序号, token) 定位：影子名精确 `Class_<index>`（不规范化，
 ///手滑前导零查无此条 → unknown-handle 响亮报错），token 必须逐字节相等。
-const ShadowAliasEntry* findClassByHandle(const ShadowAliasTable& table,
-                                          const std::string&      index,
-                                          const std::string&      token,
-                                          bool&                   shadowNameExisted)
+///按值返回：findByShadowName 交还临时 vector，存元素指针会悬垂
+///（Linux 实证：解引用读到回收内存，kind 退化为 unknown）。
+std::optional<ShadowAliasEntry> findClassByHandle(const ShadowAliasTable& table,
+                                                  const std::string&      index,
+                                                  const std::string&      token,
+                                                  bool&                   shadowNameExisted)
 {
     const auto shadow = "Class_" + index;
     shadowNameExisted = false;
@@ -80,10 +83,10 @@ const ShadowAliasEntry* findClassByHandle(const ShadowAliasTable& table,
             std::equal(token.begin(),
                        token.end(),
                        entry.token8.data())) {
-            return &entry;
+            return entry;
         }
     }
-    return nullptr;
+    return std::nullopt;
 }
 
 void appendRepairAction(ShadowSlotError error, std::string& text)
@@ -260,9 +263,9 @@ std::optional<ShadowAliasEntry> resolveShadowHandleEntry(const ShadowAliasTable&
         return std::nullopt;
     }
     bool shadowNameExisted = false;
-    const auto* classEntry =
+    const auto classEntry =
         findClassByHandle(table, parts.index, parts.classToken, shadowNameExisted);
-    if (classEntry == nullptr) {
+    if (!classEntry.has_value()) {
         std::string detail = "no class entry matches ${Class_" + parts.index + "." +
                              parts.classToken + "} in the loaded shadow sidecar";
         if (shadowNameExisted) detail += " (class shadow name exists but token mismatches)";
