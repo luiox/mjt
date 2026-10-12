@@ -43,6 +43,10 @@ target("mjt-mcp")
     add_rules("mjt.win_utf8_manifest")
 
     add_deps("mjt_mcp_core", "mjt_shared")
+    -- GNU ld 单遍从左到右扫描归档：binary 必须显式给全静态闭包（消费者在前、
+    -- 被依赖在后），否则 auto 排序把 libca 包归档排到 mjt_shared 前，链接期
+    -- 报 ca::process 等符号 undefined（Linux CI 实证）。闭包序与 unittest 同款。
+     mjt_binary_link_closure("mjt_mcp_core", "mjt_shared", "mbase", "libjhasm", "libjblw", "libjbytecode_util", "libjbytecode_commons", "libjbytecode_analysis", "libjbytecode_tree", "libjbytecode_core", "libgarena", "libjclassfile", "libjstr", "libjzip")
     add_files("mcp/src/main.cpp")
 
     set_rundir("$(projectdir)")
