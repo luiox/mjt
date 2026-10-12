@@ -1,0 +1,569 @@
+#include "parser.hpp"
+
+#include <limits>
+#include <unordered_set>
+#include <utility>
+
+#include "limits.hpp"
+
+namespace mjt::mcp::detail {
+
+using mjt::base::workspace::ClassMutation;
+using mjt::base::workspace::ClassMutationKind;
+using mjt::base::workspace::ConstantKind;
+using mjt::base::workspace::ConstantSpec;
+using mjt::base::workspace::HandleSpec;
+using mjt::base::workspace::InstructionKind;
+using mjt::base::workspace::JarRepairRequest;
+using mjt::base::workspace::MutationRequest;
+using mjt::base::workspace::PipelineRequest;
+using mjt::base::workspace::RenameKind;
+using mjt::base::workspace::RenameRequest;
+using mjt::base::workspace::SearchMatchMode;
+using mjt::base::workspace::SearchOptions;
+using mjt::base::workspace::WorkflowReferenceKind;
+using mjt::base::workspace::WorkflowReferenceQuery;
+
+bool parseSearchOptions(const Json& arguments, SearchOptions& output, std::string& error)
+{
+    const auto mode = arguments.value("match_mode", std::string{"contains"});
+    if (mode == "contains") output.matchMode = SearchMatchMode::Contains;
+    else if (mode == "exact") output.matchMode = SearchMatchMode::Exact;
+    else if (mode == "regex") output.matchMode = SearchMatchMode::Regex;
+    else {
+        error = "match_mode must be contains, exact or regex";
+        return false;
+    }
+    output.caseSensitive = arguments.value("case_sensitive", false);
+    output.owner = arguments.value("owner", std::string{});
+    output.packagePrefix = arguments.value("package_prefix", std::string{});
+    output.memberKind = arguments.value("member_kind", std::string{});
+    output.opcode = arguments.value("opcode", -1);
+    return true;
+}
+
+
+MutationRequest mutationRequest(const Json& arguments)
+{
+    MutationRequest request;
+    if (arguments.contains("expected_revision")) {
+        //schema 层（contract.cpp mutationOptions）已带 minimum: 0；此处为运行时最后
+        //防线：负数经 get<ca::u64> 会静默回绕成巨大无符号值，浮点/字符串不能按
+        //revision 解释，必须显式拒绝。接受 unsigned 或非负 signed（C++ 内部构造的
+        //非负 int 是 signed，不能误伤）。抛 Json::exception 由 service.call 统一
+        //映射为 INVALID_ARGUMENT。
+        const auto& revision = arguments.at("expected_revision");
+        const bool nonNegativeInteger =
+            revision.is_number_unsigned() ||
+            (revision.is_number_integer() && revision.get<ca::i64>() >= 0);
+        if (!nonNegativeInteger) {
+            throw Json::type_error::create(
+                302, "expected_revision must be a non-negative integer", nullptr);
+        }
+        request.expectedRevision = revision.get<ca::u64>();
+    }
+    request.dryRun = arguments.value("dry_run", false);
+    request.label = arguments.value("label", std::string{});
+    return request;
+}
+
+bool parseHandle(const Json& value, HandleSpec& output, std::string& error)
+{
+    if (!value.is_object()) {
+        error = "handle must be an object";
+        return false;
+    }
+    output.tag                = value.value("tag", 0);
+    output.owner              = value.value("owner", std::string{});
+    output.name               = value.value("name", std::string{});
+    output.descriptor         = value.value("descriptor", std::string{});
+    output.interfaceReference = value.value("interface", false);
+    return true;
+}
+
+bool parseConstant(const Json& value, ConstantSpec& output, std::string& error,
+                   ca::usize depth = 0)
+{
+    if (!value.is_object()) {
+        error = "constant must be an object";
+        return false;
+    }
+    if (depth > kMaximumConstantDynamicDepth) {
+        error = "constant dynamic nesting exceeds 8";
+        return false;
+    }
+    const auto kind = value.value("kind", std::string{});
+    if (kind == "string") output.kind = ConstantKind::String;
+    else if (kind == "int") output.kind = ConstantKind::Integer;
+    else if (kind == "long") output.kind = ConstantKind::Long;
+    else if (kind == "float") output.kind = ConstantKind::Float;
+    else if (kind == "double") output.kind = ConstantKind::Double;
+    else if (kind == "type") output.kind = ConstantKind::Type;
+    else if (kind == "handle") output.kind = ConstantKind::Handle;
+    else if (kind == "dynamic") output.kind = ConstantKind::Dynamic;
+    else {
+        error = "unsupported constant kind: " + kind;
+        return false;
+    }
+    output.stringValue = value.value("string_value", std::string{});
+    output.intValue    = value.value("int_value", 0);
+    output.longValue   = value.value("long_value", static_cast<ca::i64>(0));
+    output.floatValue  = value.value("float_value", 0.0F);
+    output.doubleValue = value.value("double_value", 0.0);
+    output.descriptor  = value.value("descriptor", std::string{});
+    output.name        = value.value("name", std::string{});
+    if (value.contains("handle") && !parseHandle(value.at("handle"), output.handle, error))
+        return false;
+    if (value.contains("bootstrap_method") &&
+        !parseHandle(value.at("bootstrap_method"), output.bootstrapMethod, error))
+        return false;
+    if (value.contains("bootstrap_arguments")) {
+        if (!value.at("bootstrap_arguments").is_array()) {
+            error = "bootstrap_arguments must be an array";
+            return false;
+        }
+        for (const auto& argument : value.at("bootstrap_arguments")) {
+            ConstantSpec parsed;
+            if (!parseConstant(argument, parsed, error, depth + 1)) return false;
+            output.bootstrapArguments.push_back(std::move(parsed));
+        }
+    }
+    return true;
+}
+
+bool parseInstruction(const Json& value, mjt::base::workspace::InstructionSpec& output,
+                      std::string& error)
+{
+    if (!value.is_object()) {
+        error = "instruction must be an object";
+        return false;
+    }
+    const auto kind = value.value("kind", std::string("simple"));
+    if (kind == "simple") output.kind = InstructionKind::Simple;
+    else if (kind == "int") output.kind = InstructionKind::Int;
+    else if (kind == "var") output.kind = InstructionKind::Var;
+    else if (kind == "type") output.kind = InstructionKind::Type;
+    else if (kind == "field") output.kind = InstructionKind::Field;
+    else if (kind == "method") output.kind = InstructionKind::Method;
+    else if (kind == "jump") output.kind = InstructionKind::Jump;
+    else if (kind == "label") output.kind = InstructionKind::Label;
+    else if (kind == "ldc_string") output.kind = InstructionKind::LdcString;
+    else if (kind == "ldc_int") output.kind = InstructionKind::LdcInt;
+    else if (kind == "ldc_long") output.kind = InstructionKind::LdcLong;
+    else if (kind == "ldc_float") output.kind = InstructionKind::LdcFloat;
+    else if (kind == "ldc_double") output.kind = InstructionKind::LdcDouble;
+    else if (kind == "ldc_type") output.kind = InstructionKind::LdcType;
+    else if (kind == "ldc_handle") output.kind = InstructionKind::LdcHandle;
+    else if (kind == "ldc_dynamic") output.kind = InstructionKind::LdcDynamic;
+    else if (kind == "invokedynamic") output.kind = InstructionKind::InvokeDynamic;
+    else if (kind == "iinc") output.kind = InstructionKind::Iinc;
+    else if (kind == "tableswitch") output.kind = InstructionKind::TableSwitch;
+    else if (kind == "lookupswitch") output.kind = InstructionKind::LookupSwitch;
+    else if (kind == "multianewarray") output.kind = InstructionKind::MultiANewArray;
+    else if (kind == "line") output.kind = InstructionKind::Line;
+    else {
+        error = "unsupported instruction kind: " + kind;
+        return false;
+    }
+    output.opcode = value.value("opcode", -1);
+    output.operand = value.value("operand", 0);
+    output.increment = value.value("increment", 0);
+    output.interfaceInvocation = value.value("interface", false);
+    output.owner = value.value("owner", std::string{});
+    output.name = value.value("name", std::string{});
+    output.descriptor = value.value("descriptor", std::string{});
+    output.stringValue = value.value("string_value", std::string{});
+    output.longValue = value.value("long_value", static_cast<ca::i64>(0));
+    output.floatValue = value.value("float_value", 0.0F);
+    output.doubleValue = value.value("double_value", 0.0);
+    output.label = value.value("label", std::string{});
+    output.defaultLabel = value.value("default_label", std::string{});
+    output.minimum = value.value("minimum", 0);
+    output.maximum = value.value("maximum", -1);
+    output.dimensions = value.value("dimensions", 0);
+    output.line = value.value("line", 0);
+    if (value.contains("labels")) {
+        if (!value.at("labels").is_array()) {
+            error = "instruction labels must be an array";
+            return false;
+        }
+        output.labels = value.at("labels").get<std::vector<std::string>>();
+    }
+    if (value.contains("keys")) {
+        if (!value.at("keys").is_array()) {
+            error = "instruction keys must be an array";
+            return false;
+        }
+        output.keys = value.at("keys").get<std::vector<ca::i32>>();
+    }
+    if (value.contains("handle") && !parseHandle(value.at("handle"), output.handle, error))
+        return false;
+    if (value.contains("bootstrap_method") &&
+        !parseHandle(value.at("bootstrap_method"), output.bootstrapMethod, error))
+        return false;
+    if (value.contains("bootstrap_arguments")) {
+        if (!value.at("bootstrap_arguments").is_array()) {
+            error = "bootstrap_arguments must be an array";
+            return false;
+        }
+        for (const auto& argument : value.at("bootstrap_arguments")) {
+            ConstantSpec parsed;
+            if (!parseConstant(argument, parsed, error)) return false;
+            output.bootstrapArguments.push_back(std::move(parsed));
+        }
+    }
+    return true;
+}
+
+bool parseAccessFlags(const Json& values, mjt::base::workspace::AnnotationTarget target,
+                      ca::i32& output, std::string& error)
+{
+    using O = jbytecode::core::Opcodes;
+    if (!values.is_array()) {
+        error = "access_flags must be an array";
+        return false;
+    }
+    std::unordered_set<std::string> seen;
+    for (const auto& value : values) {
+        if (!value.is_string()) {
+            error = "each access_flags item must be a string";
+            return false;
+        }
+        const auto name = value.get<std::string>();
+        if (!seen.insert(name).second) {
+            error = "duplicate access flag: " + name;
+            return false;
+        }
+        ca::i32 flag = 0;
+        if (name == "public") flag = O::ACC_PUBLIC;
+        else if (name == "private") flag = O::ACC_PRIVATE;
+        else if (name == "protected") flag = O::ACC_PROTECTED;
+        else if (name == "static") flag = O::ACC_STATIC;
+        else if (name == "final") flag = O::ACC_FINAL;
+        else if (name == "synthetic") flag = O::ACC_SYNTHETIC;
+        else if (name == "deprecated") flag = O::ACC_DEPRECATED;
+        else if (target == mjt::base::workspace::AnnotationTarget::Class && name == "super")
+            flag = O::ACC_SUPER;
+        else if (target == mjt::base::workspace::AnnotationTarget::Class && name == "interface")
+            flag = O::ACC_INTERFACE;
+        else if (target == mjt::base::workspace::AnnotationTarget::Class && name == "abstract")
+            flag = O::ACC_ABSTRACT;
+        else if (target == mjt::base::workspace::AnnotationTarget::Class && name == "annotation")
+            flag = O::ACC_ANNOTATION;
+        else if (target == mjt::base::workspace::AnnotationTarget::Class && name == "enum")
+            flag = O::ACC_ENUM;
+        else if (target == mjt::base::workspace::AnnotationTarget::Class && name == "module")
+            flag = O::ACC_MODULE;
+        else if (target == mjt::base::workspace::AnnotationTarget::Class && name == "record")
+            flag = O::ACC_RECORD;
+        else if (target == mjt::base::workspace::AnnotationTarget::Class && name == "sealed")
+            flag = O::ACC_SEALED;
+        else if (target == mjt::base::workspace::AnnotationTarget::Field && name == "volatile")
+            flag = O::ACC_VOLATILE;
+        else if (target == mjt::base::workspace::AnnotationTarget::Field && name == "transient")
+            flag = O::ACC_TRANSIENT;
+        else if (target == mjt::base::workspace::AnnotationTarget::Field && name == "enum")
+            flag = O::ACC_ENUM;
+        else if (target == mjt::base::workspace::AnnotationTarget::Method && name == "synchronized")
+            flag = O::ACC_SYNCHRONIZED;
+        else if (target == mjt::base::workspace::AnnotationTarget::Method && name == "bridge")
+            flag = O::ACC_BRIDGE;
+        else if (target == mjt::base::workspace::AnnotationTarget::Method && name == "varargs")
+            flag = O::ACC_VARARGS;
+        else if (target == mjt::base::workspace::AnnotationTarget::Method && name == "native")
+            flag = O::ACC_NATIVE;
+        else if (target == mjt::base::workspace::AnnotationTarget::Method && name == "abstract")
+            flag = O::ACC_ABSTRACT;
+        else if (target == mjt::base::workspace::AnnotationTarget::Method && name == "strict")
+            flag = O::ACC_STRICT;
+        else {
+            error = "access flag is not valid for this target: " + name;
+            return false;
+        }
+        output |= flag;
+    }
+    return true;
+}
+
+bool parseMutation(const Json& arguments, ClassMutation& mutation, std::string& error)
+{
+    mutation.classUri = arguments.value("class_uri", std::string{});
+    const auto kind = arguments.value("kind", std::string{});
+    static const std::array<std::pair<const char*, ClassMutationKind>, 15> kinds = {{{"set_class_access", ClassMutationKind::SetClassAccess},
+                                                                                      {"set_field_access", ClassMutationKind::SetFieldAccess},
+                                                                                      {"set_method_access", ClassMutationKind::SetMethodAccess},
+                                                                                      {"add_field", ClassMutationKind::AddField},
+                                                                                      {"remove_field", ClassMutationKind::RemoveField},
+                                                                                      {"add_method", ClassMutationKind::AddMethod},
+                                                                                      {"remove_method", ClassMutationKind::RemoveMethod},
+                                                                                      {"add_marker_annotation", ClassMutationKind::AddMarkerAnnotation},
+                                                                                      {"remove_annotation", ClassMutationKind::RemoveAnnotation},
+                                                                                      {"rename_local", ClassMutationKind::RenameLocal},
+                                                                                      {"replace_try_catch_blocks", ClassMutationKind::ReplaceTryCatchBlocks},
+                                                                                      {"replace_method_body", ClassMutationKind::ReplaceMethodBody},
+                                                                                      {"insert_instruction", ClassMutationKind::InsertInstruction},
+                                                                                      {"replace_instruction", ClassMutationKind::ReplaceInstruction},
+                                                                                      {"remove_instruction", ClassMutationKind::RemoveInstruction}}};
+    const auto it = std::find_if(kinds.begin(), kinds.end(), [&](const auto& item) { return kind == item.first; });
+    if (it == kinds.end()) {
+        error = "unsupported mutation kind: " + kind;
+        return false;
+    }
+    mutation.kind = it->second;
+    mutation.member = {arguments.value("member_name", std::string{}),
+                       arguments.value("member_descriptor", std::string{})};
+    if (arguments.contains("access") && arguments.contains("access_flags")) {
+        error = "access and access_flags are mutually exclusive";
+        return false;
+    }
+    mutation.access = arguments.value("access", 0);
+    if (arguments.contains("access_flags")) {
+        mjt::base::workspace::AnnotationTarget accessTarget;
+        if (mutation.kind == ClassMutationKind::SetClassAccess)
+            accessTarget = mjt::base::workspace::AnnotationTarget::Class;
+        else if (mutation.kind == ClassMutationKind::SetFieldAccess ||
+                 mutation.kind == ClassMutationKind::AddField)
+            accessTarget = mjt::base::workspace::AnnotationTarget::Field;
+        else if (mutation.kind == ClassMutationKind::SetMethodAccess ||
+                 mutation.kind == ClassMutationKind::AddMethod)
+            accessTarget = mjt::base::workspace::AnnotationTarget::Method;
+        else {
+            error = "access_flags is only valid for access setters and member additions";
+            return false;
+        }
+        if (!parseAccessFlags(arguments.at("access_flags"), accessTarget, mutation.access, error))
+            return false;
+    }
+    mutation.instructionIndex = arguments.value("instruction_index", -1);
+    mutation.insertAfter = arguments.value("insert_after", false);
+    mutation.localIndex = arguments.value("local_index", -1);
+    mutation.localName = arguments.value("local_name", std::string{});
+    mutation.replacementLocalName = arguments.value("replacement_local_name", std::string{});
+    mutation.annotationDescriptor = arguments.value("annotation_descriptor", std::string{});
+    mutation.annotationVisible = arguments.value("annotation_visible", true);
+    const auto annotationTarget = arguments.value("annotation_target", std::string("class"));
+    if (annotationTarget == "class") mutation.annotationTarget = mjt::base::workspace::AnnotationTarget::Class;
+    else if (annotationTarget == "field") mutation.annotationTarget = mjt::base::workspace::AnnotationTarget::Field;
+    else if (annotationTarget == "method") mutation.annotationTarget = mjt::base::workspace::AnnotationTarget::Method;
+    else {
+        error = "unsupported annotation target: " + annotationTarget;
+        return false;
+    }
+    mutation.signature = arguments.value("signature", std::string{});
+    if (arguments.contains("exceptions")) {
+        if (!arguments.at("exceptions").is_array()) {
+            error = "exceptions must be an array";
+            return false;
+        }
+        mutation.exceptions = arguments.at("exceptions").get<std::vector<std::string>>();
+    }
+    if (arguments.contains("field_value")) {
+        mutation.hasFieldValue = true;
+        if (!parseConstant(arguments.at("field_value"), mutation.fieldValue, error)) return false;
+    }
+    if (arguments.contains("existing_labels")) {
+        if (!arguments.at("existing_labels").is_array()) {
+            error = "existing_labels must be an array";
+            return false;
+        }
+        for (const auto& value : arguments.at("existing_labels")) {
+            if (!value.is_object()) {
+                error = "each existing_labels item must be an object";
+                return false;
+            }
+            mutation.existingLabels.push_back(
+                {value.value("id", std::string{}), value.value("instruction_index", -1)});
+        }
+    }
+    if (arguments.contains("instruction") && !parseInstruction(arguments.at("instruction"), mutation.instruction, error))
+        return false;
+    if (arguments.contains("initial_instructions")) {
+        //与兄弟分支（try_catch_blocks 等）一致的类型防御；schema 层通常已拦截。
+        if (!arguments.at("initial_instructions").is_array()) {
+            error = "initial_instructions must be an array";
+            return false;
+        }
+        for (const auto& value : arguments.at("initial_instructions")) {
+            mjt::base::workspace::InstructionSpec spec;
+            if (!parseInstruction(value, spec, error)) return false;
+            mutation.initialInstructions.push_back(std::move(spec));
+        }
+    }
+    if (arguments.contains("try_catch_blocks")) {
+        if (!arguments.at("try_catch_blocks").is_array()) {
+            error = "try_catch_blocks must be an array";
+            return false;
+        }
+        for (const auto& value : arguments.at("try_catch_blocks")) {
+            if (!value.is_object()) {
+                error = "each try_catch_blocks item must be an object";
+                return false;
+            }
+            mutation.tryCatchBlocks.push_back(
+                {value.value("start_instruction", -1),
+                 value.value("end_instruction", -1),
+                 value.value("handler_instruction", -1),
+                 value.value("type", std::string{}),
+                 value.value("start_label", std::string{}),
+                 value.value("end_label", std::string{}),
+                 value.value("handler_label", std::string{})});
+        }
+    }
+    if (arguments.contains("local_variables")) {
+        if (!arguments.at("local_variables").is_array()) {
+            error = "local_variables must be an array";
+            return false;
+        }
+        for (const auto& value : arguments.at("local_variables")) {
+            if (!value.is_object()) {
+                error = "each local_variables item must be an object";
+                return false;
+            }
+            mutation.localVariables.push_back({value.value("name", std::string{}),
+                                               value.value("descriptor", std::string{}),
+                                               value.value("signature", std::string{}),
+                                               value.value("start_label", std::string{}),
+                                               value.value("end_label", std::string{}),
+                                               value.value("index", -1)});
+        }
+    }
+    return true;
+}
+
+bool parseRename(const Json& arguments, RenameRequest& output, std::string& error)
+{
+    const auto kind = arguments.value("kind", std::string{});
+    if (kind == "class") output.kind = RenameKind::Class;
+    else if (kind == "package") output.kind = RenameKind::Package;
+    else if (kind == "field") output.kind = RenameKind::Field;
+    else if (kind == "method") output.kind = RenameKind::Method;
+    else if (kind == "local") output.kind = RenameKind::Local;
+    else {
+        error = "unsupported rename kind: " + kind;
+        return false;
+    }
+    output.owner = arguments.value("owner", std::string{});
+    output.methodName = arguments.value("method_name", std::string{});
+    output.name = arguments.value("name", std::string{});
+    output.descriptor = arguments.value("descriptor", std::string{});
+    output.newName = arguments.value("new_name", std::string{});
+    output.localIndex = arguments.value("local_index", -1);
+    output.cascadeOverrides = arguments.value("cascade_overrides", false);
+    const auto policy = arguments.value("policy", std::string("all"));
+    if (policy == "bytecode") output.policy = mjt::base::RemapPolicy::bytecodeOnly();
+    else if (policy == "reflection") output.policy = mjt::base::RemapPolicy::bytecodeAndReflectionStrings();
+    else if (policy == "metadata") output.policy = mjt::base::RemapPolicy::bytecodeAndMetadata();
+    else if (policy == "all") output.policy = mjt::base::RemapPolicy::all();
+    else {
+        error = "unsupported remap policy: " + policy;
+        return false;
+    }
+    return true;
+}
+
+bool parsePipelineRequest(const Json& arguments, PipelineRequest& output, std::string& error)
+{
+    output.pipeline = arguments.value("pipeline", std::string{});
+    output.jdkPath  = arguments.value("jdk_path", std::string{});
+    if (arguments.contains("passes")) {
+        const auto& passes = arguments.at("passes");
+        if (!passes.is_array()) {
+            error = "passes must be an array of registered pass names";
+            return false;
+        }
+        for (const auto& value : passes) {
+            if (!value.is_string()) {
+                error = "each passes item must be a string";
+                return false;
+            }
+            output.passNames.push_back(value.get<std::string>());
+        }
+    }
+    if (!output.pipeline.empty() && !output.passNames.empty()) {
+        error = "pipeline and passes are mutually exclusive";
+        return false;
+    }
+    return true;
+}
+
+bool parseWorkflowReferences(const Json& arguments, std::vector<WorkflowReferenceQuery>& output,
+                             std::string& error)
+{
+    if (!arguments.contains("references")) return true;
+    const auto& values = arguments.at("references");
+    if (!values.is_array()) {
+        error = "references must be an array";
+        return false;
+    }
+    for (const auto& value : values) {
+        if (!value.is_object()) {
+            error = "each references item must be an object";
+            return false;
+        }
+        WorkflowReferenceQuery query;
+        const auto kind = value.value("kind", std::string{});
+        if (kind == "class") query.kind = WorkflowReferenceKind::Class;
+        else if (kind == "field") query.kind = WorkflowReferenceKind::Field;
+        else if (kind == "method") query.kind = WorkflowReferenceKind::Method;
+        else {
+            error = "unsupported workflow reference kind: " + kind;
+            return false;
+        }
+        query.owner = value.value("owner", std::string{});
+        query.name = value.value("name", std::string{});
+        query.descriptor = value.value("descriptor", std::string{});
+        output.push_back(std::move(query));
+    }
+    return true;
+}
+
+bool parseWorkflowDecompileClasses(const Json& arguments, std::vector<std::string>& output,
+                                   bool& batch, std::string& error)
+{
+    const auto single = arguments.value("decompile_class", std::string{});
+    batch = arguments.contains("decompile_classes");
+    if (!batch) {
+        if (!single.empty()) output.push_back(single);
+        return true;
+    }
+    if (!single.empty()) {
+        error = "decompile_class and decompile_classes are mutually exclusive";
+        return false;
+    }
+    const auto& values = arguments.at("decompile_classes");
+    if (!values.is_array()) {
+        error = "decompile_classes must be an array";
+        return false;
+    }
+    if (values.empty() || values.size() > kMaximumWorkflowDecompileClasses) {
+        error = "decompile_classes must contain between 1 and " +
+                std::to_string(kMaximumWorkflowDecompileClasses) + " class names";
+        return false;
+    }
+    for (const auto& value : values) {
+        if (!value.is_string() || value.get<std::string>().empty()) {
+            error = "each decompile_classes item must be a non-empty string";
+            return false;
+        }
+        output.push_back(value.get<std::string>());
+    }
+    return true;
+}
+
+bool parseJarRepairRequest(const Json& arguments, JarRepairRequest& output, std::string& error)
+{
+    const auto parseFlag = [&](const char* name, bool& target) {
+        if (!arguments.contains(name)) return true;
+        const auto& value = arguments.at(name);
+        if (!value.is_boolean()) {
+            error = std::string(name) + " must be a boolean";
+            return false;
+        }
+        target = value.get<bool>();
+        return true;
+    };
+    return parseFlag("remove_invalid_class_entries", output.removeInvalidClassEntries) &&
+           parseFlag("remove_corrupt_output_markers", output.removeCorruptOutputMarkers);
+}
+
+}   //namespace mjt::mcp::detail
