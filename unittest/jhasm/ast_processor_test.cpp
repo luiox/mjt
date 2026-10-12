@@ -102,7 +102,7 @@ TEST(JhasmASTProcessorTest, ReportsInvalidModifiersAndInstructions)
 
 TEST(JhasmASTProcessorTest, ProcessesAllUpstreamLegalJvmFixtures)
 {
-    const std::filesystem::path root = "libs/libjhasm/test_resource/jasm";
+    const std::filesystem::path root = "unittest/jhasm/test_resource/jasm";
     ASSERT_TRUE(std::filesystem::exists(root));
     ca::usize count = 0;
     for (const auto& entry : std::filesystem::directory_iterator(root)) {

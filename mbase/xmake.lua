@@ -1,7 +1,6 @@
 target("mbase")
     set_kind("static")
-     add_deps("libjhasm")
-     add_packages("libjstd")
+     add_packages("libjhasm", "libjstd")
      add_packages("libjbytecode", {public = true})
      add_packages("libjstr", {public = true})
      add_packages("libjzip", {public = true})

@@ -26,4 +26,45 @@ target("libjdk_finder_unittest")
         add_syslinks("pthread")
     end
 
+target("libjhasm_unittest")
+    set_kind("binary")
+    set_group("unittest")
+    set_default(false)
+
+    add_deps("test_helper")
+    add_packages("libjhasm", "libjbytecode", "libca")
+    -- libjhasm → libjblw → libjbytecode 聚合库（实现分散在子库），须逐个补齐；
+    -- libjhasm/libjblw/libjdk_finder 已包化，保留在闭包里维持 GNU ld 消费者在前。
+     mjt_binary_link_closure("libjhasm", "libjblw", "libjbytecode_util", "libjbytecode_commons", "libjbytecode_analysis", "libjbytecode_tree", "libjbytecode_core", "libgarena", "libjstr", "test_helper", "libjdk_finder")
+    add_packages("gtest")
+    add_files("jhasm/main.cpp", "jhasm/*_test.cpp")
+    add_includedirs("jhasm")
+    set_rundir("$(projectdir)")
+    if is_plat("windows") then
+        add_cxflags("/utf-8", {tools = "cl"})
+    end
+    if is_plat("linux") then
+        add_syslinks("pthread")
+    end
+
+target("libjblw_unittest")
+    set_kind("binary")
+    set_group("unittest")
+    set_default(false)
+
+    add_deps("test_helper")
+    add_packages("libjblw", "libjbytecode", "libca")
+    -- libjblw 依赖 libjbytecode 聚合库，须逐个补齐子库。
+     mjt_binary_link_closure("libjblw", "libjbytecode_util", "libjbytecode_commons", "libjbytecode_analysis", "libjbytecode_tree", "libjbytecode_core", "libgarena", "libjstr", "test_helper", "libjdk_finder")
+    add_packages("gtest")
+    add_files("jblw/main.cpp", "jblw/*_test.cpp")
+    add_includedirs("jblw")
+    set_rundir("$(projectdir)")
+    if is_plat("windows") then
+        add_cxflags("/utf-8", {tools = "cl"})
+    end
+    if is_plat("linux") then
+        add_syslinks("pthread")
+    end
+
 end
