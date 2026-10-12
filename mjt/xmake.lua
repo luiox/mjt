@@ -7,7 +7,8 @@ target("mjt_shared")
         add_cxflags("/utf-8", {tools = "cl"})
     end
 
-     add_deps("mbase", "libjhasm")
+    add_deps("mbase")
+    add_packages("libjhasm")
 
     add_includedirs("src", {public = true})
 
