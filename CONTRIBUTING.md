@@ -45,6 +45,19 @@ must stay pinned to the same `LUIOX_LIBCA_VERSION`.
 Bumping `libca` means changing the single `LUIOX_LIBCA_VERSION` constant in `xmake.lua`,
 after checking that the nested `add_requireconfs` paths still match the new package layout.
 
+## The `mbase/` fork
+
+`mbase/` is an open-source fork of the `mbase` layer of the morpher monorepo, and it
+is the only actively maintained surface of the legacy (libjbytecode-based) stack.
+For external contributions touching `mbase/`:
+
+- Bug fixes are accepted and land here first.
+- Functional additions are rejected — the legacy stack gains no new features.
+- Structural changes should be proposed upstream, against the morpher `mjbase` rewrite.
+
+Full governance (one-way fix flow, sync procedure, end-of-life plan) lives in the
+“mbase 分叉治理” section of [AGENTS.md](AGENTS.md).
+
 ## Commits
 
 Conventional prefixes, scoped: `feat(crypto): …`, `fix(decompiler): …`, `docs(mcp): …`,

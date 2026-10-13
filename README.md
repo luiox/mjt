@@ -36,7 +36,10 @@ xmake build mjt-mcp
 Dependencies are pulled directly from
 [luiox-repo](https://github.com/luiox/luiox-repo): libca, libmcp, libjstr,
 libjbytecode, libjzip, libgarena, libjclassfile; libarchive / zlib /
-nlohmann_json come from [xrepo](https://xmake.io).
+nlohmann_json come from [xrepo](https://xmake.io). Of these, libjbytecode is a
+legacy frozen package (visitor architecture) that has been superseded by libjbc,
+and is consumed here only as the transitional foundation for the in-repo
+`mbase/` layer.
 
 ### Tests
 

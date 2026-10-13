@@ -31,7 +31,8 @@ xmake build mjt-mcp
 
 依赖经 [luiox-repo](https://github.com/luiox/luiox-repo) 直连拉取：libca、libmcp、
 libjstr、libjbytecode、libjzip、libgarena、libjclassfile；libarchive / zlib /
-nlohmann_json 走 [xrepo](https://xmake.io)。
+nlohmann_json 走 [xrepo](https://xmake.io)。其中 libjbytecode 为 legacy 冻结件
+（visitor 架构），已被 libjbc 取代，仅作本仓 `mbase/` 层过渡期的底座。
 
 ### 测试
 
