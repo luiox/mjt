@@ -38,6 +38,26 @@ libarchive / zlib / nlohmann_json），不引入仓内副本、不做 phony 垫�
 它通常应该被删掉而不是留着。**新增依赖必须说明它服务于哪个在用的消费方**；
 没有消费方的模块不进仓。
 
+## mbase 分叉治理
+
+本仓 `mbase/`（253 文件）是 morpher 主仓 `mbase/` 的开源分叉：air/sir/info 已剜除，
+命名空间整体重写为 `mjt::base`。治理规则：
+
+- **分叉身份**：本仓 `mbase/` 是旧栈（libjbytecode 底座）的唯一活跃维护面；公开产品
+  的 mbase bug 就地在本仓修复。
+- **上游关系**：morpher 主仓的 `mbase/` 是冻结快照（mjbase 重写战役的对拍 oracle
+  基线），不接收回流；禁止往 morpher 的 mbase 打补丁。
+- **修复流向（单向）**：本仓修完后，同一修复回流到 morpher 侧的 **mjbase**（重写线），
+  提交注记 `mjt <hash> 同源`。
+- **外部 PR**：触碰 `mbase/` 时接受修复、拒绝功能性新增（旧栈不加功能）；结构性变更
+  应去 morpher 上游提案。
+- **寿命**：mjbase 迁移完成并经 luiox-repo 打包后，本目录整体删除、切换为消费 mjbase
+  包，届时闭包缩为 `mcp/skills/src`。
+- **从 morpher 同步修复**：① 取 morpher 侧修复 diff；② 内容移植到本仓 `mbase/` 对应
+  文件；③ 命名空间重写 `morpher::base` → `mjt::base`（含 namespace 声明与限定名）；
+  ④ 跳过涉及已剜除模块（air/sir/info）的改动，include 按本仓布局调整；⑤ 按构建门
+  流程重跑受影响单测。
+
 ## 提交
 
 - 不提交测试产物与临时文件；提交前 `git status`。
