@@ -1,7 +1,8 @@
 # AGENTS.md
 
-`mjt` 是 JVM 字节码工具单仓：`mjt/` 是产品线（MCP 服务器），`mbase/`、`libs/`、
-`test_helper/` 是共享层。
+`mjt` 是 JVM 字节码工具单仓：`mjt/` 是产品线（MCP 服务器），`test_helper/` 是
+共享测试层，`mbase/` 是携带的 mbase 分叉（治理规则见下文，mjbase 覆盖日退役）。
+无仓内 `libs/` 共享层：外部依赖全部经 luiox-repo 中心包仓直连。
 
 ## 命令
 
