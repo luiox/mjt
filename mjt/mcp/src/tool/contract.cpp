@@ -474,6 +474,13 @@ Json toolsList()
               {"limit",
                {{"type", "integer"}, {"minimum", 1}, {"maximum", kMaximumResourceChunkSize}}}}),
         {"class"}));
+    //libjbc 包消费试点：保真往返校验（解析 → 不触碰写回 → 字节恒等 + 结构摘要）。
+    result.push_back(workspaceTool(
+        "class_fidelity_check",
+        "Parse class with libjbc and verify the untouched parse-write round-trip "
+        "stays byte-identical; returns a structure summary.",
+        {{"class", classSelector}},
+        {"class"}));
     result.push_back(workspaceTool("class_jasm",
                                    "Get normalized complete-class Jasm.",
                                    {{"class", classSelector}},
