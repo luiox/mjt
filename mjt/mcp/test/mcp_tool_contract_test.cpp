@@ -22,7 +22,8 @@ TEST(McpServerTest, PublishesFrozenCanonicalToolSchemas)
     ASSERT_TRUE(tools.is_array());
 
     const std::vector<std::string> expectedNames = {
-        "analysis_evaluate", "analysis_workflow", "class_bytes", "class_get",
+        "analysis_evaluate", "analysis_workflow", "class_bytes",
+        "class_fidelity_check", "class_get",
         "class_jasm", "class_list", "class_relations", "class_source",
         "decompiler_compare", "decompiler_decompile", "decompiler_list",
         "decompiler_settings_get", "decompiler_settings_set", "jar_diff",

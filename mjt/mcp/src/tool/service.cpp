@@ -1,6 +1,7 @@
 #include "service.hpp"
 
 #include "contract.hpp"
+#include "fidelity.hpp"
 #include "job.hpp"
 #include "json.hpp"
 
@@ -109,6 +110,7 @@ Json McpToolService::callLocked(const std::string& name, const Json& arguments, 
     if (auto result = callWorkspaceQueryTool(name, arguments, current)) return std::move(*result);
     if (auto result = callDecompilerTool(name, arguments, current)) return std::move(*result);
     if (auto result = callMutationTool(name, arguments, current)) return std::move(*result);
+    if (auto result = callFidelityTool(name, arguments, current)) return std::move(*result);
     return toolError("unknown tool: " + name);
 }
 
