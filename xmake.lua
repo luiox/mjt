@@ -167,14 +167,12 @@ add_requireconfs("libjhasm.libjblw.libjbytecode.libca",  {version = LUIOX_LIBCA_
 -- i18n/resources 构建规则内嵌（.lang add_files 规则，包安装产物不带规则）。
 includes("xmake/libca_rules.lua")
 
-includes("test_helper")
-includes("mbase")
-includes("mjt")
-includes("unittest")
-
 -- 过渡形态：mjbase 以源码级依赖接入（默认兄弟目录 ../mjbase），供 mcp 与
 -- mjt-py 从 mbase 切到 mjbase 的本地验证使用。mjbase 打包进 luiox-repo 后
 -- 改为 add_requires("mjbase") 消费，本段随之删除。
+--
+-- 必须在 includes("mjt") 之前：mjt 的 target 要在配置期就能引用 mjbase，
+-- 且需要下面的 MJBASE_ENABLED 判断共存链接。
 option("mjbase_root")
     set_default("../mjbase")
     set_showmenu(true)
@@ -182,6 +180,13 @@ option("mjbase_root")
 option_end()
 
 local mjbase_root = get_config("mjbase_root")
-if mjbase_root and mjbase_root ~= "" and os.isdir(path.join(os.projectdir(), mjbase_root)) then
+MJBASE_ENABLED = mjbase_root and mjbase_root ~= ""
+                 and os.isdir(path.join(os.projectdir(), mjbase_root))
+if MJBASE_ENABLED then
     includes(path.join(mjbase_root, "mjbase"))
 end
+
+includes("test_helper")
+includes("mbase")
+includes("mjt")
+includes("unittest")
