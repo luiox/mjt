@@ -2,7 +2,11 @@
 
 #include <string>
 
-#include "mbase/renamer/shadow_alias.hpp"
+//切换期：renamer 走 mjbase（std::string/string_view 面），其余模块仍走 mbase；
+//两栈命名空间不冲突，可同时链接。本文件是 mjt 命令层的 std::string 桥接面，
+//切换对消费方（mutation/query/shadow_slot/class_render）零 API 变动。
+#include "libca/str/utf8_string.hpp"
+#include "mjbase/renamer/shadow_alias.hpp"
 
 namespace mjt {
 
@@ -27,8 +31,8 @@ inline ca::str::Utf8StringRef utf8RefOf(const std::string& value)
 ///按 `shadow (原始名)` 并列。
 struct ShadowDisplay
 {
-    mjt::base::ShadowAliasTable table;
-    bool                            enabled = true;  ///< --no-shadow 关闭
+    mjbase::renamer::ShadowAliasTable table;
+    bool                              enabled = true;  ///< --no-shadow 关闭
 
     bool active() const { return enabled && !table.empty(); }
 

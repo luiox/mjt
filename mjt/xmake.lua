@@ -8,6 +8,10 @@ target("mjt_shared")
     end
 
     add_deps("mbase")
+    -- 共存期：逐文件从 mbase 切到 mjbase，本 target 同时挂两栈。
+    if MJBASE_ENABLED then
+        add_deps("mjbase")
+    end
     add_packages("libjhasm")
 
     add_includedirs("src", {public = true})

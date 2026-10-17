@@ -7,12 +7,18 @@
 
 #include "libca/fs/file_util.hpp"
 #include "libca/i18n/i18n.hpp"
-#include "mbase/jar/jar_reader.hpp"
-#include "mbase/model/resource_io.hpp"
-#include "mbase/model/resource_helper.hpp"
+#include "mjbase/jar/jar_reader.hpp"
+#include "mjbase/model/resource_helper.hpp"
 #include "libca/core/tag_cast.hpp"
 
-using namespace mjt::base;
+//切换期：底座走 mjbase（model/jar），两栈命名空间不冲突，可同时链接。
+namespace mjbjar   = mjbase::jar;
+namespace mjbmodel = mjbase::model;
+
+using mjbmodel::ClassResource;
+using mjbmodel::IResource;
+using mjbmodel::ResourceContainer;
+using mjbmodel::ResourceType;
 
 namespace {
 
@@ -85,7 +91,7 @@ bool importClassDirectory(ResourceContainer& container, const std::string& path,
 //RTTI 已禁用，使用 ca::core::tag_cast::dyn_cast 替代 dynamic_cast
 //注意：ca::core::tag_cast::dyn_cast 只返回 const 指针；需要 mutable 时需用 isa + cast 组合
 
-bool JarContext::open(const std::string& path, const IJarReader::EntryNameDecoder& decoder)
+bool JarContext::open(const std::string& path, const mjbjar::IJarReader::EntryNameDecoder& decoder)
 {
     //入口清空陈旧错误；失败时重置容器，避免半成品残留（二次 open 失败后成功
     //的场景下 error 会返回上一次的消息）。
@@ -102,22 +108,14 @@ bool JarContext::open(const std::string& path, const IJarReader::EntryNameDecode
         return true;
     }
 
-    try {
-        //用 JvmJarReader 打开（兼容损坏 JAR）；decoder 在移动前注入（opt-in
-        //宽容解码，未注入 = 原始字节直通零漂移）。
-        auto reader = std::make_unique<JvmJarReader>(path);
-        if (decoder) reader->setEntryNameDecoder(decoder);
-        ResourceHelper::importFromJar(
-            *static_cast<ResourceContainer*>(container.get()), path, std::move(reader));
-    }
-    catch (const std::exception& e) {
-        lastError_ = ca::i18n::trf("mjt.shared.jctx.err.open_jar_failed", {e.what()}).c_str();
-        container.reset();
-        return false;
-    }
-    catch (...) {
-        //非 std::exception 异常与上面同等处理：报错 + 重置容器，避免半成品残留。
-        lastError_ = ca::i18n::tr("mjt.shared.jctx.err.open_jar_failed_unknown");
+    //mjbase 侧错误走 ModelResult 值语义（不再 throw）：解码回调注入走
+    //importFromJar 的 decoder 重载（内部自建 JvmJarReader 并注入）。
+    auto imported = mjbmodel::ResourceHelper::importFromJar(
+        *static_cast<ResourceContainer*>(container.get()), path, decoder);
+    if (imported.is_err()) {
+        lastError_ = ca::i18n::trf("mjt.shared.jctx.err.open_jar_failed",
+                                   {mjbmodel::to_string(std::move(imported).unwrap_err())})
+                         .c_str();
         container.reset();
         return false;
     }
@@ -136,11 +134,13 @@ void JarContext::visitClasses(
 {
     if (!container) return;
 
-    container->visitResources([&](const std::string& uri, const IResource& res) {
+    //容器 URI 是借用视图（驻留于容器 arena，回调期内有效）；对外回调面用
+    //std::string，这里显式构造临时串，寿命覆盖回调期。
+    container->visitResources([&](std::string_view uri, const IResource& res) {
         if (res.getType() == ResourceType::Class) {
             const auto* cls = ca::core::tag_cast::dyn_cast<const ClassResource>(&res);
             if (cls) {
-                fn(uri, *cls);
+                fn(std::string(uri), *cls);
             }
         }
     });
@@ -153,14 +153,15 @@ void JarContext::transformClasses(std::function<void(const std::string&, ClassRe
     //IResourceContainer 没有直接的 mutable 遍历接口。
     //v1 方案：通过 URI 列表逐个 getResource + cast。
     //由于 dyn_cast 只返回 const，用 isa + cast 组合。
-    container->visitResources([&](const std::string& uri, const IResource& res) {
-        if (res.getType() == ResourceType::Class && ca::core::tag_cast::isa<const ClassResource>(&res)) {
+    container->visitResources([&](std::string_view uri, const IResource& res) {
+        if (res.getType() == ResourceType::Class &&
+            ca::core::tag_cast::isa<const ClassResource>(&res)) {
             auto* raw = container->getResource(uri);
             //getResource 按设计必命中（uri 来自同一容器的遍历），仍做判空防御：
             //失败时跳过而不是对空指针解引用。
             if (raw == nullptr) return;
             auto* cls = ca::core::tag_cast::cast<ClassResource>(raw);
-            fn(uri, *cls);
+            fn(std::string(uri), *cls);
         }
     });
 }

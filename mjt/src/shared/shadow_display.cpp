@@ -9,20 +9,16 @@
 
 #include "libca/i18n/i18n.hpp"
 #include "mbase/cli/output_sink.hpp"
-#include "mbase/mapping/identifier_util.hpp"
-#include "mbase/mapping/shadow_alias_format.hpp"
+#include "mjbase/mapping/identifier_util.hpp"
+#include "mjbase/mapping/shadow_alias_format.hpp"
 
-using mjt::base::IdentifierUtil;
-using ca::str::Utf8String;
+using mjbase::mapping::IdentifierUtil;
 using ca::str::Utf8StringRef;
 
 namespace {
 
-std::string toStd(const Utf8StringRef& value)
-{
-    return value.to_std_string();
-}
-
+///@brief std::string → Utf8StringRef 临时视图：mjbase 的文件路径面仍是
+///Utf8StringRef（路径可能含非 UTF-8 字节，原始字节直通不经 ACP）。
 Utf8StringRef refOf(const std::string& value)
 {
     return Utf8StringRef::from_data(reinterpret_cast<const ca::u8*>(value.data()), value.size());
@@ -51,14 +47,15 @@ std::string internalNameOfUri(const std::string& uri)
 std::string ShadowDisplay::className(const std::string& internalName) const
 {
     if (!active()) return IdentifierUtil::printReadable(internalName);
-    return toStd(table.renderClass(refOf(internalName)));
+    //mjbase 渲染产物按值返回 std::string（旧栈为 Utf8String，需 to_std_string）。
+    return table.renderClass(internalName);
 }
 
 std::string ShadowDisplay::memberName(const std::string& owner, const std::string& name,
                                       const std::string& desc) const
 {
     if (!active()) return IdentifierUtil::printReadable(name);
-    return toStd(table.renderMemberName(refOf(owner), refOf(name), refOf(desc)));
+    return table.renderMemberName(owner, name, desc);
 }
 
 std::string ShadowDisplay::fieldLine(const std::string& owner, const std::string& name,
@@ -81,7 +78,7 @@ std::string ShadowDisplay::member(const std::string& owner, const std::string& n
         return IdentifierUtil::printReadable(owner) + "." + IdentifierUtil::printReadable(name) +
                ":" + IdentifierUtil::printReadable(desc);
     }
-    return toStd(table.renderMember(refOf(owner), refOf(name), refOf(desc)));
+    return table.renderMember(owner, name, desc);
 }
 
 std::string ShadowDisplay::memberText(const std::string& composed) const
@@ -111,7 +108,7 @@ ShadowDisplay loadShadowDisplay(const std::string& jarPath, const std::string& e
     std::error_code ec;
     if (!std::filesystem::exists(path, ec)) return display;
 
-    auto mappings = mjt::base::readShadowAliasFile(refOf(path));
+    auto mappings = mjbase::mapping::readShadowAliasFile(refOf(path));
     if (mappings.is_err()) {
         auto       error = std::move(mappings).unwrap_err();
         mjt::base::cli::err().printf(
@@ -121,20 +118,16 @@ ShadowDisplay loadShadowDisplay(const std::string& jarPath, const std::string& e
                 .c_str());
         return display;
     }
-    display.table = mjt::base::ShadowAliasTable::fromMapping(std::move(mappings).unwrap());
+    display.table = mjbase::renamer::ShadowAliasTable::fromMapping(std::move(mappings).unwrap());
     return display;
 }
 
 std::string rewriteJasmForDisplay(const ShadowDisplay& display, const std::string& jasmText,
                                   const std::string& ownerClass)
 {
-    return mjt::base::rewriteJasmForDisplay(
-               Utf8String::from_data(reinterpret_cast<const ca::u8*>(jasmText.data()),
-                                     jasmText.size()),
-               display.table,
-               refOf(ownerClass))
-        .ref()
-        .to_std_string();
+    //mjbase 侧入参/产物都是 std::string_view/std::string，不再需要
+    //Utf8String 中转与 .ref().to_std_string() 回传。
+    return mjbase::renamer::rewriteJasmForDisplay(jasmText, display.table, ownerClass);
 }
 
 }   //namespace mjt
