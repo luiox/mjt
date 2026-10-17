@@ -5,10 +5,10 @@
 #include <mutex>
 #include <utility>
 
-#include "mbase/expr/expr_eval.hpp"
-#include "mbase/expr/expr_parser.hpp"
-#include "mbase/expr/expr_print.hpp"
-#include "mbase/expr/expr_simplify.hpp"
+#include "mjbase/expr/expr_eval.hpp"
+#include "mjbase/expr/expr_parser.hpp"
+#include "mjbase/expr/expr_print.hpp"
+#include "mjbase/expr/expr_simplify.hpp"
 #include "decompiler_support.hpp"
 #include "job.hpp"
 #include "json.hpp"
@@ -40,14 +40,14 @@ Json evaluateExpression(const Json& arguments, std::string& error)
     }
 
     std::string parseError;
-    auto expression = mjt::expr::parseExpression(text, &parseError);
+    auto expression = mjbase::expr::parseExpression(text, &parseError);
     if (!expression) {
         error = "cannot parse expression: " + parseError;
         return Json();
     }
-    if (simplify) expression = mjt::expr::simplify(expression).simplified;
+    if (simplify) expression = mjbase::expr::simplify(expression).simplified;
 
-    mjt::expr::VarBindings bindings;
+    mjbase::expr::VarBindings bindings;
     if (arguments.contains("bindings")) {
         const auto& values = arguments.at("bindings");
         if (!values.is_object()) {
@@ -65,10 +65,10 @@ Json evaluateExpression(const Json& arguments, std::string& error)
                     error = "binding '" + name + "' exceeds the signed 64-bit range";
                     return Json();
                 }
-                bindings.emplace(name, mjt::expr::ExprValue(static_cast<ca::i64>(number)));
+                bindings.emplace(name, mjbase::expr::ExprValue(static_cast<ca::i64>(number)));
             }
             else {
-                bindings.emplace(name, mjt::expr::ExprValue(value.get<ca::i64>()));
+                bindings.emplace(name, mjbase::expr::ExprValue(value.get<ca::i64>()));
             }
         }
     }
@@ -97,9 +97,9 @@ Json evaluateExpression(const Json& arguments, std::string& error)
             maximumDepth = static_cast<ca::u32>(number);
         }
     }
-    auto result = mjt::expr::eval(*expression, bindings, maximumDepth);
+    auto result = mjbase::expr::eval(*expression, bindings, maximumDepth);
     Json output = {{"expression", text},
-                   {"normalized", mjt::expr::toSExpr(*expression)},
+                   {"normalized", mjbase::expr::toSExpr(*expression)},
                    {"simplified", simplify},
                    {"evaluated", result.ok}};
     if (result.ok)
