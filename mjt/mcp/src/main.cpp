@@ -6,8 +6,8 @@
 #include <iostream>
 #include <string>
 
-#include "mbase/cli/i18n_tables.hpp"
-#include "mbase/log/log_init.hpp"
+#include "mjbase/cli/i18n_tables.hpp"
+#include "mjbase/log/log_init.hpp"
 #include "libca/log/log_macros.hpp"
 
 #include "i18n_mjt_shared_translations.generated.hpp"
@@ -27,9 +27,9 @@ int main(int argc, char* argv[])
 {
     //MCP 是协议文本面,固定英文:共享层错误经 errStatus 在构造时渲染,
     //故进程启动即锁定 en_US(环境变量对 MCP 不生效)。
-    ca::i18n::init({mjt::base::cli::kCliI18nTableSet, kI18nTableSet_mjt_shared}, {"MJT_LANG"});
+    ca::i18n::init({mjbase::cli::kCliI18nTableSet, kI18nTableSet_mjt_shared}, {"MJT_LANG"});
     //诊断统一走 ca::log 门面。
-    mjt::base::log::initDefaultLogger();
+    mjbase::log::initDefaultLogger();
     ca::i18n::set_lang("en_US");
 
     mjt::mcp::HttpOptions options;

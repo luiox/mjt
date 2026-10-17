@@ -10,6 +10,7 @@
 #include "libca/i18n/i18n.hpp"
 
 #include "mbase/i18n.hpp"
+#include "mjbase/cli/output_sink.hpp"
 #include "mbase/jar/jar_util.hpp"
 #include "mbase/jasm/jvm_jasm_service.hpp"
 #include "mbase/model/resource_container.hpp"
@@ -291,14 +292,14 @@ void renderCounts(const CliRunReport&             report,
                   const std::vector<std::string>& changedClasses,
                   const DryRunRequest&            request)
 {
-    cli::out().printf("%s\n",
+    mjbase::cli::out().printf("%s\n",
                       ca::i18n::trf("mjt.cmd.opt.out.dryrun_header",
                                     {request.input.c_str(), request.runMode.c_str()})
                           .c_str());
     for (const auto& slot : stats.slots) {
         const std::string name     = slot.name.empty() ? std::string("(unnamed)") : slot.name;
         const std::string duration = durationField(slot.durationMs);
-        cli::out().printf("%s\n",
+        mjbase::cli::out().printf("%s\n",
                           ca::i18n::trf("mjt.cmd.opt.out.dryrun_pass_line",
                                         {name.c_str(),
                                          slot.scope != nullptr ? slot.scope : "?",
@@ -308,22 +309,22 @@ void renderCounts(const CliRunReport&             report,
                                          duration.c_str()})
                               .c_str());
     }
-    cli::out().printf("%s\n",
+    mjbase::cli::out().printf("%s\n",
                       ca::i18n::trf("mjt.cmd.opt.out.dryrun_classes_line",
                                     {std::to_string(report.processed).c_str(),
                                      std::to_string(changedClasses.size()).c_str(),
                                      std::to_string(report.failed).c_str()})
                           .c_str());
     if (changedClasses.empty()) {
-        cli::out().printf("%s\n", ca::i18n::tr("mjt.cmd.opt.out.dryrun_no_changes"));
+        mjbase::cli::out().printf("%s\n", ca::i18n::tr("mjt.cmd.opt.out.dryrun_no_changes"));
         return;
     }
-    cli::out().printf("%s\n",
+    mjbase::cli::out().printf("%s\n",
                       ca::i18n::trf("mjt.cmd.opt.out.dryrun_changed_header",
                                     {std::to_string(changedClasses.size()).c_str()})
                           .c_str());
     for (const auto& uri : changedClasses) {
-        cli::out().printf("    %s\n", uri.c_str());
+        mjbase::cli::out().printf("    %s\n", uri.c_str());
     }
 }
 
@@ -381,7 +382,7 @@ void renderJson(const CliRunReport&             report,
            "\", \"message\": " + jsonEscapeWrap(report.failureMessage) + "}\n";
     out += "}";
 
-    cli::out().printf("%s\n", out.c_str());
+    mjbase::cli::out().printf("%s\n", out.c_str());
 }
 
 void renderDiff(const CliRunReport&                          report,
@@ -391,7 +392,7 @@ void renderDiff(const CliRunReport&                          report,
                 const std::map<std::string, std::vector<ca::u8>>& beforeBytes,
                 const ResourceContainer&                     pipelineContainer)
 {
-    cli::out().printf("%s\n",
+    mjbase::cli::out().printf("%s\n",
                       ca::i18n::trf("mjt.cmd.opt.out.dryrun_diff_header",
                                     {request.input.c_str(),
                                      request.runMode.c_str(),
@@ -405,7 +406,7 @@ void renderDiff(const CliRunReport&                          report,
     bool        truncated = false;
     auto emit = [&](const std::string& line) {
         if (budget == 0) return false;
-        cli::out().printf("%s\n", line.c_str());
+        mjbase::cli::out().printf("%s\n", line.c_str());
         --budget;
         return true;
     };
@@ -484,13 +485,13 @@ void renderDiff(const CliRunReport&                          report,
     }
 
     if (truncated) {
-        cli::out().printf("%s\n",
+        mjbase::cli::out().printf("%s\n",
                           ca::i18n::trf("mjt.cmd.opt.out.dryrun_diff_truncated",
                                         {std::to_string(request.diffLimit).c_str()})
                               .c_str());
     }
     if (skipped > 0) {
-        cli::out().printf("%s\n",
+        mjbase::cli::out().printf("%s\n",
                           ca::i18n::trf("mjt.cmd.opt.out.dryrun_diff_skipped",
                                         {std::to_string(skipped).c_str()})
                               .c_str());

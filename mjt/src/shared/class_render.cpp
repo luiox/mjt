@@ -8,7 +8,7 @@
 #include <cstdio>
 #include <string>
 
-#include "mbase/cli/output_sink.hpp"
+#include "mjbase/cli/output_sink.hpp"
 #include "mjbase/mapping/identifier_util.hpp"
 #include "mjbase/renamer/shadow_alias.hpp"
 #include "shadow_display.hpp"
@@ -32,7 +32,7 @@
 
 namespace jcm = jclassfile::model;
 using mjbase::mapping::IdentifierUtil;
-using mjt::base::cli::out;
+using mjbase::cli::out;
 
 namespace mjt::render {
 
