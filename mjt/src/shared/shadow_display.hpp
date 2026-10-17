@@ -17,13 +17,6 @@ std::string resolveShadowPath(const std::string& jarPath, const std::string& exp
 ///@brief 资源 URI（`a/b/C.class`）→ class 内部名（`a/b/C`）；无 .class 后缀原样返回。
 std::string internalNameOfUri(const std::string& uri);
 
-///@brief std::string → Utf8StringRef 临时视图（仅在 string 存活期内使用）。
-inline ca::str::Utf8StringRef utf8RefOf(const std::string& value)
-{
-    return ca::str::Utf8StringRef::from_data(reinterpret_cast<const ca::u8*>(value.data()),
-                                             value.size());
-}
-
 ///@brief shadow 显示上下文：命令层渲染适配（显示层统一入口）。
 ///
 ///`active` 为 false（--no-shadow 或 sidecar 空/缺失）时，全部渲染方法

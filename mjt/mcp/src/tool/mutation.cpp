@@ -12,10 +12,10 @@
 #include "shared/shadow_display.hpp"
 #include "tool/shadow_slot.hpp"
 
-#include "mbase/mapping/shadow_alias_format.hpp"
-#include "mbase/model/resource_container.hpp"
-#include "mbase/model/resource_helper.hpp"
-#include "mbase/renamer/shadow_alias.hpp"
+#include "mjbase/mapping/shadow_alias_format.hpp"
+#include "mjbase/model/resource_container.hpp"
+#include "mjbase/model/resource_helper.hpp"
+#include "mjbase/renamer/shadow_alias.hpp"
 
 namespace mjt::mcp {
 
@@ -482,37 +482,44 @@ std::optional<Json> McpToolService::callMutationTool(
         if (!fs::exists(jarPath, fsError)) {
             return toolError("workspace JAR not found: " + jarPath);
         }
-        mjt::base::ResourceContainer container;
-        try {
-            mjt::base::ResourceHelper::importFromJar(container, jarPath);
-        }
-        catch (const std::exception& exception) {
-            return toolError(std::string("import workspace JAR failed: ") + exception.what());
+        mjbase::model::ResourceContainer container;
+        //mjbase 侧导入错误走 ModelResult 值语义，不再 throw。
+        auto imported = mjbase::model::ResourceHelper::importFromJar(container, jarPath);
+        if (imported.is_err()) {
+            return toolError(std::string("import workspace JAR failed: ") +
+                             mjbase::model::to_string(std::move(imported).unwrap_err()));
         }
         const auto utf8Path = [](const std::string& value) {
             return ca::str::Utf8StringRef::from_data(
                 reinterpret_cast<const ca::u8*>(value.data()), value.size());
         };
 
-        mjt::base::ShadowAliasTable table;
+        mjbase::renamer::ShadowAliasTable table;
         const bool sidecarExists = fs::exists(sidecarPath, fsError);
         if (name == "shadow_prune" && !sidecarExists) {
             return toolError("shadow sidecar not found: " + sidecarPath +
                              " (generate it with `shadow_generate` or `mjt shadow -i <jar>`)");
         }
         if (sidecarExists) {
-            auto existing = mjt::base::readShadowAliasFile(utf8Path(sidecarPath));
+            auto existing = mjbase::mapping::readShadowAliasFile(utf8Path(sidecarPath));
             if (existing.is_err()) {
                 return toolError("read shadow sidecar failed: " +
                                  std::move(existing).unwrap_err().message.to_std_string());
             }
-            table = mjt::base::ShadowAliasTable::fromMapping(std::move(existing).unwrap());
+            table = mjbase::renamer::ShadowAliasTable::fromMapping(std::move(existing).unwrap());
         }
 
         if (name == "shadow_generate") {
-            const auto stats = mjt::base::generateMechanicalShadowNames(container, table);
+            //mjbase 侧补号（backfillTokens）随机源失败走 Err，不再抛异常——
+            //已分配的编号仍留在表里，重跑幂等补号。
+            auto generated = mjbase::renamer::generateMechanicalShadowNames(container, table);
+            if (generated.is_err()) {
+                return toolError(std::string("generate shadow names failed: ") +
+                                 std::move(generated).unwrap_err());
+            }
+            const auto stats = std::move(generated).unwrap();
             auto written =
-                mjt::base::writeShadowAliasFile(utf8Path(sidecarPath), table.toMapping());
+                mjbase::mapping::writeShadowAliasFile(utf8Path(sidecarPath), table.toMapping());
             if (written.is_err()) {
                 return toolError("write shadow sidecar failed: " +
                                  std::move(written).unwrap_err().message.to_std_string());
@@ -525,10 +532,10 @@ std::optional<Json> McpToolService::callMutationTool(
                                {"totalEntries", table.size()}});
         }
 
-        const auto removed = mjt::base::pruneShadowAliases(container, table);
+        const auto removed = mjbase::renamer::pruneShadowAliases(container, table);
         if (removed > 0) {
             auto written =
-                mjt::base::writeShadowAliasFile(utf8Path(sidecarPath), table.toMapping());
+                mjbase::mapping::writeShadowAliasFile(utf8Path(sidecarPath), table.toMapping());
             if (written.is_err()) {
                 return toolError("write shadow sidecar failed: " +
                                  std::move(written).unwrap_err().message.to_std_string());

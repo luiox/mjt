@@ -5,8 +5,8 @@
 
 #include <nlohmann/json.hpp>
 
-#include "mbase/renamer/shadow_alias.hpp"
-#include "mbase/renamer/shadow_token.hpp"
+#include "mjbase/renamer/shadow_alias.hpp"
+#include "mjbase/renamer/shadow_token.hpp"
 
 namespace mjt::base::workspace {
 class IWorkspace;
@@ -25,7 +25,7 @@ using Json = nlohmann::json;
 ///loadShadowDisplay 的"schema 错误告警 + 空表继续"失配容忍同口径。
 struct WorkspaceShadowTable
 {
-    mjt::base::ShadowAliasTable table;
+    mjbase::renamer::ShadowAliasTable table;
     bool        present = false;
     std::string path;   ///< 参与判定的 sidecar 路径（诊断用）
     std::string note;   ///< present=false 的原因（absent / invalid: …）

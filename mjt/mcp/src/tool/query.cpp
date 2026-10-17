@@ -12,8 +12,8 @@
 #include "parser.hpp"
 #include "shared/shadow_display.hpp"
 #include "tool/shadow_slot.hpp"
-#include "mbase/mapping/shadow_alias_format.hpp"
-#include "mbase/renamer/shadow_alias.hpp"
+#include "mjbase/mapping/shadow_alias_format.hpp"
+#include "mjbase/renamer/shadow_alias.hpp"
 
 namespace mjt::mcp {
 
@@ -287,7 +287,7 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
             return toolError("shadow sidecar not found: " + sidecarPath +
                              " (generate it with `mjt shadow -i <jar>`)");
         }
-        auto sidecar = mjt::base::readShadowAliasFile(
+        auto sidecar = mjbase::mapping::readShadowAliasFile(
             ca::str::Utf8StringRef::from_data(reinterpret_cast<const ca::u8*>(sidecarPath.data()),
                                               sidecarPath.size()));
         if (sidecar.is_err()) {
@@ -296,11 +296,11 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
             return toolError("read shadow sidecar failed: " + message);
         }
         const auto table =
-            mjt::base::ShadowAliasTable::fromMapping(std::move(sidecar).unwrap());
-        std::vector<mjt::base::ShadowAliasEntry> matches;
-        mjt::base::ShadowSlotResult              handleResult;
+            mjbase::renamer::ShadowAliasTable::fromMapping(std::move(sidecar).unwrap());
+        std::vector<mjbase::renamer::ShadowAliasEntry> matches;
+        mjbase::renamer::ShadowSlotResult              handleResult;
         auto handleEntry =
-            mjt::base::resolveShadowHandleEntry(table, lookupName, handleResult);
+            mjbase::renamer::resolveShadowHandleEntry(table, lookupName, handleResult);
         if (handleEntry.has_value()) {
             //整串 Ref 输入：仅 shadow_to_raw 语义成立（handle → 真名）。
             if (name != "shadow_to_raw") {
@@ -309,41 +309,41 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
             }
             matches.push_back(*handleEntry);
         }
-        else if (handleResult.error != mjt::base::ShadowSlotError::None) {
-            return toolError(handleResult.message.to_std_string());
+        else if (handleResult.error != mjbase::renamer::ShadowSlotError::None) {
+            return toolError(handleResult.message);
         }
         else {
-            matches = (name == "shadow_to_raw")
-                          ? table.findByShadowName(mjt::utf8RefOf(lookupName))
-                          : table.findByRawName(mjt::utf8RefOf(lookupName));
+            matches = (name == "shadow_to_raw") ? table.findByShadowName(lookupName)
+                                                : table.findByRawName(lookupName);
         }
         std::string ownerFilterRaw = ownerFilter;
         if (!ownerFilterRaw.empty()) {
             //owner 过滤槽同 name 槽口径：Ref → 解析为真实名（四分类同源）。
-            const auto ownerForm = mjt::base::parseShadowRef(ownerFilterRaw).form;
-            if (ownerForm == mjt::base::ShadowRefForm::ClassRef ||
-                ownerForm == mjt::base::ShadowRefForm::MemberRef) {
-                mjt::base::ShadowSlotResult ownerResult;
+            const auto ownerForm = mjbase::renamer::parseShadowRef(ownerFilterRaw).form;
+            if (ownerForm == mjbase::renamer::ShadowRefForm::ClassRef ||
+                ownerForm == mjbase::renamer::ShadowRefForm::MemberRef) {
+                mjbase::renamer::ShadowSlotResult ownerResult;
                 const auto ownerEntry =
-                    mjt::base::resolveShadowHandleEntry(table, ownerFilterRaw, ownerResult);
+                    mjbase::renamer::resolveShadowHandleEntry(table, ownerFilterRaw, ownerResult);
                 if (!ownerEntry.has_value()) {
-                    if (ownerResult.error != mjt::base::ShadowSlotError::None)
-                        return toolError(ownerResult.message.to_std_string());
+                    if (ownerResult.error != mjbase::renamer::ShadowSlotError::None)
+                        return toolError(ownerResult.message);
                     return toolError("owner filter must be a raw internal name or a class "
                                      "reference like ${Class_N.token8}");
                 }
-                ownerFilterRaw = ownerEntry->rawName.to_std_string();
+                ownerFilterRaw = std::string(ownerEntry->rawName);
             }
         }
-        auto kindLabelOf = [](mjt::base::ShadowKind kind) {
+        auto kindLabelOf = [](mjbase::renamer::ShadowKind kind) {
             switch (kind) {
-            case mjt::base::ShadowKind::Class: return "class";
-            case mjt::base::ShadowKind::Field: return "field";
-            case mjt::base::ShadowKind::Method: return "method";
+            case mjbase::renamer::ShadowKind::Class: return "class";
+            case mjbase::renamer::ShadowKind::Field: return "field";
+            case mjbase::renamer::ShadowKind::Method: return "method";
             }
             return "unknown";
         };
-        auto toStd = [](ca::str::Utf8StringRef value) { return value.to_std_string(); };
+        //条目字段是表内池的借用视图：进 Json 前统一转 std::string 值。
+        auto toStd = [](std::string_view value) { return std::string(value); };
         Json values = Json::array();
         for (const auto& entry : matches) {
             if (!ownerFilterRaw.empty() && toStd(entry.owner) != ownerFilterRaw) continue;
@@ -353,7 +353,7 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
                           {"name", toStd(entry.rawName)},
                           {"desc", toStd(entry.desc)},
                           {"shadow", toStd(entry.shadowName)}};
-            const auto ref = mjt::base::shadowRefHandleOf(table, entry);
+            const auto ref = mjbase::renamer::shadowRefHandleOf(table, entry);
             if (!ref.empty()) match["ref"] = ref;
             values.push_back(std::move(match));
         }

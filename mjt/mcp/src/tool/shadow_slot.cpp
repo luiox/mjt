@@ -7,20 +7,21 @@
 #include "shared/shadow_display.hpp"
 #include "tool/json.hpp"
 
-#include "mbase/mapping/shadow_alias_format.hpp"
+#include "mjbase/mapping/shadow_alias_format.hpp"
 #include "mbase/workspace/i_workspace.hpp"
 
 namespace mjt::mcp::slot {
 
 namespace {
 
-using mjt::base::ShadowAliasTable;
-using mjt::base::ShadowSlotError;
+using mjbase::renamer::ShadowAliasTable;
+using mjbase::renamer::ShadowSlotError;
 
 ///resolver 结果 → 结构化 toolError（message 已含码字前缀与修复动作）。
-Json errorOf(const mjt::base::ShadowSlotResult& result)
+///mjbase 侧诊断消息是 std::string，旧栈为 Utf8String。
+Json errorOf(const mjbase::renamer::ShadowSlotResult& result)
 {
-    return detail::toolError(result.message.to_std_string());
+    return detail::toolError(result.message);
 }
 
 }   //namespace
@@ -40,7 +41,7 @@ WorkspaceShadowTable loadWorkspaceShadowTable(mjt::base::workspace::IWorkspace& 
         slots.note = "absent: no shadow sidecar at " + slots.path;
         return slots;
     }
-    auto sidecar = mjt::base::readShadowAliasFile(
+    auto sidecar = mjbase::mapping::readShadowAliasFile(
         ca::str::Utf8StringRef::from_data(reinterpret_cast<const ca::u8*>(slots.path.data()),
                                           slots.path.size()));
     if (sidecar.is_err()) {
@@ -64,16 +65,16 @@ bool resolveClassSlot(const WorkspaceShadowTable& slots,
         out.raw = input;
         return true;
     }
-    mjt::base::ShadowSlotQuery query;
-    query.position  = mjt::base::ShadowSlotPosition::Name;
+    mjbase::renamer::ShadowSlotQuery query;
+    query.position  = mjbase::renamer::ShadowSlotPosition::Name;
     query.verifyRaw = verifyRaw;
     const auto result =
-        mjt::base::resolveShadowSlot(slots.table, input, query);
+        mjbase::renamer::resolveShadowSlot(slots.table, input, query);
     if (result.error != ShadowSlotError::None) {
         error = errorOf(result);
         return false;
     }
-    out.raw        = result.raw.to_std_string();
+    out.raw        = result.raw;
     out.fromHandle = result.fromHandle;
     return true;
 }
@@ -107,19 +108,19 @@ bool resolveMemberSlot(const WorkspaceShadowTable& slots,
         out.raw = input;
         return true;
     }
-    mjt::base::ShadowSlotQuery query;
-    query.position  = mjt::base::ShadowSlotPosition::Name;
+    mjbase::renamer::ShadowSlotQuery query;
+    query.position  = mjbase::renamer::ShadowSlotPosition::Name;
     query.member    = true;
     query.owner     = ownerRaw;
     query.descHint  = descHint;
     query.verifyRaw = verifyRaw;
-    const auto result = mjt::base::resolveShadowSlot(slots.table, input, query);
+    const auto result = mjbase::renamer::resolveShadowSlot(slots.table, input, query);
     if (result.error != ShadowSlotError::None) {
         error = errorOf(result);
         return false;
     }
-    out.raw        = result.raw.to_std_string();
-    out.descriptor = result.descriptor.to_std_string();
+    out.raw        = result.raw;
+    out.descriptor = result.descriptor;
     out.fromHandle = result.fromHandle;
     //句柄解析成功但调用方另给了不一致的 desc：调用方输入矛盾（句柄本身
     //有效），按普通参数错误报出，不入四分类（四分类只判解析失败）。
@@ -186,10 +187,10 @@ bool resolveClassUriArgument(mjt::base::workspace::IWorkspace& workspace,
         out = input;
         return true;
     }
-    const auto form = mjt::base::parseShadowRef(input).form;
-    const bool refShaped = form == mjt::base::ShadowRefForm::ClassRef ||
-                           form == mjt::base::ShadowRefForm::MemberRef ||
-                           form == mjt::base::ShadowRefForm::Malformed;
+    const auto form = mjbase::renamer::parseShadowRef(input).form;
+    const bool refShaped = form == mjbase::renamer::ShadowRefForm::ClassRef ||
+                           form == mjbase::renamer::ShadowRefForm::MemberRef ||
+                           form == mjbase::renamer::ShadowRefForm::Malformed;
     const auto slots = loadWorkspaceShadowTable(workspace);
     if (!refShaped) {
         //raw：内部名核表（URI 归一），命中后原样透传（URI 契约零漂移）。
@@ -198,11 +199,9 @@ bool resolveClassUriArgument(mjt::base::workspace::IWorkspace& workspace,
             out = input;
             return true;
         }
-        const auto view = ca::str::Utf8StringRef::from_data(
-            reinterpret_cast<const ca::u8*>(internal.data()), internal.size());
-        if (slots.table.classEntry(view) == nullptr) {
-            error = slotError(mjt::base::shadowSlotErrorCode(
-                                  mjt::base::ShadowSlotError::RawNotFound) +
+        if (slots.table.classEntry(internal) == nullptr) {
+            error = slotError(mjbase::renamer::shadowSlotErrorCode(
+                                  mjbase::renamer::ShadowSlotError::RawNotFound) +
                               std::string(": bare selector '") + input +
                               "' is not registered in the loaded shadow sidecar; do not "
                               "hand-type obfuscated names, fetch the reference with "
