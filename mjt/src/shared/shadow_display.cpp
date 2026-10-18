@@ -1,7 +1,7 @@
 //shadow_display：shadow name 显示层命令侧适配（luiox/）。
 //
 //路径双轨解析 + sidecar 载入 + 渲染便利封装；表本体与生成/清理在
-//mbase/renamer（cmd 与 mcp 共用），本文件只做 mjt 命令层的 std::string 桥接。
+//mjbase/renamer（cmd 与 mcp 共用），本文件只做 mjt 命令层的 std::string 桥接。
 #include "shared/shadow_display.hpp"
 
 #include <cstring>
