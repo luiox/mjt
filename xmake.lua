@@ -190,3 +190,7 @@ includes("test_helper")
 includes("mbase")
 includes("mjt")
 includes("unittest")
+-- mjt-py（with_pysdk 门控；mjbase 基座消费方，须在 mjbase includes 之后）。
+if has_config("with_pysdk") then
+    includes("mjt-py")
+end
