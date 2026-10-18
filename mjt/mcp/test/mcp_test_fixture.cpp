@@ -23,10 +23,10 @@
 #include <mcp/json_rpc.hpp>
 
 #include "mcp_test_support.hpp"
-#include "mbase/jasm/jvm_jasm_service.hpp"
-#include "mbase/model/resource_container.hpp"
-#include "mbase/model/resource_helper.hpp"
-#include "mbase/model/resource_model.hpp"
+#include "mjbase/jasm/jvm_jasm_service.hpp"
+#include "mjbase/model/resource_container.hpp"
+#include "mjbase/model/resource_helper.hpp"
+#include "mjbase/model/resource_model.hpp"
 #include "tool/json.hpp"
 #include "test_helper.hpp"
 
@@ -88,53 +88,53 @@ std::vector<ca::u8> withClassNameAndSignature(const std::vector<ca::u8>& bytes,
 
 std::filesystem::path writeLargeClassListFixture(const std::string& signature)
 {
-    base::jasm::JvmJasmService assembler;
+    mjbase::jasm::JvmJasmService assembler;
     const auto                 sourceName = utf16("LargeClassTemplate.jasm");
     const auto                 source     = utf16(classSourceFor("mcp/large/Template", "1"));
     const auto                 assembled  = assembler.assemble(sourceName.ref(), source.ref());
     if (!assembled.isOk()) throw std::runtime_error("large MCP fixture did not assemble");
 
-    base::ResourceContainer container;
+    mjbase::model::ResourceContainer container;
     for (ca::usize index = 0; index < 210; ++index) {
         const auto internalName = "mcp/large/Subject" + std::to_string(index);
         const auto uri          = internalName + ".class";
         container.addResource(
             uri,
-            std::make_unique<base::ClassResource>(
+            std::make_unique<mjbase::model::ClassResource>(
                 uri, withClassNameAndSignature(assembled.value->bytes, internalName, signature)));
     }
     const auto path = test::getTempOutPath("mjt_mcp_large_class_list_fixture.jar");
-    base::ResourceHelper::exportToJar(container, path.string());
+    mjbase::model::ResourceHelper::exportToJar(container, path.string());
     return path;
 }
 
 std::filesystem::path writeFixture()
 {
-    base::jasm::JvmJasmService assembler;
+    mjbase::jasm::JvmJasmService assembler;
     auto                       sourceName = utf16("Subject.jasm");
     auto                       source = utf16(classSource("1"));
     const auto assembled = assembler.assemble(sourceName.ref(), source.ref());
     if (!assembled.isOk()) throw std::runtime_error("MCP fixture did not assemble");
 
-    base::ResourceContainer container;
+    mjbase::model::ResourceContainer container;
     container.addResource("mcp/Subject.class",
-                          std::make_unique<base::ClassResource>("mcp/Subject.class",
+                          std::make_unique<mjbase::model::ClassResource>("mcp/Subject.class",
                                                                 assembled.value->bytes));
     auto secondName = utf16("Second.jasm");
     auto secondSource = utf16(classSourceFor("mcp/Second", "2"));
     const auto secondAssembled = assembler.assemble(secondName.ref(), secondSource.ref());
     if (!secondAssembled.isOk()) throw std::runtime_error("MCP second fixture did not assemble");
     container.addResource("mcp/Second.class",
-                          std::make_unique<base::ClassResource>("mcp/Second.class",
+                          std::make_unique<mjbase::model::ClassResource>("mcp/Second.class",
                                                                 secondAssembled.value->bytes));
     container.addResource("notice.txt",
-                          std::make_unique<base::UnknownResource>(
+                          std::make_unique<mjbase::model::UnknownResource>(
                               "notice.txt", std::vector<ca::u8>{'m', 'c', 'p', '-', 'f', 'i', 'x', 't', 'u', 'r', 'e'}));
     container.addResource("broken/Invalid.class",
-                          std::make_unique<base::UnknownResource>(
+                          std::make_unique<mjbase::model::UnknownResource>(
                               "broken/Invalid.class", std::vector<ca::u8>{0xCA, 0xFE, 0xBA}));
     const auto path = test::getTempOutPath("mjt_mcp_fixture.jar");
-    base::ResourceHelper::exportToJar(container, path.string());
+    mjbase::model::ResourceHelper::exportToJar(container, path.string());
     return path;
 }
 
@@ -149,25 +149,25 @@ std::filesystem::path writeQuerySupportingFixture()
                         "    }\n"
                         "  }\n"
                         "}\n";
-    base::jasm::JvmJasmService assembler;
+    mjbase::jasm::JvmJasmService assembler;
     auto sourceName = utf16("support/McpLibrary.jasm");
     auto sourceText = utf16(source);
     const auto assembled = assembler.assemble(sourceName.ref(), sourceText.ref());
     if (!assembled.isOk()) throw std::runtime_error("MCP supporting fixture did not assemble");
-    base::ResourceContainer container;
+    mjbase::model::ResourceContainer container;
     container.addResource(
         "support/McpLibrary.class",
-        std::make_unique<base::ClassResource>(
+        std::make_unique<mjbase::model::ClassResource>(
             "support/McpLibrary.class",
             assembled.value->bytes));
     const auto path = test::getTempOutPath("mjt_mcp_query_support.jar");
-    base::ResourceHelper::exportToJar(container, path.string());
+    mjbase::model::ResourceHelper::exportToJar(container, path.string());
     return path;
 }
 
 std::vector<ca::u8> assembleFixtureClass(const std::string& sourceName, const std::string& source)
 {
-    base::jasm::JvmJasmService assembler;
+    mjbase::jasm::JvmJasmService assembler;
     auto                       name = utf16(sourceName + ".jasm");
     auto                       text = utf16(source);
     const auto assembled = assembler.assemble(name.ref(), text.ref());
@@ -292,7 +292,7 @@ std::string longInternalName(std::size_t totalLength)
 ///（mcp/Bulk0..N），作同规模对照基线。
 std::filesystem::path writeBulkLongNameFixture(std::size_t count, std::size_t totalLength)
 {
-    base::jasm::JvmJasmService assembler;
+    mjbase::jasm::JvmJasmService assembler;
     const auto templateAssembled =
         assembler.assemble(utf16("Template.jasm"), utf16(classSourceFor("mcp/Template", "1")));
     if (!templateAssembled.isOk())
@@ -302,9 +302,9 @@ std::filesystem::path writeBulkLongNameFixture(std::size_t count, std::size_t to
     if (!normalAssembled.isOk())
         throw std::runtime_error("long name fixture control class did not assemble");
 
-    base::ResourceContainer container;
+    mjbase::model::ResourceContainer container;
     container.addResource("mcp/Normal.class",
-                          std::make_unique<base::ClassResource>("mcp/Normal.class",
+                          std::make_unique<mjbase::model::ClassResource>("mcp/Normal.class",
                                                                 normalAssembled.value->bytes));
     for (std::size_t index = 0; index < count; ++index) {
         const std::string tag = count > 1 ? "_" + std::to_string(totalLength) + "_" +
@@ -316,12 +316,12 @@ std::filesystem::path writeBulkLongNameFixture(std::size_t count, std::size_t to
         const auto longBytes =
             withClassNameAndSignature(templateAssembled.value->bytes, longName, "");
         const auto uri = longName + ".class";
-        container.addResource(uri, std::make_unique<base::ClassResource>(uri, longBytes));
+        container.addResource(uri, std::make_unique<mjbase::model::ClassResource>(uri, longBytes));
     }
 
     const auto path = test::getTempOutPath("mjt_mcp_long_name_" + std::to_string(count) + "x" +
                                            std::to_string(totalLength) + ".jar");
-    base::ResourceHelper::exportToJar(container, path.string());
+    mjbase::model::ResourceHelper::exportToJar(container, path.string());
     return path;
 }
 
@@ -333,10 +333,10 @@ std::filesystem::path writeLongNameFixture(std::size_t totalLength)
 
 std::filesystem::path writeParityFixture()
 {
-    base::ResourceContainer container;
+    mjbase::model::ResourceContainer container;
     const auto addClass = [&](const std::string& uri, const std::string& source) {
         container.addResource(uri,
-                              std::make_unique<base::ClassResource>(
+                              std::make_unique<mjbase::model::ClassResource>(
                                   uri, assembleFixtureClass(uri, source)));
     };
 
@@ -354,24 +354,24 @@ std::filesystem::path writeParityFixture()
 
     container.addResource(
         "META-INF/MANIFEST.MF",
-        std::make_unique<base::ManifestResource>(base::Manifest::fromBytes(
+        std::make_unique<mjbase::model::ManifestResource>(mjbase::jar::Manifest::fromBytes(
             {'M', 'a', 'n', 'i', 'f', 'e', 's', 't', '-', 'V', 'e', 'r', 's', 'i', 'o', 'n', ':', ' ',
              '1', '.', '0', '\r', '\n', 'M', 'u', 'l', 't', 'i', '-', 'R', 'e', 'l', 'e', 'a', 's', 'e',
              ':', ' ', 't', 'r', 'u', 'e', '\r', '\n', '\r', '\n'})));
     container.addResource("assets/payload.bin",
-                          std::make_unique<base::UnknownResource>(
+                          std::make_unique<mjbase::model::UnknownResource>(
                               "assets/payload.bin", std::vector<ca::u8>{0x00, 0xFE, 0x7F, 0x20, 0xFF}));
     container.addResource(
         "notes/fixture.txt",
-        std::make_unique<base::UnknownResource>(
+        std::make_unique<mjbase::model::UnknownResource>(
             "notes/fixture.txt",
             std::vector<ca::u8>{'p', 'a', 'r', 'i', 't', 'y', ' ', 'f', 'i', 'x', 't', 'u', 'r', 'e'}));
     container.addResource("mcp/parity/Broken.class",
-                          std::make_unique<base::UnknownResource>(
+                          std::make_unique<mjbase::model::UnknownResource>(
                               "mcp/parity/Broken.class", std::vector<ca::u8>{0xCA, 0xFE, 0xBA}));
 
     const auto path = test::getTempOutPath("mjt_mcp_parity_fixture.jar");
-    base::ResourceHelper::exportToJar(container, path.string());
+    mjbase::model::ResourceHelper::exportToJar(container, path.string());
     return path;
 }
 

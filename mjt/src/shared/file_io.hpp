@@ -3,8 +3,8 @@
 //file_io.hpp
 //
 //mjt 共享的小文件读取助手。此前 readTextFile 在 cmd_mapping / jar_remapper
-//各有一份逐字拷贝、readWholeFile 在 xref_cache 还有第三份变体，统一收敛到
-//这里；实现保持与原三份完全一致（binary 模式、失败语义不变）。
+//各有一份逐字拷贝，统一收敛到这里；实现保持与原实现完全一致（binary 模式、
+//失败语义不变）。
 
 #include <filesystem>
 #include <fstream>
@@ -35,7 +35,7 @@ inline constexpr std::streamsize kMaxWholeFileBytes = 256 * 1024 * 1024;
 
 ///@brief 读取文件全部字节。文件不存在、空文件、超过 256 MiB 或读取失败返回空 vector。
 ///
-///与既有 xref_cache 语义一致：调用方以"空值"判定不可用。
+///调用方以"空值"判定不可用。
 inline std::vector<ca::u8> readWholeFile(const std::filesystem::path& path)
 {
     std::ifstream in(path, std::ios::binary | std::ios::ate);

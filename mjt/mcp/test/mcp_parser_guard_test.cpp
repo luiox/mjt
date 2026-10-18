@@ -42,7 +42,7 @@ TEST(McpParserGuardTest, MutationRequestAcceptsNonNegativeIntegerRevision)
 
     //缺省：保留 kAnyRevision 语义。
     auto absent = mutationRequest(Json::object());
-    EXPECT_EQ(mjt::base::workspace::kAnyRevision, absent.expectedRevision);
+    EXPECT_EQ(mjbase::workspace::kAnyRevision, absent.expectedRevision);
 }
 
 TEST(McpParserGuardTest, ParseCursorRejectsNonStringCursor)

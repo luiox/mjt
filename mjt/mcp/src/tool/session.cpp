@@ -5,19 +5,20 @@
 #include <mutex>
 #include <utility>
 
-#include "mbase/expr/expr_eval.hpp"
-#include "mbase/expr/expr_parser.hpp"
-#include "mbase/expr/expr_print.hpp"
-#include "mbase/expr/expr_simplify.hpp"
+#include "mjbase/expr/expr_eval.hpp"
+#include "mjbase/expr/expr_parser.hpp"
+#include "mjbase/expr/expr_print.hpp"
+#include "mjbase/expr/expr_simplify.hpp"
 #include "decompiler_support.hpp"
 #include "job.hpp"
 #include "json.hpp"
+#include "shared/status_convert.hpp"
 #include "limits.hpp"
 
 namespace mjt::mcp {
 
 using namespace detail;
-using mjt::base::workspace::IWorkspace;
+using mjbase::workspace::IWorkspace;
 
 namespace {
 
@@ -40,14 +41,14 @@ Json evaluateExpression(const Json& arguments, std::string& error)
     }
 
     std::string parseError;
-    auto expression = mjt::expr::parseExpression(text, &parseError);
+    auto expression = mjbase::expr::parseExpression(text, &parseError);
     if (!expression) {
         error = "cannot parse expression: " + parseError;
         return Json();
     }
-    if (simplify) expression = mjt::expr::simplify(expression).simplified;
+    if (simplify) expression = mjbase::expr::simplify(expression).simplified;
 
-    mjt::expr::VarBindings bindings;
+    mjbase::expr::VarBindings bindings;
     if (arguments.contains("bindings")) {
         const auto& values = arguments.at("bindings");
         if (!values.is_object()) {
@@ -65,10 +66,10 @@ Json evaluateExpression(const Json& arguments, std::string& error)
                     error = "binding '" + name + "' exceeds the signed 64-bit range";
                     return Json();
                 }
-                bindings.emplace(name, mjt::expr::ExprValue(static_cast<ca::i64>(number)));
+                bindings.emplace(name, mjbase::expr::ExprValue(static_cast<ca::i64>(number)));
             }
             else {
-                bindings.emplace(name, mjt::expr::ExprValue(value.get<ca::i64>()));
+                bindings.emplace(name, mjbase::expr::ExprValue(value.get<ca::i64>()));
             }
         }
     }
@@ -97,9 +98,9 @@ Json evaluateExpression(const Json& arguments, std::string& error)
             maximumDepth = static_cast<ca::u32>(number);
         }
     }
-    auto result = mjt::expr::eval(*expression, bindings, maximumDepth);
+    auto result = mjbase::expr::eval(*expression, bindings, maximumDepth);
     Json output = {{"expression", text},
-                   {"normalized", mjt::expr::toSExpr(*expression)},
+                   {"normalized", mjbase::expr::toSExpr(*expression)},
                    {"simplified", simplify},
                    {"evaluated", result.ok}};
     if (result.ok)
@@ -225,7 +226,10 @@ std::optional<Json> McpToolService::callSessionTool(const std::string& name, con
                              "); close one first");
         auto instance = std::make_unique<mjt::JarWorkspace>();
         const auto status = instance->openJar(path);
-        if (status.is_err()) return toolError("open workspace failed", &status);
+        if (status.is_err()) {
+            const auto err = shared::toCaStatus(status.unwrap_err());
+            return toolError("open workspace failed", &err);
+        }
         auto id = arguments.value("workspace_id", std::string{});
         if (id.empty()) id = nextWorkspaceId();
         if (workspaces_.find(id) != workspaces_.end()) return toolError("workspace already exists: " + id);

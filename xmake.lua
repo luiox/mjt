@@ -42,6 +42,17 @@ function mjt_binary_link_closure(...)
     end
 end
 
+-- mjbase 单测闭包（与 mjbase 仓同名实现；本仓不编 mjbase_unittest，
+-- 但 mjbase/mjbase/xmake.lua 在 with_tests 下会引用它）。
+function mjbase_binary_link_closure(...)
+    local libs = {...}
+    local unpack = table.unpack or unpack
+    add_links(unpack(libs))
+    if is_plat("linux") then
+        add_linkgroups(unpack(libs))
+    end
+end
+
 -- 禁用 RTTI：dynamic_cast 替换为 typed::cast<T>()。
 if is_plat("windows") then
     add_cxflags("/GR-", {tools = "cl"})
@@ -96,7 +107,7 @@ if has_config("with_tests") then
     add_requires("gtest")
 end
 
--- libarchive：mbase ZipUtil 的跨平台解压后端。
+-- libarchive：mjbase model 资源导入导出的跨平台解包后端（tar/xz/gz/zst）。
 -- 本地覆盖包（xmake/repo/packages/l/libarchive/xmake.lua）规避官方包在
 -- Linux 漏传 POSIX_REGEX_LIB=NONE 导致的编译失败。
 add_repositories("mjt-repo xmake/repo")
@@ -110,7 +121,7 @@ add_repositories("luiox-repo https://github.com/luiox/luiox-repo.git")
 -- 家族包内声明的 libca 依赖无版本约束且是小模块超集（core,str,log,crypto,zip），
 -- 放任自解析会多出实例；消费方目标同名包去重后落到无 json 的实例时，
 -- 链接期 LNK2019 ca::json（D33 同族根因）。升级 libca 只改下面两行。
-LUIOX_LIBCA_VERSION = "0.0.15"
+LUIOX_LIBCA_VERSION = "0.0.13"
 LUIOX_LIBCA_MODULES = "core,crypto,str,fs,io,json,net,http,process,opt,thread,log,zip,resources,i18n,test"
 add_requires("libca " .. LUIOX_LIBCA_VERSION, {configs = {modules = LUIOX_LIBCA_MODULES}})
 -- test 模块必须显式点名：test_helper 调用 ca::test::top_project_path()，
@@ -122,6 +133,11 @@ add_requires("libjbytecode 0.0.2")
 add_requires("libjzip 0.0.2")
 add_requires("libgarena 0.0.2")
 add_requires("libjclassfile 0.0.2")
+-- libjbc 走项目内联包定义（git 直连 + commit 锁，与 mjbase 同版本）：
+-- luiox-repo 的发布版落后于 mjbase 需要的面，且内联定义不吃 requireconfs，
+-- 其嵌套 libca 由定义内的 add_deps 钉到上面的单源版本。
+includes("xmake/packages/libjbc.lua")
+add_requires("libjbc 0.4.15")
 add_requires("libjstd 0.0.1")
 add_requires("libjdk_finder 0.0.1")
 add_requires("libjblw 0.0.1")
@@ -151,7 +167,21 @@ add_requireconfs("libjhasm.libjblw.libjbytecode.libca",  {version = LUIOX_LIBCA_
 -- i18n/resources 构建规则内嵌（.lang add_files 规则，包安装产物不带规则）。
 includes("xmake/libca_rules.lua")
 
+-- mjbase 基座：源码级依赖（默认兄弟目录 ../mjbase）。必须在 includes("mjt")
+-- 之前：mjt 的 target 要在配置期就能引用 mjbase。mjbase 打包进 luiox-repo
+-- 后可改为 add_requires("mjbase") 消费。
+option("mjbase_root")
+    set_default("../mjbase")
+    set_showmenu(true)
+    set_description("Path to the mjbase source tree.")
+option_end()
+
+includes(path.join(get_config("mjbase_root"), "mjbase"))
+
 includes("test_helper")
-includes("mbase")
 includes("mjt")
 includes("unittest")
+-- mjt-py（with_pysdk 门控；mjbase 基座消费方，须在 mjbase includes 之后）。
+if has_config("with_pysdk") then
+    includes("mjt-py")
+end

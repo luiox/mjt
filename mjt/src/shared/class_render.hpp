@@ -10,7 +10,7 @@
 #include "jclassfile/model/const_pool.hpp"
 #include "jclassfile/model/instruction/instruction.hpp"
 
-namespace mjt::base {
+namespace mjbase::renamer {
 class ShadowAliasTable;
 }
 
@@ -35,7 +35,7 @@ std::string operandText(const ::jclassfile::model::Instruction* insn,
 ///无参重载逐字节一致。
 std::string operandComment(const ::jclassfile::model::Instruction* insn,
                            ::jclassfile::model::ConstPool*         pool,
-                           const mjt::base::ShadowAliasTable*  shadow = nullptr);
+                           const mjbase::renamer::ShadowAliasTable* shadow = nullptr);
 
 ///@brief terse 注释（P0-1，`--comment-style terse`）。
 ///
@@ -48,7 +48,7 @@ std::string operandComment(const ::jclassfile::model::Instruction* insn,
 ///@param shadow 同 `operandComment`；空表时短引用退化为原名（仍无 descriptor）。
 std::string terseOperandComment(const ::jclassfile::model::Instruction* insn,
                                 ::jclassfile::model::ConstPool*         pool,
-                                const mjt::base::ShadowAliasTable*  shadow = nullptr);
+                                const mjbase::renamer::ShadowAliasTable* shadow = nullptr);
 
 ///@brief 打印 tableswitch/lookupswitch 的跳转分发表。
 ///

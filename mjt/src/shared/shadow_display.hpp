@@ -2,7 +2,11 @@
 
 #include <string>
 
-#include "mbase/renamer/shadow_alias.hpp"
+//切换期：renamer 走 mjbase（std::string/string_view 面），其余模块仍走 mbase；
+//两栈命名空间不冲突，可同时链接。本文件是 mjt 命令层的 std::string 桥接面，
+//切换对消费方（mutation/query/shadow_slot/class_render）零 API 变动。
+#include "libca/str/utf8_string.hpp"
+#include "mjbase/renamer/shadow_alias.hpp"
 
 namespace mjt {
 
@@ -13,13 +17,6 @@ std::string resolveShadowPath(const std::string& jarPath, const std::string& exp
 ///@brief 资源 URI（`a/b/C.class`）→ class 内部名（`a/b/C`）；无 .class 后缀原样返回。
 std::string internalNameOfUri(const std::string& uri);
 
-///@brief std::string → Utf8StringRef 临时视图（仅在 string 存活期内使用）。
-inline ca::str::Utf8StringRef utf8RefOf(const std::string& value)
-{
-    return ca::str::Utf8StringRef::from_data(reinterpret_cast<const ca::u8*>(value.data()),
-                                             value.size());
-}
-
 ///@brief shadow 显示上下文：命令层渲染适配（显示层统一入口）。
 ///
 ///`active` 为 false（--no-shadow 或 sidecar 空/缺失）时，全部渲染方法
@@ -27,8 +24,8 @@ inline ca::str::Utf8StringRef utf8RefOf(const std::string& value)
 ///按 `shadow (原始名)` 并列。
 struct ShadowDisplay
 {
-    mjt::base::ShadowAliasTable table;
-    bool                            enabled = true;  ///< --no-shadow 关闭
+    mjbase::renamer::ShadowAliasTable table;
+    bool                              enabled = true;  ///< --no-shadow 关闭
 
     bool active() const { return enabled && !table.empty(); }
 

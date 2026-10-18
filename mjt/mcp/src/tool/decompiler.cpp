@@ -13,17 +13,18 @@
 #include "limits.hpp"
 #include "parser.hpp"
 #include "shared/jar_remapper.hpp"
+#include "shared/status_convert.hpp"
 #include "tool/shadow_slot.hpp"
 
 namespace mjt::mcp {
 
 using namespace detail;
-using mjt::base::workspace::MutationRequest;
-using mjt::base::workspace::PipelineRequest;
-using mjt::base::workspace::WorkflowCandidateCommitRequest;
-using mjt::base::workspace::WorkflowReferenceQuery;
-using mjt::base::workspace::WorkflowRequest;
-using mjt::base::workspace::IWorkspace;
+using mjbase::workspace::MutationRequest;
+using mjbase::workspace::PipelineRequest;
+using mjbase::workspace::WorkflowCandidateCommitRequest;
+using mjbase::workspace::WorkflowReferenceQuery;
+using mjbase::workspace::WorkflowRequest;
+using mjbase::workspace::IWorkspace;
 
 namespace fs = std::filesystem;
 
@@ -85,7 +86,10 @@ std::optional<Json> McpToolService::callDecompilerTool(
             if (!slot::resolveMethodSlots(slots, arguments, true, owner, member, descriptor, slotError))
                 return slotError;
             auto methodInfo = current->methodInfo(owner, member, descriptor);
-            if (methodInfo.is_err()) { const auto err = methodInfo.unwrap_err(); return toolError("get method source failed", &err); }
+            if (methodInfo.is_err()) {
+                const auto err = shared::toCaStatus(methodInfo.unwrap_err());
+                return toolError("get method source failed", &err);
+            }
             className = owner;
         }
         else if (!slot::resolveClassArgument(*current, arguments, "class", true, className, slotError)) {
@@ -100,7 +104,10 @@ std::optional<Json> McpToolService::callDecompilerTool(
                     return toolError("too many retained jobs; release completed jobs before starting another");
             }
             auto classInfo = current->classInfo(className);
-            if (classInfo.is_err()) { const auto err = classInfo.unwrap_err(); return toolError("get decompile class failed", &err); }
+            if (classInfo.is_err()) {
+                const auto err = shared::toCaStatus(classInfo.unwrap_err());
+                return toolError("get decompile class failed", &err);
+            }
             const auto internalName = classInfo.unwrap().internalName;
 
             auto temporary = createDecompilerTemporaryDirectory();
@@ -111,7 +118,8 @@ std::optional<Json> McpToolService::callDecompilerTool(
             if (exportStatus.is_err()) {
                 std::error_code cleanupError;
                 fs::remove_all(snapshotDirectory, cleanupError);
-                return toolError("snapshot decompiler workspace failed", &exportStatus);
+                const auto err = shared::toCaStatus(exportStatus.unwrap_err());
+                return toolError("snapshot decompiler workspace failed", &err);
             }
 
             auto job = std::make_shared<JobState>();
@@ -265,8 +273,8 @@ std::optional<Json> McpToolService::callDecompilerTool(
         const bool hasMapping = !mappingFormat.empty() || !mappingText.empty() ||
                                 arguments.contains("mapping_policy");
         WorkspaceRemapRequest remap;
-        mjt::base::MemberRemapPlan plan;
-        mjt::base::RemapPolicy     policy;
+        mjbase::asm_remapper::MemberRemapPlan plan;
+        mjbase::asm_remapper::RemapPolicy     policy;
         if (hasMapping) {
             if (mappingFormat.empty() || mappingText.empty())
                 return toolError("mapping_format and mapping_text are both required for a workflow remap");
@@ -274,7 +282,10 @@ std::optional<Json> McpToolService::callDecompilerTool(
             remap.mappingText = mappingText;
             remap.policy      = arguments.value("mapping_policy", std::string{"bytecode-only"});
             const auto status = buildWorkspaceRemapPlan(*current, remap, plan, policy);
-            if (status.is_err()) return toolError("build workflow remap plan failed", &status);
+            if (status.is_err()) {
+                const auto err = shared::toCaStatus(status);
+                return toolError("build workflow remap plan failed", &err);
+            }
             workflow.remapPlan = &plan;
             workflow.remapPolicy = policy;
         }
@@ -315,7 +326,7 @@ std::optional<Json> McpToolService::callDecompilerTool(
             spec.exportPath       = workflow.exportPath;
             spec.mutation         = mutationRequest(arguments);
             if (hasMapping) spec.remap = remap;
-            if (spec.mutation.expectedRevision != mjt::base::workspace::kAnyRevision &&
+            if (spec.mutation.expectedRevision != mjbase::workspace::kAnyRevision &&
                 spec.mutation.expectedRevision != current->revision()) {
                 const auto result = current->runWorkflow(workflow, spec.mutation);
                 return toolResult(workflowJson(result), result.mutation.status.is_err());
@@ -330,7 +341,8 @@ std::optional<Json> McpToolService::callDecompilerTool(
             if (snapshotStatus.is_err()) {
                 std::error_code cleanupError;
                 fs::remove_all(snapshotDirectory, cleanupError);
-                return toolError("snapshot workflow workspace failed", &snapshotStatus);
+                const auto err = shared::toCaStatus(snapshotStatus.unwrap_err());
+                return toolError("snapshot workflow workspace failed", &err);
             }
 
             std::vector<fs::path> supportingSnapshots;
@@ -399,7 +411,7 @@ std::optional<Json> McpToolService::callDecompilerTool(
                         if (openStatus.is_err()) {
                             finish("failed",
                                    {{"error", "open workflow job snapshot failed"},
-                                    {"status", statusJson(openStatus)}},
+                                    {"status", statusJson(shared::toCaStatus(openStatus.unwrap_err()))}},
                                    true);
                             return;
                         }
@@ -408,7 +420,7 @@ std::optional<Json> McpToolService::callDecompilerTool(
                             if (supportStatus.is_err()) {
                                 finish("failed",
                                        {{"error", "add workflow job supporting JAR failed"},
-                                        {"status", statusJson(supportStatus.unwrap_err())}},
+                                        {"status", statusJson(shared::toCaStatus(supportStatus.unwrap_err()))}},
                                        true);
                                 return;
                             }
@@ -422,15 +434,15 @@ std::optional<Json> McpToolService::callDecompilerTool(
                         candidateWorkflow.referenceQueries = spec.referenceQueries;
                         candidateWorkflow.runPipeline      = spec.runPipeline;
                         candidateWorkflow.pipeline         = spec.pipeline;
-                        mjt::base::MemberRemapPlan candidatePlan;
-                        mjt::base::RemapPolicy     candidatePolicy;
+                        mjbase::asm_remapper::MemberRemapPlan candidatePlan;
+                        mjbase::asm_remapper::RemapPolicy     candidatePolicy;
                         if (spec.remap.has_value()) {
                             const auto remapStatus = buildWorkspaceRemapPlan(
                                 detached, *spec.remap, candidatePlan, candidatePolicy);
                             if (remapStatus.is_err()) {
                                 finish("failed",
                                        {{"error", "build workflow remap plan failed"},
-                                        {"status", statusJson(remapStatus)}},
+                                        {"status", statusJson(shared::toCaStatus(remapStatus))}},
                                        true);
                                 return;
                             }
@@ -442,21 +454,21 @@ std::optional<Json> McpToolService::callDecompilerTool(
                         candidateWorkflow.candidateJarStageName = "decompile";
                         candidateWorkflow.candidateJarConsumer =
                             [job, &sources, classes = spec.decompileClasses, options = spec.decompiler](
-                                const std::string& candidateJar) {
+                                const std::string& candidateJar) -> mjbase::workspace::WorkspaceErrorInfo {
                                 for (const auto& className : classes) {
                                     if (job->cancellationRequested.load()) {
-                                        return ca::ErrStatus(ca::StatusCode::CANCELLED,
-                                                             "workflow job cancelled");
+                                        return {mjbase::workspace::WorkspaceError::Aborted,
+                                                "workflow job cancelled"};
                                     }
                                     auto source = decompileSnapshotClass(
                                         candidateJar,
                                         className,
                                         options,
                                         [job] { return job->cancellationRequested.load(); });
-                                    if (source.is_err()) return source.unwrap_err();
+                                    if (source.is_err()) return shared::fromCaStatus(source.unwrap_err());
                                     sources.push_back(std::move(source).unwrap());
                                 }
-                                return ca::OkStatus();
+                                return {};
                             };
                         const auto candidateJar = directory.path() / "candidate.jar";
                         candidateWorkflow.exportPath = candidateJar.string();
@@ -477,9 +489,12 @@ std::optional<Json> McpToolService::callDecompilerTool(
                         if (report.mutation.status.is_err()) {
                             auto payload = workflowJson(report);
                             appendWorkflowSources(payload, sources, spec.decompileBatch);
-                            const auto state = report.mutation.status.code() == ca::StatusCode::CANCELLED
-                                                   ? "cancelled"
-                                                   : "failed";
+                            //候选通道的取消以 Aborted 承载（detached workspace 上
+                            //revision 恒匹配，不会产生其他 Aborted 错误）。
+                            const auto state =
+                                report.mutation.status.code == mjbase::workspace::WorkspaceError::Aborted
+                                    ? "cancelled"
+                                    : "failed";
                             finish(state, std::move(payload), true);
                             return;
                         }
@@ -526,7 +541,7 @@ std::optional<Json> McpToolService::callDecompilerTool(
                                         currentWorkspace->second->commitWorkflowCandidateJar(
                                             commitRequest,
                                             commitMutation);
-                                    commitStatus      = committed.mutation.status;
+                                    commitStatus      = shared::toCaStatus(committed.mutation.status);
                                     report.mutation   = std::move(committed.mutation);
                                     report.exportPath = std::move(committed.exportPath);
                                     report.exported   = committed.exported;
@@ -535,11 +550,11 @@ std::optional<Json> McpToolService::callDecompilerTool(
                         }
                         if (commitStatus.is_err()) {
                             if (!attemptedCommit) {
-                                report.mutation.status    = commitStatus;
+                                report.mutation.status    = shared::fromCaStatus(commitStatus);
                                 report.mutation.revision  = job->sourceRevision;
                                 report.mutation.committed = false;
                             }
-                            report.stages.push_back({"commit", commitStatus});
+                            report.stages.push_back({"commit", shared::fromCaStatus(commitStatus)});
                             auto payload = workflowJson(report);
                             appendWorkflowSources(payload, sources, spec.decompileBatch);
                             const auto state = commitStatus.code() == ca::StatusCode::CANCELLED
@@ -550,7 +565,8 @@ std::optional<Json> McpToolService::callDecompilerTool(
                         }
 
                         report.stages.push_back(
-                            {spec.mutation.dryRun ? "commit_preview" : "commit", ca::OkStatus()});
+                            {spec.mutation.dryRun ? "commit_preview" : "commit",
+                             mjbase::workspace::WorkspaceErrorInfo{}});
                         auto payload = workflowJson(report);
                         appendWorkflowSources(payload, sources, spec.decompileBatch);
                         finish("succeeded", std::move(payload), false);
@@ -578,14 +594,15 @@ std::optional<Json> McpToolService::callDecompilerTool(
         std::vector<DecompiledSource> workflowSources;
         if (!decompileClasses.empty()) {
             workflow.candidateJarStageName = "decompile";
-            workflow.candidateJarConsumer = [decompileClasses, options, &workflowSources](
-                                               const std::string& candidateJar) {
+            workflow.candidateJarConsumer =
+                [decompileClasses, options, &workflowSources](
+                    const std::string& candidateJar) -> mjbase::workspace::WorkspaceErrorInfo {
                 for (const auto& className : decompileClasses) {
                     auto source = decompileSnapshotClass(candidateJar, className, options);
-                    if (source.is_err()) return source.unwrap_err();
+                    if (source.is_err()) return shared::fromCaStatus(source.unwrap_err());
                     workflowSources.push_back(std::move(source).unwrap());
                 }
-                return ca::OkStatus();
+                return {};
             };
         }
 

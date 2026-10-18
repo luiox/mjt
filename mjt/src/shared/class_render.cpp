@@ -8,9 +8,9 @@
 #include <cstdio>
 #include <string>
 
-#include "mbase/cli/output_sink.hpp"
-#include "mbase/mapping/identifier_util.hpp"
-#include "mbase/renamer/shadow_alias.hpp"
+#include "mjbase/cli/output_sink.hpp"
+#include "mjbase/mapping/identifier_util.hpp"
+#include "mjbase/renamer/shadow_alias.hpp"
 #include "shadow_display.hpp"
 
 #include "jclassfile/model/constant/const_ref.hpp"
@@ -31,8 +31,8 @@
 #include "jclassfile/model/instruction/wide_instruction.hpp"
 
 namespace jcm = jclassfile::model;
-using mjt::base::IdentifierUtil;
-using mjt::base::cli::out;
+using mjbase::mapping::IdentifierUtil;
+using mjbase::cli::out;
 
 namespace mjt::render {
 
@@ -93,7 +93,7 @@ std::string operandText(const jcm::Instruction* insn, jcm::ConstPool* pool)
 }
 
 std::string operandComment(const jcm::Instruction* insn, jcm::ConstPool* pool,
-                           const mjt::base::ShadowAliasTable* shadow)
+                           const mjbase::renamer::ShadowAliasTable* shadow)
 {
     if (!insn) return "";
 
@@ -118,11 +118,8 @@ std::string operandComment(const jcm::Instruction* insn, jcm::ConstPool* pool,
                 (ref->nameType() && ref->nameType()->type()) ? ref->nameType()->type()->text()
                                                              : std::string();
             if (shadow != nullptr) {
-                return shadow->renderMember(mjt::utf8RefOf(ownerRaw),
-                                            mjt::utf8RefOf(nameRaw),
-                                            mjt::utf8RefOf(descRaw))
-                    .ref()
-                    .to_std_string();
+                //mjbase 渲染产物按值返回 std::string（旧栈是 Utf8String）。
+                return shadow->renderMember(ownerRaw, nameRaw, descRaw);
             }
             std::string s = IdentifierUtil::printReadable(ownerRaw);
             s += ".";
@@ -146,9 +143,7 @@ std::string operandComment(const jcm::Instruction* insn, jcm::ConstPool* pool,
             if (c->name()) {
                 const std::string name = c->name()->text();
                 if (shadow != nullptr) {
-                    return shadow->renderClass(mjt::utf8RefOf(name))
-                        .ref()
-                        .to_std_string();
+                    return shadow->renderClass(name);
                 }
                 return IdentifierUtil::printReadable(name);
             }
@@ -191,7 +186,7 @@ std::string operandComment(const jcm::Instruction* insn, jcm::ConstPool* pool,
 }
 
 std::string terseOperandComment(const jcm::Instruction* insn, jcm::ConstPool* pool,
-                                const mjt::base::ShadowAliasTable* shadow)
+                            const mjbase::renamer::ShadowAliasTable* shadow)
 {
     if (!insn || insn->kind() != jcm::InsnKind::CpRef) return "";
     auto*               cp    = static_cast<const jcm::CpRefInstruction*>(insn);
@@ -217,8 +212,10 @@ std::string terseOperandComment(const jcm::Instruction* insn, jcm::ConstPool* po
     //（无 `(raw)` 括号、无 descriptor——收进文件头符号表）。
     const auto shortClass = [&shadow](const std::string& raw) {
         if (shadow != nullptr) {
-            const auto name = shadow->classShadow(mjt::utf8RefOf(raw));
-            if (!name.is_empty()) return name.to_std_string();
+            //mjbase 查询返回借用视图（驻留于表内池）；转成 std::string 值再返回，
+            //避免把视图带出 lambda 作用域。
+            const std::string_view name = shadow->classShadow(raw);
+            if (!name.empty()) return std::string(name);
         }
         return IdentifierUtil::printReadable(raw);
     };
@@ -240,12 +237,9 @@ std::string terseOperandComment(const jcm::Instruction* insn, jcm::ConstPool* po
                                                          : std::string();
         std::string nameShort = IdentifierUtil::printReadable(nameRaw);
         if (shadow != nullptr && !nameRaw.empty()) {
-            const auto ownerRef = mjt::utf8RefOf(ownerRaw);
-            const auto nameRef  = mjt::utf8RefOf(nameRaw);
-            const auto descRef  = mjt::utf8RefOf(descRaw);
-            auto       member   = shadow->methodShadow(ownerRef, nameRef, descRef);
-            if (member.is_empty()) member = shadow->fieldShadow(ownerRef, nameRef, descRef);
-            if (!member.is_empty()) nameShort = member.to_std_string();
+            auto member = shadow->methodShadow(ownerRaw, nameRaw, descRaw);
+            if (member.empty()) member = shadow->fieldShadow(ownerRaw, nameRaw, descRaw);
+            if (!member.empty()) nameShort = std::string(member);
         }
         return prefix + shortClass(ownerRaw) + "." + nameShort;
     }

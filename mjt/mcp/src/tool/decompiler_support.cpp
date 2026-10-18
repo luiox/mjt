@@ -7,12 +7,13 @@
 #include <utility>
 
 #include "limits.hpp"
+#include "shared/status_convert.hpp"
 
 namespace mjt::mcp::detail {
 
 namespace fs = std::filesystem;
 
-using mjt::base::workspace::IWorkspace;
+using mjbase::workspace::IWorkspace;
 
 ScopedTemporaryDirectory::ScopedTemporaryDirectory(fs::path path)
     : path_(std::move(path))
@@ -154,7 +155,7 @@ Json decompilerAvailabilityJson(const DecompilerAvailability& availability,
             {"artifact_available", availability.artifactAvailable},
             {"java_available", availability.javaAvailable},
             {"available", availability.artifactAvailable && availability.javaAvailable},
-            {"version", ""},
+            {"version", availability.version},
             {"unavailable_reason", availability.unavailableReason}};
 }
 
@@ -260,7 +261,7 @@ ca::StatusOr<DecompiledSource> decompileWorkspaceClass(IWorkspace& workspace,
                                                         const DecompilerOptions& options)
 {
     auto info = workspace.classInfo(className);
-    if (info.is_err()) return ca::Err(info.unwrap_err());
+    if (info.is_err()) return ca::Err(shared::toCaStatus(info.unwrap_err()));
     const auto internalName = info.unwrap().internalName;
 
     auto temporary = createDecompilerTemporaryDirectory();
@@ -269,7 +270,7 @@ ca::StatusOr<DecompiledSource> decompileWorkspaceClass(IWorkspace& workspace,
 
     const auto snapshot = directory.path() / "workspace.jar";
     auto exportStatus = workspace.exportJar(snapshot.string());
-    if (exportStatus.is_err()) return ca::Err(std::move(exportStatus));
+    if (exportStatus.is_err()) return ca::Err(shared::toCaStatus(std::move(exportStatus).unwrap_err()));
     return decompileSnapshotClass(snapshot, internalName, options);
 }
 
