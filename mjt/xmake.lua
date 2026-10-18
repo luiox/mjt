@@ -7,11 +7,7 @@ target("mjt_shared")
         add_cxflags("/utf-8", {tools = "cl"})
     end
 
-    add_deps("mbase")
-    -- 共存期：逐文件从 mbase 切到 mjbase，本 target 同时挂两栈。
-    if MJBASE_ENABLED then
-        add_deps("mjbase")
-    end
+    add_deps("mjbase")
     add_packages("libjhasm")
 
     add_includedirs("src", {public = true})
@@ -27,11 +23,7 @@ target("mjt_mcp_core")
         add_cxflags("/utf-8", {tools = "cl"})
     end
 
-    add_deps("mbase", "mjt_shared")
-    -- 共存期：mjbase 可用时同时挂两栈，供逐 tool 切换；切完移除 mbase。
-    if MJBASE_ENABLED then
-        add_deps("mjbase")
-    end
+    add_deps("mjt_shared", "mjbase")
     add_packages("libmcp", {public = true})
     add_packages("libca")
     add_packages("libjbc")
@@ -56,10 +48,7 @@ target("mjt-mcp")
     -- GNU ld 单遍从左到右扫描归档：binary 必须显式给全静态闭包（消费者在前、
     -- 被依赖在后），否则 auto 排序把 libca 包归档排到 mjt_shared 前，链接期
     -- 报 ca::process 等符号 undefined（Linux CI 实证）。闭包序与 unittest 同款。
-     mjt_binary_link_closure("mjt_mcp_core", "mjt_shared", "mbase")
-    if MJBASE_ENABLED then
-        mjt_binary_link_closure("mjbase")
-    end
+     mjt_binary_link_closure("mjt_mcp_core", "mjt_shared", "mjbase")
     mjt_binary_link_closure("libjhasm", "libjblw", "libjbytecode_util", "libjbytecode_commons", "libjbytecode_analysis", "libjbytecode_tree", "libjbytecode_core", "libgarena", "libjclassfile", "libjstr", "libjbc", "libjzip")
     add_files("mcp/src/main.cpp")
 
@@ -75,10 +64,7 @@ if has_config("with_tests") then
         add_packages("gtest")
         -- xmake 3.x 不把静态 target 依赖传进 binary 链接：显式给全闭包，按
         -- 「消费者在前、被依赖在后」排序，另含 libmcp 及其 http/net/io 链。
-         mjt_binary_link_closure("mjt_mcp_core", "mjt_shared", "mbase")
-        if MJBASE_ENABLED then
-            mjt_binary_link_closure("mjbase")
-        end
+         mjt_binary_link_closure("mjt_mcp_core", "mjt_shared", "mjbase")
         mjt_binary_link_closure("libjhasm", "libjblw", "libjbytecode_util", "libjbytecode_commons", "libjbytecode_analysis", "libjbytecode_tree", "libjbytecode_core", "libgarena", "libjclassfile", "libjstr", "libjbc", "libjzip", "test_helper", "libjdk_finder")
         -- 注：libca_i18n 为 headeronly target（无 .lib 产物），只入 add_deps 不入 add_links。
         add_includedirs("mcp/src")
