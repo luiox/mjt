@@ -6,23 +6,24 @@
 #include <utility>
 
 #include "limits.hpp"
+#include "shared/status_convert.hpp"
 
 namespace mjt::mcp::detail {
 
-using mjt::base::workspace::AnnotationElement;
-using mjt::base::workspace::AnnotationInfo;
-using mjt::base::workspace::ClassInfo;
-using mjt::base::workspace::ClassSummary;
-using mjt::base::workspace::FieldInfo;
-using mjt::base::workspace::ImpactAnalysis;
-using mjt::base::workspace::JarRepairResult;
-using mjt::base::workspace::MethodInfo;
-using mjt::base::workspace::MutationResult;
-using mjt::base::workspace::SearchHit;
-using mjt::base::workspace::SupportingResourceInfo;
-using mjt::base::workspace::WorkflowReferenceKind;
-using mjt::base::workspace::WorkflowResult;
-using mjt::base::workspace::IWorkspace;
+using mjbase::workspace::AnnotationElement;
+using mjbase::workspace::AnnotationInfo;
+using mjbase::workspace::ClassInfo;
+using mjbase::workspace::ClassSummary;
+using mjbase::workspace::FieldInfo;
+using mjbase::workspace::ImpactAnalysis;
+using mjbase::workspace::JarRepairResult;
+using mjbase::workspace::MethodInfo;
+using mjbase::workspace::MutationResult;
+using mjbase::workspace::SearchHit;
+using mjbase::workspace::SupportingResourceInfo;
+using mjbase::workspace::WorkflowReferenceKind;
+using mjbase::workspace::WorkflowResult;
+using mjbase::workspace::IWorkspace;
 
 ca::str::Utf16String utf16(const std::string& value)
 {
@@ -42,9 +43,9 @@ Json statusJson(const ca::Status& status)
             {"message", status.to_string()}};
 }
 
-Json diagnosticJson(const mjt::base::jasm::Diagnostic& diagnostic)
+Json diagnosticJson(const mjbase::jasm::Diagnostic& diagnostic)
 {
-    Json result = {{"severity", diagnostic.severity == mjt::base::jasm::DiagnosticSeverity::Error
+    Json result = {{"severity", diagnostic.severity == mjbase::jasm::DiagnosticSeverity::Error
                                       ? "error"
                                       : "warning"},
                    {"stage", static_cast<int>(diagnostic.stage)},
@@ -195,7 +196,7 @@ Json mutationJson(const MutationResult& mutation)
     for (const auto& item : mutation.affectedClasses) classes.push_back(item);
     for (const auto& reference : mutation.affectedReferences)
         references.push_back({{"kind", reference.kind}, {"target", reference.target}});
-    return {{"status", statusJson(mutation.status)},
+    return {{"status", statusJson(shared::toCaStatus(mutation.status))},
             {"revision", mutation.revision},
             {"committed", mutation.committed},
             {"exportable", mutation.exportable},
@@ -222,7 +223,7 @@ Json jarRepairJson(const JarRepairResult& repair)
     return result;
 }
 
-Json referenceJson(const mjt::base::workspace::ReferenceInfo& reference)
+Json referenceJson(const mjbase::workspace::ReferenceInfo& reference)
 {
     return {{"source", {{"class", reference.sourceClass},
                          {"method", reference.sourceMethod},
@@ -249,7 +250,7 @@ Json workflowJson(const WorkflowResult& workflow)
     Json stages = Json::array();
     Json references = Json::array();
     for (const auto& stage : workflow.stages)
-        stages.push_back({{"name", stage.name}, {"status", statusJson(stage.status)}});
+        stages.push_back({{"name", stage.name}, {"status", statusJson(shared::toCaStatus(stage.status))}});
     for (const auto& report : workflow.references) {
         Json before = Json::array();
         Json after = Json::array();
@@ -306,7 +307,7 @@ std::string base64(const std::vector<ca::u8>& value)
 bool decodeBase64(const std::string& encoded, std::vector<ca::u8>& output, std::string& error)
 {
     constexpr ca::usize kMaximumEncodedClassSize =
-        ((mjt::base::workspace::kMaximumClassReplacementSize + 2) / 3) * 4;
+        ((mjbase::workspace::kMaximumClassReplacementSize + 2) / 3) * 4;
     if (encoded.empty()) {
         error = "content_base64 must not be empty";
         return false;
@@ -352,7 +353,7 @@ bool decodeBase64(const std::string& encoded, std::vector<ca::u8>& output, std::
         if (!pad2) output.push_back(static_cast<ca::u8>((v1 << 4) | (v2 >> 2)));
         if (!pad3) output.push_back(static_cast<ca::u8>((v2 << 6) | v3));
     }
-    if (output.size() > mjt::base::workspace::kMaximumClassReplacementSize) {
+    if (output.size() > mjbase::workspace::kMaximumClassReplacementSize) {
         error = "decoded class exceeds the class size limit";
         output.clear();
         return false;
@@ -455,7 +456,7 @@ Json impactJson(const ImpactAnalysis& impact)
     Json diffs = Json::array();
     for (const auto& diff : impact.byteDiffs)
         diffs.push_back({{"uri", diff.uri}, {"before_size", diff.beforeSize}, {"after_size", diff.afterSize}});
-    return {{"status", statusJson(impact.status)},
+    return {{"status", statusJson(shared::toCaStatus(impact.status))},
             {"exportable", impact.exportable},
             {"before_references", std::move(before)},
             {"after_references", std::move(after)},

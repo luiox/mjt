@@ -97,7 +97,7 @@ TEST(McpServerTest, PublishesFrozenCanonicalToolSchemas)
     const auto rawBytes = schemaFor("patch_replace_class_bytes");
     EXPECT_EQ(Json::array({"workspace_id", "class_uri", "content_base64"}),
               rawBytes.at("required"));
-    EXPECT_EQ(((base::workspace::kMaximumClassReplacementSize + 2) / 3) * 4,
+    EXPECT_EQ(((mjbase::workspace::kMaximumClassReplacementSize + 2) / 3) * 4,
               rawBytes.at("properties").at("content_base64").at("maxLength"));
     const auto classList = schemaFor("class_list");
     EXPECT_EQ(0, classList.at("properties").at("offset").at("minimum"));
@@ -213,7 +213,7 @@ TEST(McpServerTest, RejectsMaliciousToolArgumentsAndUnsafeExports)
                           "patch_replace_class_bytes", ca::StatusCode::INVALID_ARGUMENT,
                           "strict RFC 4648 base64");
     const auto maximumBase64 =
-        ((base::workspace::kMaximumClassReplacementSize + 2) / 3) * 4;
+        ((mjbase::workspace::kMaximumClassReplacementSize + 2) / 3) * 4;
     expectDirectToolError(service.call("patch_replace_class_bytes",
                                        {{"workspace_id", workspaceId},
                                         {"class_uri", "mcp/Subject.class"},

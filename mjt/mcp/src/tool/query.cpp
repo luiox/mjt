@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "json.hpp"
+#include "shared/status_convert.hpp"
 #include "limits.hpp"
 #include "parser.hpp"
 #include "shared/shadow_display.hpp"
@@ -18,9 +19,9 @@
 namespace mjt::mcp {
 
 using namespace detail;
-using mjt::base::workspace::SearchHit;
-using mjt::base::workspace::SearchOptions;
-using mjt::base::workspace::IWorkspace;
+using mjbase::workspace::SearchHit;
+using mjbase::workspace::SearchOptions;
+using mjbase::workspace::IWorkspace;
 
 std::optional<Json> McpToolService::callWorkspaceQueryTool(
     const std::string& name, const Json& arguments, IWorkspace* current)
@@ -39,7 +40,7 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
     if (name == "workspace_modified_classes") {
         auto modified = current->modifiedClasses();
         if (modified.is_err())
-            { const auto err = modified.unwrap_err(); return toolError("list modified classes failed", &err); }
+            { const auto err = shared::toCaStatus(modified.unwrap_err()); return toolError("list modified classes failed", &err); }
         Json values = Json::array();
         for (const auto& item : modified.unwrap()) {
             values.push_back({{"resource_uri", item.resourceUri},
@@ -54,7 +55,7 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
     }
     if (name == "workspace_add_support") {
         auto result = current->addSupportingJar(arguments.value("path", std::string{}));
-        if (result.is_err()) { const auto err = result.unwrap_err(); return toolError("add supporting resource failed", &err); }
+        if (result.is_err()) { const auto err = shared::toCaStatus(result.unwrap_err()); return toolError("add supporting resource failed", &err); }
         return toolResult({{"supporting_resource", supportingResourceJson(result.unwrap())}});
     }
     if (name == "workspace_list_support") {
@@ -65,12 +66,12 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
     }
     if (name == "workspace_remove_support") {
         auto result = current->removeSupportingJar(arguments.value("support_id", std::string{}));
-        if (result.is_err()) { const auto err = result.unwrap_err(); return toolError("remove supporting resource failed", &err); }
+        if (result.is_err()) { const auto err = shared::toCaStatus(result.unwrap_err()); return toolError("remove supporting resource failed", &err); }
         return toolResult({{"removed", supportingResourceJson(result.unwrap())}});
     }
     if (name == "workspace_resources") {
         auto resources = current->listResources(arguments.value("include_classes", true));
-        if (resources.is_err()) { const auto err = resources.unwrap_err(); return toolError("list resources failed", &err); }
+        if (resources.is_err()) { const auto err = shared::toCaStatus(resources.unwrap_err()); return toolError("list resources failed", &err); }
         Json values = Json::array();
         for (const auto& item : resources.unwrap())
             values.push_back({{"uri", item.uri}, {"type", item.type}, {"size", item.size}});
@@ -78,7 +79,7 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
     }
     if (name == "resource_read") {
         auto content = current->readResource(arguments.value("uri", std::string{}));
-        if (content.is_err()) { const auto err = content.unwrap_err(); return toolError("read resource failed", &err); }
+        if (content.is_err()) { const auto err = shared::toCaStatus(content.unwrap_err()); return toolError("read resource failed", &err); }
         auto value = std::move(content).unwrap();
         auto offset = arguments.value("offset", static_cast<ca::usize>(0));
         if (!parseCursor(arguments, value.bytes.size(), offset)) {
@@ -114,14 +115,14 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
     }
     if (name == "resource_manifest") {
         auto attributes = current->manifestAttributes();
-        if (attributes.is_err()) { const auto err = attributes.unwrap_err(); return toolError("read manifest failed", &err); }
+        if (attributes.is_err()) { const auto err = shared::toCaStatus(attributes.unwrap_err()); return toolError("read manifest failed", &err); }
         Json values = Json::array();
         for (const auto& item : attributes.unwrap()) values.push_back({{"key", item.key}, {"value", item.value}});
         return toolResult({{"attributes", std::move(values)}});
     }
     if (name == "resource_strings") {
         auto strings = current->resourceStrings(arguments.value("minimum_length", static_cast<ca::usize>(4)));
-        if (strings.is_err()) { const auto err = strings.unwrap_err(); return toolError("extract resource strings failed", &err); }
+        if (strings.is_err()) { const auto err = shared::toCaStatus(strings.unwrap_err()); return toolError("extract resource strings failed", &err); }
         Json values = Json::array();
         for (const auto& item : strings.unwrap())
             values.push_back({{"uri", item.uri}, {"offset", item.offset}, {"value", item.value}});
@@ -133,7 +134,7 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         SearchOptions options;
         std::string parseError;
         if (!parseSearchOptions(arguments, options, parseError)) return toolError(parseError);
-        ca::StatusOr<std::vector<SearchHit>> hits =
+        auto hits =
             name == "search_classes"
                 ? current->searchClasses(query, options)
                 : name == "search_members"
@@ -142,14 +143,14 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
                             ? current->searchStrings(query, options)
                             : name == "search_numbers" ? current->searchNumbers(query, options)
                                                        : current->searchInstructions(query, options);
-        if (hits.is_err()) { const auto err = hits.unwrap_err(); return toolError("workspace search failed", &err); }
+        if (hits.is_err()) { const auto err = shared::toCaStatus(hits.unwrap_err()); return toolError("workspace search failed", &err); }
         Json values = Json::array();
         for (const auto& hit : hits.unwrap()) values.push_back(searchHitJson(hit));
         return toolResult(page(std::move(values), arguments));
     }
     if (name == "class_list") {
         auto classes = current->listClassSummaries();
-        if (classes.is_err()) { const auto err = classes.unwrap_err(); return toolError("list classes failed", &err); }
+        if (classes.is_err()) { const auto err = shared::toCaStatus(classes.unwrap_err()); return toolError("list classes failed", &err); }
         return toolResult(classSummaryPage(classes.unwrap(), arguments));
     }
     if (name == "class_get") {
@@ -161,7 +162,7 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         if (!slot::resolveClassArgument(*current, arguments, "class", true, className, slotError))
             return slotError;
         auto value = current->classInfo(className);
-        if (value.is_err()) { const auto err = value.unwrap_err(); return toolError("get class failed", &err); }
+        if (value.is_err()) { const auto err = shared::toCaStatus(value.unwrap_err()); return toolError("get class failed", &err); }
         return toolResult(classJson(value.unwrap()));
     }
     if (name == "class_bytes") {
@@ -170,7 +171,7 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         if (!slot::resolveClassArgument(*current, arguments, "class", true, className, slotError))
             return slotError;
         auto content = current->readClassBytes(className);
-        if (content.is_err()) { const auto err = content.unwrap_err(); return toolError("read class bytes failed", &err); }
+        if (content.is_err()) { const auto err = shared::toCaStatus(content.unwrap_err()); return toolError("read class bytes failed", &err); }
         auto value = std::move(content).unwrap();
         auto offset = arguments.value("offset", static_cast<ca::usize>(0));
         if (!parseCursor(arguments, value.bytes.size(), offset)) {
@@ -209,7 +210,7 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
             return slotError;
         auto selected = current->classInfo(className);
         if (selected.is_err())
-            { const auto err = selected.unwrap_err(); return toolError("select class for Jasm failed", &err); }
+            { const auto err = shared::toCaStatus(selected.unwrap_err()); return toolError("select class for Jasm failed", &err); }
         auto value = current->getJasm(selected.unwrap().resourceUri);
         if (!value.isOk()) {
             Json diagnostics = Json::array();
@@ -231,12 +232,12 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
             return slotError;
         if (name == "method_get") {
             auto value = current->methodInfo(ownerRaw, memberName, descriptor);
-            if (value.is_err()) { const auto err = value.unwrap_err(); return toolError("get method failed", &err); }
+            if (value.is_err()) { const auto err = shared::toCaStatus(value.unwrap_err()); return toolError("get method failed", &err); }
             return toolResult(methodJson(value.unwrap()));
         }
         if (name == "method_bytecode") {
             auto value = current->methodBytecode(ownerRaw, memberName, descriptor);
-            if (value.is_err()) { const auto err = value.unwrap_err(); return toolError("get method bytecode failed", &err); }
+            if (value.is_err()) { const auto err = shared::toCaStatus(value.unwrap_err()); return toolError("get method bytecode failed", &err); }
             Json instructions = Json::array();
             for (const auto& item : value.unwrap().instructions)
                 instructions.push_back({{"index", item.index},

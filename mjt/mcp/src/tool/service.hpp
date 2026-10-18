@@ -8,7 +8,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "mbase/workspace/i_workspace.hpp"
+#include "mjbase/workspace/i_workspace.hpp"
 #include "shared/jar_workspace.hpp"
 
 namespace mjt::mcp {
@@ -75,22 +75,22 @@ public:
 private:
     Json callLocked(const std::string& name,
                     const Json& arguments,
-                    mjt::base::workspace::IWorkspace* current);
+                    mjbase::workspace::IWorkspace* current);
     std::optional<Json> callSessionTool(const std::string& name, const Json& arguments);
     std::optional<Json> callWorkspaceQueryTool(
         const std::string& name,
         const Json& arguments,
-        mjt::base::workspace::IWorkspace* current);
+        mjbase::workspace::IWorkspace* current);
     std::optional<Json> callDecompilerTool(
         const std::string& name,
         const Json& arguments,
-        mjt::base::workspace::IWorkspace* current);
+        mjbase::workspace::IWorkspace* current);
     std::optional<Json> callMutationTool(
         const std::string& name,
         const Json& arguments,
-        mjt::base::workspace::IWorkspace* current);
+        mjbase::workspace::IWorkspace* current);
 
-    std::shared_ptr<mjt::base::workspace::IWorkspace> workspace(const Json& arguments,
+    std::shared_ptr<mjbase::workspace::IWorkspace> workspace(const Json& arguments,
                                                                     Json& error);
     std::string nextWorkspaceId();
     std::string nextJobId();
@@ -100,7 +100,7 @@ private:
     ///@brief 执行锁：同一 session 非 session 工具的执行体串行化。
     std::mutex executionMutex_;
     std::unordered_map<std::string,
-                       std::shared_ptr<mjt::base::workspace::IWorkspace>>
+                       std::shared_ptr<mjbase::workspace::IWorkspace>>
         workspaces_;
     std::unordered_map<std::string, std::shared_ptr<JobState>> jobs_;
     ca::u64 nextWorkspace_ = 1;

@@ -10,15 +10,15 @@ namespace mjt::mcp::detail {
 ca::str::Utf16String utf16(const std::string& value);
 std::string utf8(ca::str::Utf16StringRef value);
 Json statusJson(const ca::Status& status);
-Json diagnosticJson(const mjt::base::jasm::Diagnostic& diagnostic);
-Json methodJson(const mjt::base::workspace::MethodInfo& method);
-Json supportingResourceJson(const mjt::base::workspace::SupportingResourceInfo& support);
-Json classJson(const mjt::base::workspace::ClassInfo& clazz);
-Json searchHitJson(const mjt::base::workspace::SearchHit& hit);
-Json mutationJson(const mjt::base::workspace::MutationResult& mutation);
-Json jarRepairJson(const mjt::base::workspace::JarRepairResult& repair);
-Json referenceJson(const mjt::base::workspace::ReferenceInfo& reference);
-Json workflowJson(const mjt::base::workspace::WorkflowResult& workflow);
+Json diagnosticJson(const mjbase::jasm::Diagnostic& diagnostic);
+Json methodJson(const mjbase::workspace::MethodInfo& method);
+Json supportingResourceJson(const mjbase::workspace::SupportingResourceInfo& support);
+Json classJson(const mjbase::workspace::ClassInfo& clazz);
+Json searchHitJson(const mjbase::workspace::SearchHit& hit);
+Json mutationJson(const mjbase::workspace::MutationResult& mutation);
+Json jarRepairJson(const mjbase::workspace::JarRepairResult& repair);
+Json referenceJson(const mjbase::workspace::ReferenceInfo& reference);
+Json workflowJson(const mjbase::workspace::WorkflowResult& workflow);
 Json toolResult(Json payload, bool isError = false);
 Json toolError(const std::string& message, const ca::Status* status = nullptr);
 std::string base64(const std::vector<ca::u8>& value);
@@ -40,12 +40,12 @@ bool decodeBase64(const std::string& encoded,
 bool parseCursor(const Json& arguments, ca::usize total, ca::usize& offset);
 
 Json page(Json values, const Json& arguments);
-Json classSummaryPage(const std::vector<mjt::base::workspace::ClassSummary>& values,
+Json classSummaryPage(const std::vector<mjbase::workspace::ClassSummary>& values,
                       const Json& arguments);
-Json impactJson(const mjt::base::workspace::ImpactAnalysis& impact);
+Json impactJson(const mjbase::workspace::ImpactAnalysis& impact);
 Json normalizeToolError(const std::string& name,
                         const Json& arguments,
                         Json result,
-                        const mjt::base::workspace::IWorkspace* workspace);
+                        const mjbase::workspace::IWorkspace* workspace);
 
 }   //namespace mjt::mcp::detail

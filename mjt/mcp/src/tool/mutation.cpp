@@ -10,6 +10,7 @@
 #include "parser.hpp"
 #include "shared/jar_remapper.hpp"
 #include "shared/shadow_display.hpp"
+#include "shared/status_convert.hpp"
 #include "tool/shadow_slot.hpp"
 
 #include "mjbase/mapping/shadow_alias_format.hpp"
@@ -20,11 +21,11 @@
 namespace mjt::mcp {
 
 using namespace detail;
-using mjt::base::workspace::ClassMutation;
-using mjt::base::workspace::JarRepairRequest;
-using mjt::base::workspace::PipelineRequest;
-using mjt::base::workspace::RenameRequest;
-using mjt::base::workspace::IWorkspace;
+using mjbase::workspace::ClassMutation;
+using mjbase::workspace::JarRepairRequest;
+using mjbase::workspace::PipelineRequest;
+using mjbase::workspace::RenameRequest;
+using mjbase::workspace::IWorkspace;
 
 std::optional<Json> McpToolService::callMutationTool(
     const std::string& name, const Json& arguments, IWorkspace* current)
@@ -42,7 +43,10 @@ std::optional<Json> McpToolService::callMutationTool(
     }
     if (name == "jar_diff") {
         const auto result = current->diffJar(arguments.value("path", std::string{}));
-        if (result.status.is_err()) return toolError("diff JAR failed", &result.status);
+        if (result.status.is_err()) {
+            const auto err = shared::toCaStatus(result.status);
+            return toolError("diff JAR failed", &err);
+        }
         Json values = Json::array();
         for (const auto& diff : result.byteDiffs) {
             Json ranges = Json::array();
@@ -93,8 +97,9 @@ std::optional<Json> McpToolService::callMutationTool(
                 return classError;
         }
         //显式 if-else 分派替代原 3 层嵌套三元，避免重复读取 arguments 与拷贝；
-        //StatusOr 不可拷贝赋值，用 lambda 单次构造返回。
-        auto query = [&]() -> ca::StatusOr<std::vector<mjt::base::workspace::ReferenceInfo>> {
+        //用 lambda 单次构造返回。
+        auto query = [&]() -> mjbase::workspace::WorkspaceResult<
+                             std::vector<mjbase::workspace::ReferenceInfo>> {
             if (name == "xref_method" || name == "method_callers") {
                 return current->xrefsToMethod(owner, member, descriptor);
             }
@@ -108,7 +113,10 @@ std::optional<Json> McpToolService::callMutationTool(
                                             arguments.value("resolved", false));
         };
         auto references = query();
-        if (references.is_err()) { const auto err = references.unwrap_err(); return toolError("reference query failed", &err); }
+        if (references.is_err()) {
+            const auto err = shared::toCaStatus(references.unwrap_err());
+            return toolError("reference query failed", &err);
+        }
         Json values = Json::array();
         for (const auto& item : references.unwrap()) values.push_back(referenceJson(item));
         return toolResult(page(std::move(values), arguments));
@@ -119,7 +127,10 @@ std::optional<Json> McpToolService::callMutationTool(
         if (!slot::resolveClassArgument(*current, arguments, "class", true, className, slotError))
             return slotError;
         auto value = current->classRelations(className);
-        if (value.is_err()) { const auto err = value.unwrap_err(); return toolError("get class relations failed", &err); }
+        if (value.is_err()) {
+            const auto err = shared::toCaStatus(value.unwrap_err());
+            return toolError("get class relations failed", &err);
+        }
         const auto array = [](const std::vector<std::string>& source) {
             Json result = Json::array();
             for (const auto& item : source) result.push_back(item);
@@ -148,7 +159,10 @@ std::optional<Json> McpToolService::callMutationTool(
         if (!slot::resolveMethodSlots(slots, arguments, true, owner, member, descriptor, slotError))
             return slotError;
         auto value = current->overridesOfMethod(owner, member, descriptor);
-        if (value.is_err()) { const auto err = value.unwrap_err(); return toolError("get method overrides failed", &err); }
+        if (value.is_err()) {
+            const auto err = shared::toCaStatus(value.unwrap_err());
+            return toolError("get method overrides failed", &err);
+        }
         Json values = Json::array();
         for (const auto& item : value.unwrap())
             values.push_back({{"owner", item.owner},
@@ -248,8 +262,10 @@ std::optional<Json> McpToolService::callMutationTool(
         }
         //3. 取整 class Jasm 作 base，把旧方法文本精确替换为新方法文本。
         auto classInfo = current->classInfo(owner);
-        if (classInfo.is_err())
-            { const auto err = classInfo.unwrap_err(); return toolError("select class for method jasm failed", &err); }
+        if (classInfo.is_err()) {
+            const auto err = shared::toCaStatus(classInfo.unwrap_err());
+            return toolError("select class for method jasm failed", &err);
+        }
         auto jasm = current->getJasm(classInfo.unwrap().resourceUri);
         if (!jasm.isOk()) {
             Json diagnostics = Json::array();
@@ -419,7 +435,7 @@ std::optional<Json> McpToolService::callMutationTool(
                                  {"primary", item.primary},
                                  {"supporting", item.supporting},
                                  {"support_id", item.supportId}});
-        return toolResult({{"status", statusJson(analysis.status)},
+        return toolResult({{"status", statusJson(shared::toCaStatus(analysis.status))},
                            {"ready_to_apply", analysis.readyToApply},
                            {"requires_override_review", analysis.requiresOverrideReview},
                            {"mappings", std::move(mappings)},
@@ -441,7 +457,10 @@ std::optional<Json> McpToolService::callMutationTool(
     }
     if (name == "workspace_savepoint") {
         const auto status = current->createSavepoint(arguments.value("name", std::string{}));
-        if (status.is_err()) return toolError("create savepoint failed", &status);
+        if (status.is_err()) {
+            const auto err = shared::toCaStatus(status.unwrap_err());
+            return toolError("create savepoint failed", &err);
+        }
         return toolResult({{"revision", current->revision()}, {"created", true}});
     }
     if (name == "workspace_restore" || name == "workspace_revert_class" ||
@@ -462,7 +481,10 @@ std::optional<Json> McpToolService::callMutationTool(
     }
     if (name == "workspace_export") {
         const auto status = current->exportJar(arguments.value("path", std::string{}));
-        if (status.is_err()) return toolError("export workspace failed", &status);
+        if (status.is_err()) {
+            const auto err = shared::toCaStatus(status.unwrap_err());
+            return toolError("export workspace failed", &err);
+        }
         return toolResult({{"exported", true}, {"revision", current->revision()}});
     }
     if (name == "shadow_generate" || name == "shadow_prune") {

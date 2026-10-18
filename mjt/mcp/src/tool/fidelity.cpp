@@ -8,12 +8,13 @@
 #include <jbc/jbc.hpp>
 
 #include "json.hpp"
+#include "shared/status_convert.hpp"
 #include "tool/shadow_slot.hpp"
 
 namespace mjt::mcp {
 
 using namespace detail;
-using mjt::base::workspace::IWorkspace;
+using mjbase::workspace::IWorkspace;
 
 std::optional<Json> callFidelityTool(
     const std::string& name, const Json& arguments, IWorkspace* current)
@@ -28,7 +29,10 @@ std::optional<Json> callFidelityTool(
         return std::move(slotError);
 
     auto bytes = current->readClassBytes(className);
-    if (bytes.is_err()) { const auto err = bytes.unwrap_err(); return toolError("read class bytes failed", &err); }
+    if (bytes.is_err()) {
+        const auto err = shared::toCaStatus(bytes.unwrap_err());
+        return toolError("read class bytes failed", &err);
+    }
     auto value = std::move(bytes).unwrap();
 
     //libjbc 会话解析：ReadOptions 默认保留源字节（copy-through 保真前提）。

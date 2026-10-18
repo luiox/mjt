@@ -666,7 +666,7 @@ Json toolsList()
         {{"class_uri", {{"type", "string"}, {"minLength", 1}}},
          {"content_base64", {{"type", "string"},
                               {"minLength", 4},
-                              {"maxLength", ((mjt::base::workspace::kMaximumClassReplacementSize + 2) / 3) * 4}}}});
+                              {"maxLength", ((mjbase::workspace::kMaximumClassReplacementSize + 2) / 3) * 4}}}});
     result.push_back(workspaceTool("patch_replace_class_bytes",
                                    "Validate and atomically replace one class from strict base64 bytes.",
                                    classBytesPatch,

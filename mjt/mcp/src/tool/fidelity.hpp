@@ -18,6 +18,6 @@ namespace mjt::mcp {
 ///libjbytecode（legacy 冻结包）解析路径的立足点。
 std::optional<Json> callFidelityTool(const std::string&                name,
                                      const Json&                      arguments,
-                                     mjt::base::workspace::IWorkspace* current);
+                                     mjbase::workspace::IWorkspace* current);
 
 }   //namespace mjt::mcp

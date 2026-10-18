@@ -6,9 +6,9 @@
 #include <gtest/gtest.h>
 
 #include "mcp_test_support.hpp"
-#include "mbase/model/resource_container.hpp"
-#include "mbase/model/resource_helper.hpp"
-#include "mbase/model/resource_model.hpp"
+#include "mjbase/model/resource_container.hpp"
+#include "mjbase/model/resource_helper.hpp"
+#include "mjbase/model/resource_model.hpp"
 #include "shared/decompiler.hpp"
 #include "test_helper.hpp"
 
@@ -21,14 +21,14 @@ using namespace mjt::mcp::test_support;
 std::filesystem::path writeManifestJar(const std::string& fileName,
                                        const std::string& manifestText)
 {
-    base::ResourceContainer container;
+    mjbase::model::ResourceContainer container;
     container.addResource(
         "META-INF/MANIFEST.MF",
-        std::make_unique<base::UnknownResource>(
+        std::make_unique<mjbase::model::UnknownResource>(
             "META-INF/MANIFEST.MF",
             std::vector<ca::u8>(manifestText.begin(), manifestText.end())));
     const auto path = test::getTempOutPath(fileName);
-    base::ResourceHelper::exportToJar(container, path.string());
+    mjbase::model::ResourceHelper::exportToJar(container, path.string());
     return path;
 }
 
@@ -82,12 +82,12 @@ TEST(McpDecompilerVersionTest, ManifestWithoutVersionFallsBackToFileName)
 
 TEST(McpDecompilerVersionTest, MissingManifestFallsBackToFileName)
 {
-    base::ResourceContainer container;
+    mjbase::model::ResourceContainer container;
     container.addResource("notice.txt",
-                          std::make_unique<base::UnknownResource>(
+                          std::make_unique<mjbase::model::UnknownResource>(
                               "notice.txt", std::vector<ca::u8>{'o', 'k'}));
     const auto path = test::getTempOutPath("cfr-0.152.jar");
-    base::ResourceHelper::exportToJar(container, path.string());
+    mjbase::model::ResourceHelper::exportToJar(container, path.string());
     EXPECT_EQ("0.152", decompilerJarVersion(path.u8string()));
 }
 

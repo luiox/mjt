@@ -12,7 +12,7 @@ namespace mjt::mcp {
 
 using namespace detail;
 
-using mjt::base::workspace::IWorkspace;
+using mjbase::workspace::IWorkspace;
 
 std::string McpToolService::nextWorkspaceId()
 {

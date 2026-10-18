@@ -12,12 +12,13 @@
 #include "decompiler_support.hpp"
 #include "job.hpp"
 #include "json.hpp"
+#include "shared/status_convert.hpp"
 #include "limits.hpp"
 
 namespace mjt::mcp {
 
 using namespace detail;
-using mjt::base::workspace::IWorkspace;
+using mjbase::workspace::IWorkspace;
 
 namespace {
 
@@ -225,7 +226,10 @@ std::optional<Json> McpToolService::callSessionTool(const std::string& name, con
                              "); close one first");
         auto instance = std::make_unique<mjt::JarWorkspace>();
         const auto status = instance->openJar(path);
-        if (status.is_err()) return toolError("open workspace failed", &status);
+        if (status.is_err()) {
+            const auto err = shared::toCaStatus(status.unwrap_err());
+            return toolError("open workspace failed", &err);
+        }
         auto id = arguments.value("workspace_id", std::string{});
         if (id.empty()) id = nextWorkspaceId();
         if (workspaces_.find(id) != workspaces_.end()) return toolError("workspace already exists: " + id);

@@ -8,7 +8,7 @@
 #include "tool/json.hpp"
 
 #include "mjbase/mapping/shadow_alias_format.hpp"
-#include "mbase/workspace/i_workspace.hpp"
+#include "mjbase/workspace/i_workspace.hpp"
 
 namespace mjt::mcp::slot {
 
@@ -31,7 +31,7 @@ Json slotError(const std::string& message)
     return detail::toolError(message);
 }
 
-WorkspaceShadowTable loadWorkspaceShadowTable(mjt::base::workspace::IWorkspace& workspace,
+WorkspaceShadowTable loadWorkspaceShadowTable(mjbase::workspace::IWorkspace& workspace,
                                               const std::string& file)
 {
     WorkspaceShadowTable slots;
@@ -79,7 +79,7 @@ bool resolveClassSlot(const WorkspaceShadowTable& slots,
     return true;
 }
 
-bool resourceUriOfResolved(mjt::base::workspace::IWorkspace& workspace,
+bool resourceUriOfResolved(mjbase::workspace::IWorkspace& workspace,
                            const std::string&                    internalName,
                            std::string&                          uri,
                            Json&                                 error)
@@ -88,7 +88,7 @@ bool resourceUriOfResolved(mjt::base::workspace::IWorkspace& workspace,
     if (info.is_err()) {
         error = slotError("unknown-handle: reference resolved to " + internalName +
                           " but the class is not loadable in this workspace: " +
-                          info.unwrap_err().message());
+                          info.unwrap_err().message);
         return false;
     }
     uri = info.unwrap().resourceUri;
@@ -157,7 +157,7 @@ bool resolveMethodSlots(const WorkspaceShadowTable& slots,
     return true;
 }
 
-bool resolveClassArgument(mjt::base::workspace::IWorkspace& workspace,
+bool resolveClassArgument(mjbase::workspace::IWorkspace& workspace,
                           const Json&                           arguments,
                           const std::string&                    key,
                           bool                                  verifyRaw,
@@ -176,7 +176,7 @@ bool resolveClassArgument(mjt::base::workspace::IWorkspace& workspace,
     return true;
 }
 
-bool resolveClassUriArgument(mjt::base::workspace::IWorkspace& workspace,
+bool resolveClassUriArgument(mjbase::workspace::IWorkspace& workspace,
                              const Json&                           arguments,
                              const std::string&                    key,
                              std::string&                          out,

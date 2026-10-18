@@ -107,11 +107,20 @@ TEST(McpServerTest, PreservesParityFixtureEdgesAcrossQueriesTransactionsAndExpor
                               {"name", "choose"},
                               {"descriptor", "(Z)I"}});
     ASSERT_FALSE(frames.at("result").at("isError"));
-    EXPECT_GE(payload(frames).at("instructions").size(), 9U);
+    //libjbc DOM 指令序不含 ASM 帧伪节点（StackMapTable 是校验元数据而非指令，
+    //帧证据由 jasm 全文承载），指令摘要只列真实指令：iload/ifeq/bipush/goto/
+    //bipush/ireturn，分支形态在此足证复杂方法体解析无损。
+    EXPECT_EQ(6U, payload(frames).at("instructions").size());
     EXPECT_NE(std::find_if(payload(frames).at("instructions").begin(),
                            payload(frames).at("instructions").end(),
                            [](const Json& instruction) {
-                               return instruction.at("node_type") == "frame";
+                               return instruction.at("mnemonic") == "ifeq";
+                           }),
+              payload(frames).at("instructions").end());
+    EXPECT_NE(std::find_if(payload(frames).at("instructions").begin(),
+                           payload(frames).at("instructions").end(),
+                           [](const Json& instruction) {
+                               return instruction.at("mnemonic") == "goto";
                            }),
               payload(frames).at("instructions").end());
 

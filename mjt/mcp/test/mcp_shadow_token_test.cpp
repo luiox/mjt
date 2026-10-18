@@ -595,41 +595,46 @@ TEST(McpShadowTokenTest, PatchApplyResolvesMemberRefForAllExistingMemberKinds)
     const std::string afterRenameText(reinterpret_cast<const char*>(afterRename.data()),
                                       afterRename.size());
     EXPECT_NE(std::string::npos, afterRenameText.find("kept")) << "local rename did not land";
-    EXPECT_EQ(std::string::npos, afterRenameText.find("held")) << "stale local name survived";
+    //libjbc 池为 append-intern：rename 只把 LVT 行改指新 intern 的 "kept"，旧
+    //"held" UTF8 作为无引用垃圾保留在池里（mbase/ASM 整池重序列化会挤掉），
+    //故字节级 "held 已消失" 断言在此不成立，改由 "kept 已落地" 承载语义。
 
     //── 2. replace_try_catch_blocks：MemberRef 寻址既有方法，把 setup 装入的
     //catch 类型 Exception → Throwable（标号随属性跨往返存活，真实变更必提交）。
+    //数字下标走 libjbc DOM 真实指令序（不含 label 锚点，与 method_bytecode
+    //返回的指令列表同空间；mbase/ASM 节点序含 label，0/4/6 对应这里的 0/3/4）。
     expectCommitted(applyPatch({{"kind", "replace_try_catch_blocks"},
                                 {"member_name", methodRef},
                                 {"member_descriptor", "()I"},
                                 {"try_catch_blocks",
                                  Json::array({Json{{"start_instruction", 0},
-                                                   {"end_instruction", 4},
-                                                   {"handler_instruction", 6},
+                                                   {"end_instruction", 3},
+                                                   {"handler_instruction", 4},
                                                    {"type", "java/lang/Throwable"}}})}}),
                     "replace_try_catch_blocks");
 
-    //── 3. insert_instruction：MemberRef 寻址既有方法，bipush 前插 nop。
+    //── 3. insert_instruction：MemberRef 寻址既有方法，bipush（DOM 序 0）前插 nop。
     expectCommitted(applyPatch({{"kind", "insert_instruction"},
                                 {"member_name", methodRef},
                                 {"member_descriptor", "()I"},
-                                {"instruction_index", 1},
+                                {"instruction_index", 0},
                                 {"instruction", Json{{"kind", "simple"}, {"opcode", 0}}}}),
                     "insert_instruction");
 
-    //── 4. replace_instruction：MemberRef 寻址既有方法，bipush 7 → iconst_1。
+    //── 4. replace_instruction：MemberRef 寻址既有方法，bipush 7 → iconst_1
+    //（步骤 3 插入 nop 后 bipush 落 DOM 序 1）。
     expectCommitted(applyPatch({{"kind", "replace_instruction"},
                                 {"member_name", methodRef},
                                 {"member_descriptor", "()I"},
-                                {"instruction_index", 2},
+                                {"instruction_index", 1},
                                 {"instruction", Json{{"kind", "simple"}, {"opcode", 4}}}}),
                     "replace_instruction");
 
-    //── 5. remove_instruction：MemberRef 寻址既有方法，移除步骤 3 插入的 nop。
+    //── 5. remove_instruction：MemberRef 寻址既有方法，移除步骤 3 插入的 nop（DOM 序 0）。
     expectCommitted(applyPatch({{"kind", "remove_instruction"},
                                 {"member_name", methodRef},
                                 {"member_descriptor", "()I"},
-                                {"instruction_index", 1}}),
+                                {"instruction_index", 0}}),
                     "remove_instruction");
 
     //── 6. add_marker_annotation：field|method 两目标都经 findField/findMethod
