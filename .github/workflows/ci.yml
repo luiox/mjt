@@ -4,6 +4,8 @@
 # 依赖：luiox-repo git 直连包（libca/libmcp/libjstr/libjbytecode/libjzip/
 # libgarena/libjclassfile），由 CI 显式注册（root xmake.lua 不声明
 # add_repositories 到 luiox-repo 以外的远端）；gtest/libarchive/zlib 走 xrepo。
+# mjbase：源码级依赖（公开仓 luiox/mjbase，定版 checkout 到 mjbase-src，
+# 经 --mjbase_root 指入；升级 mjbase 时同步更新下方 ref）。
 
 name: CI
 
@@ -24,6 +26,13 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+
+      - name: Checkout mjbase (pinned source-level dep)
+        uses: actions/checkout@v4
+        with:
+          repository: luiox/mjbase
+          ref: 8a0adae895ad8d7320e4a5cb920d776fea1bf1d9
+          path: mjbase-src
 
       - name: Install system deps
         run: |
@@ -50,7 +59,7 @@ jobs:
         run: xmake repo --add luiox-repo https://github.com/luiox/luiox-repo.git
 
       - name: Configure (with tests)
-        run: xmake f -p linux --with_tests=y -y
+        run: xmake f -p linux --with_tests=y --mjbase_root=mjbase-src -y
 
       - name: Build
         run: xmake build -y mjt-mcp
@@ -66,6 +75,13 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+
+      - name: Checkout mjbase (pinned source-level dep)
+        uses: actions/checkout@v4
+        with:
+          repository: luiox/mjbase
+          ref: 8a0adae895ad8d7320e4a5cb920d776fea1bf1d9
+          path: mjbase-src
 
       - name: Setup xmake
         uses: xmake-io/github-action-setup-xmake@v1
@@ -88,7 +104,7 @@ jobs:
 
       - name: Configure (with tests)
         shell: bash
-        run: xmake f -p windows --with_tests=y -y
+        run: xmake f -p windows --with_tests=y --mjbase_root=mjbase-src -y
 
       - name: Build
         shell: bash
