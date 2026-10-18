@@ -596,13 +596,13 @@ TEST(McpShadowTokenTest, PatchApplyResolvesMemberRefForAllExistingMemberKinds)
                                       afterRename.size());
     EXPECT_NE(std::string::npos, afterRenameText.find("kept")) << "local rename did not land";
     //libjbc 池为 append-intern：rename 只把 LVT 行改指新 intern 的 "kept"，旧
-    //"held" UTF8 作为无引用垃圾保留在池里（mbase/ASM 整池重序列化会挤掉），
+    //"held" UTF8 作为无引用垃圾保留在池里（只有整池重序列化才会挤掉），
     //故字节级 "held 已消失" 断言在此不成立，改由 "kept 已落地" 承载语义。
 
     //── 2. replace_try_catch_blocks：MemberRef 寻址既有方法，把 setup 装入的
     //catch 类型 Exception → Throwable（标号随属性跨往返存活，真实变更必提交）。
     //数字下标走 libjbc DOM 真实指令序（不含 label 锚点，与 method_bytecode
-    //返回的指令列表同空间；mbase/ASM 节点序含 label，0/4/6 对应这里的 0/3/4）。
+    //返回的指令列表同空间；若对照含 label 锚点的节点序，0/4/6 对应这里的 0/3/4）。
     expectCommitted(applyPatch({{"kind", "replace_try_catch_blocks"},
                                 {"member_name", methodRef},
                                 {"member_descriptor", "()I"},
