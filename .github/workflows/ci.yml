@@ -31,7 +31,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: luiox/mjbase
-          ref: 8a0adae895ad8d7320e4a5cb920d776fea1bf1d9
+          ref: 2a31fa2bb3cc43a6aa0b57384b1b49308c801523
           path: mjbase-src
 
       - name: Install system deps
@@ -80,7 +80,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: luiox/mjbase
-          ref: 8a0adae895ad8d7320e4a5cb920d776fea1bf1d9
+          ref: 2a31fa2bb3cc43a6aa0b57384b1b49308c801523
           path: mjbase-src
 
       - name: Setup xmake

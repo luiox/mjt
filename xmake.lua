@@ -121,8 +121,10 @@ add_repositories("luiox-repo https://github.com/luiox/luiox-repo.git")
 -- 家族包内声明的 libca 依赖无版本约束且是小模块超集（core,str,log,crypto,zip），
 -- 放任自解析会多出实例；消费方目标同名包去重后落到无 json 的实例时，
 -- 链接期 LNK2019 ca::json（D33 同族根因）。升级 libca 只改下面两行。
-LUIOX_LIBCA_VERSION = "0.0.13"
-LUIOX_LIBCA_MODULES = "core,crypto,str,fs,io,json,net,http,process,opt,thread,log,zip,resources,i18n,test"
+-- 0.0.15 = zip UTF-8 路径 + 解析器 locale 加固（家族包 0.0.2 即 libca 0.0.14
+-- 对齐版，与其基线对齐消 skew）；env 模块为 libjdk_finder 0.1.0 所需。
+LUIOX_LIBCA_VERSION = "0.0.15"
+LUIOX_LIBCA_MODULES = "core,crypto,str,fs,env,io,json,net,http,process,opt,thread,log,zip,resources,i18n,test"
 add_requires("libca " .. LUIOX_LIBCA_VERSION, {configs = {modules = LUIOX_LIBCA_MODULES}})
 -- test 模块必须显式点名：test_helper 调用 ca::test::top_project_path()，
 -- 缺模块时链接期 undefined reference；包 on_load 按依赖闭包展开排序链接项。
@@ -139,7 +141,7 @@ add_requires("libjclassfile 0.0.2")
 includes("xmake/packages/libjbc.lua")
 add_requires("libjbc 0.4.15")
 add_requires("libjstd 0.0.1")
-add_requires("libjdk_finder 0.0.1")
+add_requires("libjdk_finder 0.1.0")
 add_requires("libjblw 0.0.1")
 add_requires("libjhasm 0.0.1")
 -- 嵌套 libca 全路径钉定，缺一条就多一个实例。
