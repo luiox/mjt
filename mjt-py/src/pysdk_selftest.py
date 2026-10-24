@@ -984,6 +984,47 @@ def run_all():
           and cyc["cycles"] == [["me/demo/App", "me/demo/Color"]], str(cyc))
     mjt.close_container(h25)
 
+    # ── 26. fail_soft 容错档位（坏类不拖垮整作业，跳过清单进 stats） ──
+    # 结构性坏类（垃圾字节）在默认档位经 sanitize 门 fail-fast 整作业报错；
+    # fail_soft 档位记 sanitize_error 跳过并继续，其余类照常产出（门契约：
+    # sanitize 失败类从容器剔除，导出不再见）。opt_preview 跑在克隆上，
+    # 跳过清单随结果带出且不动会话容器。
+    p26, h26 = fresh("failsoft")
+    mjt.close_container(h26)
+    import zipfile
+    p26bad = os.path.join(tmp, "mjt_pysdk_failsoft_bad.jar")
+    with zipfile.ZipFile(p26) as zin, \
+         zipfile.ZipFile(p26bad, "w", zipfile.ZIP_DEFLATED) as zout:
+        for item in zin.infolist():
+            zout.writestr(item.filename, zin.read(item.filename))
+        zout.writestr("me/demo/Broken.class", b"\xCA\xFE\xBA\xBE\x00\x01")
+    h26b = mjt.open_jar(p26bad)
+    try:
+        mjt.run_pipeline(h26b, pass_names=["NopRemover"])
+        check("failsoft default throws", False, "no exception")
+    except RuntimeError as e:
+        check("failsoft default throws",
+              "ClassFileSanitizeGate: failed at 'me/demo/Broken.class'" in str(e), str(e))
+    stats26 = mjt.run_pipeline(h26b, pass_names=["NopRemover", "ClassMemberSorter"],
+                               fail_soft=True)
+    check("failsoft skip reported",
+          [(s["scope"], s["target"], s["reason"]) for s in stats26.skipped]
+          == [("class", "me/demo/Broken.class", "sanitize_error")], str(stats26.skipped))
+    check("failsoft good classes ran",
+          all(s["processed"] > 0 for s in stats26.slots), str(stats26.slots))
+    p26out = os.path.join(tmp, "mjt_pysdk_failsoft_out.jar")
+    mjt.save(h26b, p26out)
+    with zipfile.ZipFile(p26out) as zout:
+        check("failsoft broken erased", "me/demo/Broken.class" not in zout.namelist(),
+              str([n for n in zout.namelist() if "Broken" in n]))
+    mjt.close_container(h26b)
+    h26c = mjt.open_jar(p26bad)
+    preview26 = mjt.opt_preview(h26c, pass_names=["NopRemover"], fail_soft=True)
+    check("failsoft preview skip",
+          [(s["scope"], s["target"], s["reason"]) for s in preview26["skipped"]]
+          == [("class", "me/demo/Broken.class", "sanitize_error")], str(preview26["skipped"]))
+    mjt.close_container(h26c)
+
     if fallback_tmp is not None:
         import shutil
         shutil.rmtree(fallback_tmp, ignore_errors=True)

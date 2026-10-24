@@ -241,12 +241,15 @@ struct JdkResolverChain
 };
 
 /// 管线在给定容器上执行（candidate 由调用方决定落会话还是试算副本）。
+/// failSoft 开容错档位（类级+方法级）：失败单元跳过并继续，跳过清单经
+/// PassFaultReport 带出进 stats.skipped；默认档位任一失败整作业报错。
 void runPipelineOnContainer(mjbase::model::ResourceContainer&       container,
                             const std::vector<std::string>&         passNames,
                             const std::string&                      pipeline,
                             bool                                    allowFallback,
                             const std::string&                      jdkPath,
-                            PyRunStats&                             stats)
+                            PyRunStats&                             stats,
+                            bool                                    failSoft)
 {
     deadlineCheck();
     mjbase::spi::PipelineBuilder      builder;
@@ -255,6 +258,13 @@ void runPipelineOnContainer(mjbase::model::ResourceContainer&       container,
     mjbase::spi::PassPipelineOptions options;
     JdkResolverChain                 resolver(jdkPath);
     if (resolver.typeResolver) options.typeResolver = resolver.typeResolver.get();
+
+    mjbase::spi::PassFaultReport faults;
+    if (failSoft) {
+        options.perClassFaultIsolation  = true;
+        options.perMethodFaultIsolation = true;
+        options.faultReport             = &faults;
+    }
 
     // 非 const：runContainerPipeline 收 GlobalPassManager&（非 const 左值）。
     auto gpm = builder.buildNestedPipeline(job, nullptr, nullptr, options);
@@ -265,15 +275,24 @@ void runPipelineOnContainer(mjbase::model::ResourceContainer&       container,
                                  + std::string(mjbase::spi::to_string(err.stage)) + " "
                                  + err.target + ": " + err.detail);
     }
+    for (const auto& entry : faults.entries) {
+        PyRunStats::Skip skip;
+        skip.scope  = entry.scope.to_std_string();
+        skip.target = entry.target.to_std_string();
+        skip.reason = entry.reason.to_std_string();
+        skip.detail = entry.detail.to_std_string();
+        stats.skipped.push_back(std::move(skip));
+    }
 }
 
 std::shared_ptr<PyRunStats> runPass(ca::u64 h, const std::string& name,
-                                    const std::string& jdkPath)
+                                    const std::string& jdkPath, bool failSoft)
 {
     auto& session = FacadeRegistry::instance().get(h);
     auto  stats   = std::make_shared<PyRunStats>();
     stats->pipeline = name;
-    runPipelineOnContainer(*session.container, {name}, "", false, jdkPath, *stats);
+    runPipelineOnContainer(*session.container, {name}, "", false, jdkPath, *stats,
+                           failSoft);
     session.clearTrees();   // 管线直驱容器字节 → 树缓存作废（lazy 重解析）
     session.lastStats    = stats;
     session.lastPipeline = name;
@@ -283,7 +302,7 @@ std::shared_ptr<PyRunStats> runPass(ca::u64 h, const std::string& name,
 /// run_pipeline：pass_names XOR pipeline（无回落——显式跑，两者均空即错）。
 std::shared_ptr<PyRunStats> runPipeline(ca::u64 h, std::vector<std::string> passNames,
                                         const std::string& pipeline,
-                                        const std::string& jdkPath)
+                                        const std::string& jdkPath, bool failSoft)
 {
     auto& session = FacadeRegistry::instance().get(h);
     auto  stats   = std::make_shared<PyRunStats>();
@@ -291,7 +310,7 @@ std::shared_ptr<PyRunStats> runPipeline(ca::u64 h, std::vector<std::string> pass
         !pipeline.empty() ? pipeline
                           : (passNames.size() == 1 ? passNames.front() : "pass_names");
     runPipelineOnContainer(*session.container, std::move(passNames), pipeline, false,
-                           jdkPath, *stats);
+                           jdkPath, *stats, failSoft);
     session.clearTrees();
     session.lastStats    = stats;
     session.lastPipeline = stats->pipeline;
@@ -300,15 +319,26 @@ std::shared_ptr<PyRunStats> runPipeline(ca::u64 h, std::vector<std::string> pass
 
 /// opt_preview：管线跑在容器克隆上（试算），diff 后丢弃副本——会话字节零改。
 py::dict optPreview(ca::u64 h, std::vector<std::string> passNames,
-                    const std::string& pipeline, const std::string& jdkPath)
+                    const std::string& pipeline, const std::string& jdkPath,
+                    bool failSoft)
 {
     auto& session = FacadeRegistry::instance().get(h);
     auto  clone   = facadeCloneContainer(session);
     auto  stats   = std::make_shared<PyRunStats>();
-    runPipelineOnContainer(*clone, passNames, pipeline, true, jdkPath, *stats);
+    runPipelineOnContainer(*clone, passNames, pipeline, true, jdkPath, *stats, failSoft);
     const auto diffs = facadeDiffContainers(*session.container, *clone);
     py::dict   out;
     out["changed"] = !diffs.empty();
+    py::list skipped;
+    for (const auto& skip : stats->skipped) {
+        py::dict skipOut;
+        skipOut["scope"]  = skip.scope;
+        skipOut["target"] = skip.target;
+        skipOut["reason"] = skip.reason;
+        skipOut["detail"] = skip.detail;
+        skipped.append(skipOut);
+    }
+    out["skipped"] = skipped;
     py::list entries;
     for (const auto& diff : diffs) {
         py::list ranges;
@@ -334,7 +364,7 @@ py::dict optPreview(ca::u64 h, std::vector<std::string> passNames,
 /// 树缓存作废并登记最近一次运行报告。
 std::shared_ptr<PyRunStats> optApply(ca::u64 h, std::vector<std::string> passNames,
                                      const std::string& pipeline,
-                                     const std::string& jdkPath)
+                                     const std::string& jdkPath, bool failSoft)
 {
     auto& session = FacadeRegistry::instance().get(h);
     auto  stats   = std::make_shared<PyRunStats>();
@@ -342,7 +372,7 @@ std::shared_ptr<PyRunStats> optApply(ca::u64 h, std::vector<std::string> passNam
         !pipeline.empty() ? pipeline
                           : (passNames.size() == 1 ? passNames.front() : "default-optimize");
     runPipelineOnContainer(*session.container, std::move(passNames), pipeline, true,
-                           jdkPath, *stats);
+                           jdkPath, *stats, failSoft);
     session.clearTrees();
     session.lastStats    = stats;
     session.lastPipeline = stats->pipeline;
@@ -427,25 +457,42 @@ PYBIND11_MODULE(mjt, m)
             return out;
         }, "逐 pass 槽位列表 [{name, scope, processed, changed, failed, "
            "duration_ms}]；scope ∈ method/class/global。")
+        .def_property_readonly("skipped", [](PyRunStats& s) {
+            py::list out;
+            for (const auto& skip : s.skipped) {
+                py::dict d;
+                d["scope"]  = skip.scope;
+                d["target"] = skip.target;
+                d["reason"] = skip.reason;
+                d["detail"] = skip.detail;
+                out.append(d);
+            }
+            return out;
+        }, "容错档位跳过清单 [{scope, target, reason, detail}]（fail_soft=True "
+           "运行才可能非空；scope ∈ class/method，reason ∈ sanitize_error/"
+           "reader_error/pass_error/writer_error）。")
         .def("__repr__", [](PyRunStats& s) {
             return "<RunStats " + s.pipeline + ": " + std::to_string(s.slots.size()) + " slots>";
         });
 
     // ── 管线 / 单 pass 面 ──
     m.def("run_pass", &runPass, py::arg("h"), py::arg("name"), py::arg("jdk") = "",
+          py::arg("fail_soft") = false,
           "按名运行 mjbase 内置单 pass。\n\n"
           "Args:\n"
           "    h: 容器句柄。\n"
           "    name: pass 名（mjt.passes() 列出可用面）。\n"
           "    jdk: JDK 路径——pass 需要跨类层次解析帧时给出；空串跳过。\n"
+          "    fail_soft: 容错档位（默认 False）。True 时失败类/失败方法跳过并\n"
+          "        继续，跳过清单进 RunStats.skipped；False 时任一失败整作业报错。\n"
           "Returns:\n"
           "    RunStats（同时登记为该容器最近运行报告）。管线直驱容器字节，\n"
           "    成功后该容器全部缓存树作废。\n"
           "Raises:\n"
           "    ValueError: pass 名未注册。\n"
-          "    RuntimeError: pass 运行失败。");
+          "    RuntimeError: pass 运行失败（fail_soft=False 且存在不可跳过的失败）。");
     m.def("run_pipeline", &runPipeline, py::arg("h"), py::arg("pass_names") = std::vector<std::string>{},
-          py::arg("pipeline") = "", py::arg("jdk") = "",
+          py::arg("pipeline") = "", py::arg("jdk") = "", py::arg("fail_soft") = false,
           "依序运行多个 pass，或按名运行整条管线。\n\n"
           "Args:\n"
           "    h: 容器句柄。\n"
@@ -453,42 +500,53 @@ PYBIND11_MODULE(mjt, m)
           "        无回落）。\n"
           "    pipeline: 管线名（mjt.pass_describe() 列出可用面）。\n"
           "    jdk: JDK 路径（可选，跨类层次帧解析用）。\n"
+          "    fail_soft: 容错档位（默认 False）。True 时失败类/失败方法跳过并\n"
+          "        继续（其余类照常产出），跳过清单进 RunStats.skipped——混淆\n"
+          "        样本带出厂坏帧（strict frame compute 失败）时用这个跑通全罐；\n"
+          "        False 时任一失败整作业报错。\n"
           "Returns:\n"
           "    RunStats；成功后树缓存作废并登记最近运行报告。\n"
           "Raises:\n"
           "    ValueError: pass_names 与 pipeline 同时给出、均空、或名字未知。\n"
-          "    RuntimeError: pass 运行失败。");
+          "    RuntimeError: pass 运行失败（fail_soft=False 且存在不可跳过的失败）。");
     m.def(
         "opt_preview",
         [](ca::u64 h, std::vector<std::string> passNames, const std::string& pipeline,
-           const std::string& jdk) { return optPreview(h, std::move(passNames), pipeline, jdk); },
+           const std::string& jdk, bool failSoft) {
+            return optPreview(h, std::move(passNames), pipeline, jdk, failSoft);
+        },
         py::arg("h"), py::arg("pass_names") = std::vector<std::string>{},
-        py::arg("pipeline") = "", py::arg("jdk") = "",
+        py::arg("pipeline") = "", py::arg("jdk") = "", py::arg("fail_soft") = false,
         "优化试算：管线跑在容器克隆上，diff 后丢弃副本——会话容器零改动。\n\n"
         "Args:\n"
         "    h: 容器句柄。\n"
         "    pass_names: pass 名列表（与 pipeline 互斥）。\n"
         "    pipeline: 管线名；与 pass_names 均空时回落 default-optimize。\n"
         "    jdk: JDK 路径（可选，跨类层次帧解析用）。\n"
+        "    fail_soft: 容错档位（默认 False）；True 时失败类/方法跳过并继续，\n"
+        "        跳过清单随结果带出。\n"
         "Returns:\n"
         "    {changed: bool, diffs: [{uri, before_size, after_size, ranges:\n"
-        "    [{offset, before_length, after_length}]}]}。\n"
+        "    [{offset, before_length, after_length}]}], skipped: [{scope, target,\n"
+        "    reason, detail}]}（skipped 仅 fail_soft 下可能非空）。\n"
         "Raises:\n"
         "    ValueError: 选择器非法或 pass/管线名未知。\n"
-        "    RuntimeError: pass 运行失败。");
+        "    RuntimeError: pass 运行失败（fail_soft=False 且存在不可跳过的失败）。");
     m.def("opt_apply", &optApply, py::arg("h"), py::arg("pass_names") = std::vector<std::string>{},
-          py::arg("pipeline") = "", py::arg("jdk") = "",
+          py::arg("pipeline") = "", py::arg("jdk") = "", py::arg("fail_soft") = false,
           "优化落盘：管线跑在会话容器上。\n\n"
           "Args:\n"
           "    h: 容器句柄。\n"
           "    pass_names: pass 名列表（与 pipeline 互斥）。\n"
           "    pipeline: 管线名；与 pass_names 均空时回落 default-optimize。\n"
           "    jdk: JDK 路径（可选，跨类层次帧解析用）。\n"
+          "    fail_soft: 容错档位（默认 False）。True 时失败类/失败方法跳过并\n"
+          "        继续，跳过清单进 RunStats.skipped；False 时任一失败整作业报错。\n"
           "Returns:\n"
           "    RunStats；成功后树缓存作废并登记最近运行报告。\n"
           "Raises:\n"
           "    ValueError: 选择器非法或 pass/管线名未知。\n"
-          "    RuntimeError: pass 运行失败。");
+          "    RuntimeError: pass 运行失败（fail_soft=False 且存在不可跳过的失败）。");
     m.def("passes", [] {
         std::vector<std::string> out;
         for (const auto& info : mjbase::spi::defaultPassRegistry().list())

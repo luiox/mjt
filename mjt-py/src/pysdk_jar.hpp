@@ -23,8 +23,19 @@ struct PyRunStats
         ca::u64     failed     = 0;
         double      durationMs = 0.0;
     };
-    std::string    pipeline;
+    /// 容错档位跳过记录（PassFaultReport::Entry 的值拷贝视图；fail_soft 运行
+    /// 才可能非空，默认档位任一失败整作业报错到不了这里）。
+    struct Skip
+    {
+        std::string scope;    ///< 跳过粒度："class" / "method"
+        std::string target;   ///< 类资源 URI；方法级为 "<class>.<name><desc>"
+        std::string reason;   ///< "sanitize_error" / "reader_error" / "pass_error" /
+                              ///< "writer_error"
+        std::string detail;   ///< 失败详情；可为空
+    };
+    std::string       pipeline;
     std::vector<Slot> slots;
+    std::vector<Skip> skipped;
 };
 
 /// 合成混淆形态演示 jar（unittest + 新样本演示共用；零样本字节入库）。
