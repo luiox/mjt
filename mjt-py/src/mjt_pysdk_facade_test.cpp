@@ -636,6 +636,48 @@ TEST(FacadeTree, LdcStringPayloadInternedAndDeterministic)
     }
 }
 
+TEST(FacadeTree, LdcStringPayloadPreservesEmbeddedNul)
+{
+    // MUTF-8 边界串回归：MUTF-8→UTF-8 转换产物可含内嵌 NUL（U+0000 的 C0 80
+    // 形转回真实 NUL，增补平面转四字节 UTF-8）。载荷入池必须按 byte_length
+    // 复制——internIn 曾走 from_cstr 的 strlen 舞步，ldc "A\0B😊X" 写出为 "A"。
+    // 发射 → 读侧回读 → save → 重开回读，四级断言全链保真。
+    const std::string payload = std::string("A\x00" "B\xF0\x9F\x98\x80" "X", 8);
+
+    const auto out = tmpPath("mjt_facade_ldc_nul.jar");
+    {
+        const auto h = openDemo("mjt_facade_ldc_nul_src.jar");
+        auto& s      = FacadeRegistry::instance().get(h);
+        facadeParseClass(s, "me/demo/Util");
+        facadeAddMethod(s, "me/demo/Util", "msg", "()Ljava/lang/String;", 0x0009, 1, 0);
+        const auto ld = facadeEmitLdc(s, "me/demo/Util", "msg", "()Ljava/lang/String;",
+                                      facadeInternedStr(s, payload), std::nullopt);
+        facadeEmitInsn(s, "me/demo/Util", "msg", "()Ljava/lang/String;",
+                       0xB0 /*areturn*/, std::nullopt);
+        const auto d = facadeInsnDetail(s, "me/demo/Util", "msg", "()Ljava/lang/String;", ld);
+        EXPECT_EQ(d.cstTag, 1);
+        EXPECT_EQ(d.cstStr, payload);
+        facadeSave(s, out, true);
+        FacadeRegistry::instance().close(h);
+    }
+    {
+        auto& reg    = FacadeRegistry::instance();
+        auto& reopen = reg.create();
+        facadeImportJar(reopen, out);
+        facadeParseClass(reopen, "me/demo/Util");
+        ca::u32 ldcUid = 0;
+        for (const auto& it : facadeInsns(reopen, "me/demo/Util", "msg", "()Ljava/lang/String;")) {
+            if (std::string(facadeInsnKindName(it.kind)) == "ldc") ldcUid = it.uid;
+        }
+        ASSERT_NE(ldcUid, ca::u32{0});
+        const auto d =
+            facadeInsnDetail(reopen, "me/demo/Util", "msg", "()Ljava/lang/String;", ldcUid);
+        EXPECT_EQ(d.cstTag, 1);
+        EXPECT_EQ(d.cstStr, payload);
+        reg.close(reopen.handle);
+    }
+}
+
 TEST(FacadeTree, SetClassBytesInvalidatesCache)
 {
     const auto h = openDemo("mjt_facade_tree_inv.jar");
