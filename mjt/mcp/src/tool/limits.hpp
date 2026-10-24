@@ -5,9 +5,12 @@
 namespace mjt::mcp::detail {
 
 ///分页相关上限。kMaximumPageSize 限制单页返回元素数；kMaximumClassListPayloadBytes
-///限制 class 列表单次响应的序列化字节数，防止单响应过大。
+///限制 class 列表单次响应的序列化字节数，防止单响应过大。kDefaultPageSize 是
+///page_size/limit 均未给时的缺省页大小（大响应不再以百条
+///为缺省）。
 inline constexpr ca::usize kMaximumPageSize              = 1000;
 inline constexpr ca::usize kMaximumClassListPayloadBytes = 4 * 1024 * 1024;
+inline constexpr ca::usize kDefaultPageSize              = 50;
 
 ///单次 resource_read/class_bytes 分块读取的最大字节数（1 MiB）。
 inline constexpr ca::usize kMaximumResourceChunkSize = 1024 * 1024;

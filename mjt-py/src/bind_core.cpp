@@ -8,11 +8,16 @@
 #include <string>
 
 #include "mjbase/hierarchy/class_hierarchy.hpp"
+#include "mjbase/expr/expr_eval.hpp"
+#include "mjbase/expr/expr_parser.hpp"
+#include "mjbase/expr/expr_print.hpp"
+#include "mjbase/expr/expr_simplify.hpp"
 #include "mjbase/spi/common_super_resolver.hpp"
 #include "mjbase/spi/job_context.hpp"
 #include "mjbase/spi/pass_manager.hpp"
 #include "mjbase/spi/pass_name_registry.hpp"
 #include "mjbase/spi/pass_pipeline.hpp"
+#include "mjbase/spi/pass_registry.hpp"
 #include "mjbase/spi/pipeline_builder.hpp"
 #include "mjbase/spi/strict_type_resolver.hpp"
 #include "mjbase/workspace/workspace.hpp"
@@ -22,6 +27,7 @@
 #include "pysdk_bridge.hpp"
 #include "pysdk_facade.hpp"
 #include "pysdk_jar.hpp"
+#include "pysdk_limits.hpp"
 
 #include <cstdio>
 #include <filesystem>
@@ -132,43 +138,18 @@ private:
     PyRunStats& out_;
 };
 
-// ── run_pass 实现（mjbase spi 命名 pass 注册表 + 装配层，纯基座面） ────────
+// ── run_pass / run_pipeline 实现（mjbase spi 命名 pass 注册表 + 装配层） ──
 
-std::shared_ptr<PyRunStats> runPass(ca::u64 h, const std::string& name,
-                                    const std::string& jdkPath)
+/// 按名装配单 pass 到 builder（scope 投段 + 统计装饰器外层包裹）。
+/// 工厂每次 build 重新 create——与装配层「实例不跨构建共享」纪律一致。
+void addNamedPass(mjbase::spi::PipelineBuilder& builder, const std::string& name,
+                  PyRunStats& stats)
 {
-    auto& session = FacadeRegistry::instance().get(h);
-    // 默认注册表首次访问自种子（无需显式注册步骤）。
-    auto&       registry = mjbase::spi::defaultPassRegistry();
-    const auto  found    = registry.find(name);
+    auto&      registry = mjbase::spi::defaultPassRegistry();
+    const auto found    = registry.find(name);
     if (found.is_err()) {
         throw py::value_error("unknown pass '" + name + "'");
     }
-
-    auto stats            = std::make_shared<PyRunStats>();
-    stats->pipeline       = name;
-
-    mjbase::spi::PassJobContext     job;
-    mjbase::spi::PassPipelineOptions options;
-
-    // jdk 扫描 → 层次图 → 公共父类求解 → Strict 帧重算注入（resolver 数据
-    // 获取是调用方的事，管线只消费已建好的图；对象存活须覆盖 build+run）。
-    std::unique_ptr<mjbase::KeyPool>                        jdkPool;
-    std::unique_ptr<mjbase::hierarchy::ClassHierarchy>      jdkHierarchy;
-    std::unique_ptr<mjbase::spi::CommonSuperClassResolver>  superResolver;
-    std::unique_ptr<mjbase::spi::StrictTypeResolverAdapter> typeResolver;
-    if (!jdkPath.empty()) {
-        jdkPool      = std::make_unique<mjbase::KeyPool>();
-        jdkHierarchy = std::make_unique<mjbase::hierarchy::ClassHierarchy>(*jdkPool);
-        mjbase::workspace::scanJdkHierarchy(jdkPath, *jdkHierarchy, *jdkPool);
-        superResolver = std::make_unique<mjbase::spi::CommonSuperClassResolver>(*jdkHierarchy);
-        typeResolver  = std::make_unique<mjbase::spi::StrictTypeResolverAdapter>(*superResolver);
-        options.typeResolver = typeResolver.get();
-    }
-
-    // 单 pass 装配：按注册 scope 投入对应段位，统计装饰器包在 pass 外层
-    // （factory 每次 build 重新 create——与装配层「实例不跨构建共享」纪律一致）。
-    mjbase::spi::PipelineBuilder builder;
     switch (found.unwrap().scope) {
     case mjbase::spi::PassScope::Method:
         builder.addMethodPass(
@@ -177,7 +158,7 @@ std::shared_ptr<PyRunStats> runPass(ca::u64 h, const std::string& name,
                 if (pass.is_err()) throw std::runtime_error("pass create failed: " + name);
                 return std::make_unique<
                     PyStatsPass<mjbase::spi::MethodScope, mjbase::spi::MethodAnalysisManager>>(
-                    std::move(pass).unwrap(), name, "method", *stats);
+                    std::move(pass).unwrap(), name, "method", stats);
             },
             name);
         break;
@@ -188,7 +169,7 @@ std::shared_ptr<PyRunStats> runPass(ca::u64 h, const std::string& name,
                 if (pass.is_err()) throw std::runtime_error("pass create failed: " + name);
                 return std::make_unique<
                     PyStatsPass<jbc::ir::ClassSession, mjbase::spi::ClassAnalysisManager>>(
-                    std::move(pass).unwrap(), name, "class", *stats);
+                    std::move(pass).unwrap(), name, "class", stats);
             },
             name);
         break;
@@ -200,7 +181,7 @@ std::shared_ptr<PyRunStats> runPass(ca::u64 h, const std::string& name,
                 return std::make_unique<
                     PyStatsPass<mjbase::model::ResourceContainer,
                                 mjbase::spi::GlobalAnalysisManager>>(
-                    std::move(pass).unwrap(), name, "global", *stats);
+                    std::move(pass).unwrap(), name, "global", stats);
             },
             name);
         break;
@@ -208,20 +189,163 @@ std::shared_ptr<PyRunStats> runPass(ca::u64 h, const std::string& name,
         // Cf 段未接入容器管线（装配层同口径：fail loud，不静默跳过）。
         throw py::value_error("pass '" + name + "' (cf scope) is not runnable via run_pass");
     }
+}
+
+/// 选择器解析（workspace applyPipeline 同口径）：pipeline 与 pass_names 互斥；
+/// 两者均空时 allowFallback 才回落 default-optimize（opt_* 语义），否则报错。
+void assembleSelection(mjbase::spi::PipelineBuilder&   builder,
+                       const std::vector<std::string>& passNames,
+                       const std::string&              pipeline,
+                       bool                            allowFallback,
+                       PyRunStats&                     stats)
+{
+    if (!pipeline.empty() && !passNames.empty()) {
+        throw py::value_error("pipeline and pass_names are mutually exclusive");
+    }
+    mjbase::spi::registerBuiltinPipelines();
+    if (!pipeline.empty()) {
+        if (!mjbase::spi::PassRegistry::instance().hasPipeline(pipeline)) {
+            throw py::value_error("unknown pipeline '" + pipeline + "'");
+        }
+        builder = mjbase::spi::PassRegistry::instance().getPipeline(pipeline);
+        return;
+    }
+    if (!passNames.empty()) {
+        for (const auto& name : passNames) addNamedPass(builder, name, stats);
+        return;
+    }
+    if (!allowFallback) {
+        throw py::value_error("exactly one of pass_names or pipeline is required");
+    }
+    builder = mjbase::spi::PassRegistry::instance().getPipeline("default-optimize");
+}
+
+/// jdk 扫描 → 层次图 → 公共父类求解 → Strict 帧重算注入（resolver 数据获取是
+/// 调用方的事；对象存活须覆盖 build+run）。
+struct JdkResolverChain
+{
+    std::unique_ptr<mjbase::KeyPool>                       pool;
+    std::unique_ptr<mjbase::hierarchy::ClassHierarchy>     hierarchy;
+    std::unique_ptr<mjbase::spi::CommonSuperClassResolver> superResolver;
+    std::unique_ptr<mjbase::spi::StrictTypeResolverAdapter> typeResolver;
+
+    JdkResolverChain(const std::string& jdkPath)
+    {
+        if (jdkPath.empty()) return;
+        pool          = std::make_unique<mjbase::KeyPool>();
+        hierarchy     = std::make_unique<mjbase::hierarchy::ClassHierarchy>(*pool);
+        mjbase::workspace::scanJdkHierarchy(jdkPath, *hierarchy, *pool);
+        superResolver = std::make_unique<mjbase::spi::CommonSuperClassResolver>(*hierarchy);
+        typeResolver  = std::make_unique<mjbase::spi::StrictTypeResolverAdapter>(*superResolver);
+    }
+};
+
+/// 管线在给定容器上执行（candidate 由调用方决定落会话还是试算副本）。
+void runPipelineOnContainer(mjbase::model::ResourceContainer&       container,
+                            const std::vector<std::string>&         passNames,
+                            const std::string&                      pipeline,
+                            bool                                    allowFallback,
+                            const std::string&                      jdkPath,
+                            PyRunStats&                             stats)
+{
+    deadlineCheck();
+    mjbase::spi::PipelineBuilder      builder;
+    assembleSelection(builder, passNames, pipeline, allowFallback, stats);
+    mjbase::spi::PassJobContext      job;
+    mjbase::spi::PassPipelineOptions options;
+    JdkResolverChain                 resolver(jdkPath);
+    if (resolver.typeResolver) options.typeResolver = resolver.typeResolver.get();
 
     // 非 const：runContainerPipeline 收 GlobalPassManager&（非 const 左值）。
     auto gpm = builder.buildNestedPipeline(job, nullptr, nullptr, options);
-    const auto ran = mjbase::spi::runContainerPipeline(*session.container, gpm, job);
+    const auto ran = mjbase::spi::runContainerPipeline(container, gpm, job);
     if (ran.is_err()) {
         const auto& err = ran.unwrap_err();
         throw std::runtime_error("pass run failed: "
                                  + std::string(mjbase::spi::to_string(err.stage)) + " "
                                  + err.target + ": " + err.detail);
     }
+}
 
+std::shared_ptr<PyRunStats> runPass(ca::u64 h, const std::string& name,
+                                    const std::string& jdkPath)
+{
+    auto& session = FacadeRegistry::instance().get(h);
+    auto  stats   = std::make_shared<PyRunStats>();
+    stats->pipeline = name;
+    runPipelineOnContainer(*session.container, {name}, "", false, jdkPath, *stats);
     session.clearTrees();   // 管线直驱容器字节 → 树缓存作废（lazy 重解析）
     session.lastStats    = stats;
     session.lastPipeline = name;
+    return stats;
+}
+
+/// run_pipeline：pass_names XOR pipeline（无回落——显式跑，两者均空即错）。
+std::shared_ptr<PyRunStats> runPipeline(ca::u64 h, std::vector<std::string> passNames,
+                                        const std::string& pipeline,
+                                        const std::string& jdkPath)
+{
+    auto& session = FacadeRegistry::instance().get(h);
+    auto  stats   = std::make_shared<PyRunStats>();
+    stats->pipeline =
+        !pipeline.empty() ? pipeline
+                          : (passNames.size() == 1 ? passNames.front() : "pass_names");
+    runPipelineOnContainer(*session.container, std::move(passNames), pipeline, false,
+                           jdkPath, *stats);
+    session.clearTrees();
+    session.lastStats    = stats;
+    session.lastPipeline = stats->pipeline;
+    return stats;
+}
+
+/// opt_preview：管线跑在容器克隆上（试算），diff 后丢弃副本——会话字节零改。
+py::dict optPreview(ca::u64 h, std::vector<std::string> passNames,
+                    const std::string& pipeline, const std::string& jdkPath)
+{
+    auto& session = FacadeRegistry::instance().get(h);
+    auto  clone   = facadeCloneContainer(session);
+    auto  stats   = std::make_shared<PyRunStats>();
+    runPipelineOnContainer(*clone, passNames, pipeline, true, jdkPath, *stats);
+    const auto diffs = facadeDiffContainers(*session.container, *clone);
+    py::dict   out;
+    out["changed"] = !diffs.empty();
+    py::list entries;
+    for (const auto& diff : diffs) {
+        py::list ranges;
+        for (const auto& range : diff.ranges) {
+            py::dict rangeOut;
+            rangeOut["offset"]        = range.offset;
+            rangeOut["before_length"] = range.beforeLength;
+            rangeOut["after_length"]  = range.afterLength;
+            ranges.append(rangeOut);
+        }
+        py::dict entry;
+        entry["uri"]         = diff.uri;
+        entry["before_size"] = diff.beforeSize;
+        entry["after_size"]  = diff.afterSize;
+        entry["ranges"]      = ranges;
+        entries.append(entry);
+    }
+    out["diffs"] = entries;
+    return out;
+}
+
+/// opt_apply：管线落在会话容器上（无选择器回落 default-optimize），成功后
+/// 树缓存作废并登记最近一次运行报告。
+std::shared_ptr<PyRunStats> optApply(ca::u64 h, std::vector<std::string> passNames,
+                                     const std::string& pipeline,
+                                     const std::string& jdkPath)
+{
+    auto& session = FacadeRegistry::instance().get(h);
+    auto  stats   = std::make_shared<PyRunStats>();
+    stats->pipeline =
+        !pipeline.empty() ? pipeline
+                          : (passNames.size() == 1 ? passNames.front() : "default-optimize");
+    runPipelineOnContainer(*session.container, std::move(passNames), pipeline, true,
+                           jdkPath, *stats);
+    session.clearTrees();
+    session.lastStats    = stats;
+    session.lastPipeline = stats->pipeline;
     return stats;
 }
 
@@ -274,11 +398,20 @@ void loadUtilModule(py::module_& m)
 
 PYBIND11_MODULE(mjt, m)
 {
-    m.doc() = "mjt-py SDK v3: functional face over mjbase core (Ref=key)";
+    m.doc() = "mjt-py SDK：Java 字节码容器与改写面（键式 API）。\n\n"
+              "容器操作全部按纯值键寻址：容器句柄 h（int）、类键 cref=(h, 类名)、\n"
+              "成员键 mref/fref=(h, cls, name, desc)，类名一律 internal name\n"
+              "（a/b/C 形态）。键失效（容器已关/类已改名/指令已删）抛\n"
+              "mjt.StaleRefError（KeyError 子类）；树缓存与脏纪律由 C++ 侧自管。\n"
+              "长操作受协作层 deadline 约束（mjt.set_deadline_ms），越限抛\n"
+              "mjt.DeadlineExceeded（KeyboardInterrupt 子类）。纯 Python 二次\n"
+              "封装层在 mjt.util（from mjt import util as U）。";
 
-    // ── RunStats（L5 报告等位物） ──
-    py::class_<PyRunStats>(m, "RunStats")
-        .def_property_readonly("pipeline", [](PyRunStats& s) { return s.pipeline; })
+    // ── RunStats（管线运行报告） ──
+    py::class_<PyRunStats>(m, "RunStats",
+                           "单次管线/pass 运行的统计报告（mjt.last_run_report 取最近一次）。")
+        .def_property_readonly("pipeline", [](PyRunStats& s) { return s.pipeline; },
+                               "运行的管线名或单 pass 名。")
         .def_property_readonly("slots", [](PyRunStats& s) {
             py::list out;
             for (const auto& slot : s.slots) {
@@ -292,37 +425,201 @@ PYBIND11_MODULE(mjt, m)
                 out.append(d);
             }
             return out;
-        })
+        }, "逐 pass 槽位列表 [{name, scope, processed, changed, failed, "
+           "duration_ms}]；scope ∈ method/class/global。")
         .def("__repr__", [](PyRunStats& s) {
             return "<RunStats " + s.pipeline + ": " + std::to_string(s.slots.size()) + " slots>";
         });
 
     // ── 管线 / 单 pass 面 ──
     m.def("run_pass", &runPass, py::arg("h"), py::arg("name"), py::arg("jdk") = "",
-          "按名跑 mjbase 内置单 pass（NopRemover/ClassMemberSorter/ClassRenamer/...）");
+          "按名运行 mjbase 内置单 pass。\n\n"
+          "Args:\n"
+          "    h: 容器句柄。\n"
+          "    name: pass 名（mjt.passes() 列出可用面）。\n"
+          "    jdk: JDK 路径——pass 需要跨类层次解析帧时给出；空串跳过。\n"
+          "Returns:\n"
+          "    RunStats（同时登记为该容器最近运行报告）。管线直驱容器字节，\n"
+          "    成功后该容器全部缓存树作废。\n"
+          "Raises:\n"
+          "    ValueError: pass 名未注册。\n"
+          "    RuntimeError: pass 运行失败。");
+    m.def("run_pipeline", &runPipeline, py::arg("h"), py::arg("pass_names") = std::vector<std::string>{},
+          py::arg("pipeline") = "", py::arg("jdk") = "",
+          "依序运行多个 pass，或按名运行整条管线。\n\n"
+          "Args:\n"
+          "    h: 容器句柄。\n"
+          "    pass_names: pass 名列表（与 pipeline 互斥，两者必须给其一，\n"
+          "        无回落）。\n"
+          "    pipeline: 管线名（mjt.pass_describe() 列出可用面）。\n"
+          "    jdk: JDK 路径（可选，跨类层次帧解析用）。\n"
+          "Returns:\n"
+          "    RunStats；成功后树缓存作废并登记最近运行报告。\n"
+          "Raises:\n"
+          "    ValueError: pass_names 与 pipeline 同时给出、均空、或名字未知。\n"
+          "    RuntimeError: pass 运行失败。");
+    m.def(
+        "opt_preview",
+        [](ca::u64 h, std::vector<std::string> passNames, const std::string& pipeline,
+           const std::string& jdk) { return optPreview(h, std::move(passNames), pipeline, jdk); },
+        py::arg("h"), py::arg("pass_names") = std::vector<std::string>{},
+        py::arg("pipeline") = "", py::arg("jdk") = "",
+        "优化试算：管线跑在容器克隆上，diff 后丢弃副本——会话容器零改动。\n\n"
+        "Args:\n"
+        "    h: 容器句柄。\n"
+        "    pass_names: pass 名列表（与 pipeline 互斥）。\n"
+        "    pipeline: 管线名；与 pass_names 均空时回落 default-optimize。\n"
+        "    jdk: JDK 路径（可选，跨类层次帧解析用）。\n"
+        "Returns:\n"
+        "    {changed: bool, diffs: [{uri, before_size, after_size, ranges:\n"
+        "    [{offset, before_length, after_length}]}]}。\n"
+        "Raises:\n"
+        "    ValueError: 选择器非法或 pass/管线名未知。\n"
+        "    RuntimeError: pass 运行失败。");
+    m.def("opt_apply", &optApply, py::arg("h"), py::arg("pass_names") = std::vector<std::string>{},
+          py::arg("pipeline") = "", py::arg("jdk") = "",
+          "优化落盘：管线跑在会话容器上。\n\n"
+          "Args:\n"
+          "    h: 容器句柄。\n"
+          "    pass_names: pass 名列表（与 pipeline 互斥）。\n"
+          "    pipeline: 管线名；与 pass_names 均空时回落 default-optimize。\n"
+          "    jdk: JDK 路径（可选，跨类层次帧解析用）。\n"
+          "Returns:\n"
+          "    RunStats；成功后树缓存作废并登记最近运行报告。\n"
+          "Raises:\n"
+          "    ValueError: 选择器非法或 pass/管线名未知。\n"
+          "    RuntimeError: pass 运行失败。");
     m.def("passes", [] {
         std::vector<std::string> out;
         for (const auto& info : mjbase::spi::defaultPassRegistry().list())
             out.push_back(std::string(info.name));
         return out;
-    });
+    }, "列出可用 pass 名（run_pass / run_pipeline 的 pass_names 取值面）。\n\n"
+       "Returns:\n"
+       "    list[str]，pass 名列表。");
+    m.def(
+        "pass_describe",
+        [] {
+            py::dict out;
+            py::list passes;
+            for (const auto& pass : mjbase::spi::defaultPassRegistry().list()) {
+                // scope 输出小写（workspace availablePasses 同口径）。
+                const std::string scope =
+                    pass.scope == mjbase::spi::PassScope::Method   ? "method"
+                    : pass.scope == mjbase::spi::PassScope::Class  ? "class"
+                    : pass.scope == mjbase::spi::PassScope::Global ? "global"
+                                                                   : "cf";
+                py::dict entry;
+                entry["name"]        = std::string(pass.name);
+                entry["description"] = std::string(pass.description);
+                entry["scope"]       = scope;
+                passes.append(entry);
+            }
+            out["passes"] = passes;
+            mjbase::spi::registerBuiltinPipelines();
+            py::list pipelines;
+            for (const auto& pipeline : mjbase::spi::PassRegistry::instance().listPipelines()) {
+                py::dict entry;
+                entry["name"]        = pipeline.name;
+                entry["description"] = pipeline.description;
+                pipelines.append(entry);
+            }
+            out["pipelines"] = pipelines;
+            return out;
+        },
+        "pass/管线目录（run_pipeline 可用面）。\n\n"
+        "Returns:\n"
+        "    {passes: [{name, description, scope}], pipelines: [{name, "
+        "description}]}；scope ∈ method/class/global。");
+    m.def(
+        "analysis_evaluate",
+        [](const std::string& expression, py::object bindings, bool simplify,
+           int max_depth) {
+            if (expression.empty()) throw py::value_error("expression is required");
+            std::string parseError;
+            auto        parsed = mjbase::expr::parseExpression(expression, &parseError);
+            if (!parsed) throw py::value_error("cannot parse expression: " + parseError);
+            if (simplify) parsed = mjbase::expr::simplify(parsed).simplified;
+            mjbase::expr::VarBindings vars;
+            if (!bindings.is_none()) {
+                const auto dict = bindings.cast<py::dict>();
+                for (const auto& item : dict) {
+                    const auto name  = item.first.cast<std::string>();
+                    const auto value = item.second.cast<long long>();
+                    vars.emplace(name, mjbase::expr::ExprValue(static_cast<ca::i64>(value)));
+                }
+            }
+            if (max_depth <= 0 || max_depth > 4096) {
+                throw py::value_error("max_depth must be between 1 and 4096");
+            }
+            const auto result =
+                mjbase::expr::eval(*parsed, vars, static_cast<ca::u32>(max_depth));
+            py::dict out;
+            out["expression"] = expression;
+            out["normalized"] = mjbase::expr::toSExpr(*parsed);
+            out["simplified"] = simplify;
+            out["evaluated"]  = result.ok;
+            if (result.ok)
+                out["value"] = result.value.rawValue();
+            else
+                out["error"] = result.error;
+            return out;
+        },
+        py::arg("expression"), py::arg("bindings") = py::none(), py::arg("simplify") = false,
+        py::arg("max_depth") = 1024,
+        "分析表达式求值：解析 →（可选）化简 → 变量绑定求值。\n\n"
+        "Args:\n"
+        "    expression: 表达式文本（mjbase expr 语法，如 \"1 + 2 * 3\"）。\n"
+        "    bindings: 变量名 → int 的绑定 dict；None 表示无绑定。\n"
+        "    simplify: 求值前是否先化简。\n"
+        "    max_depth: 求值深度上限（1..4096，默认 1024）。\n"
+        "Returns:\n"
+        "    {expression, normalized, simplified, evaluated, value|error}；\n"
+        "    evaluated=False 时错误详情在 error，无 value 键。\n"
+        "Raises:\n"
+        "    ValueError: 表达式为空或解析失败，max_depth 越界，绑定值无法\n"
+        "        转 int。");
 
     // ── 自定义 pass 类型锚（适配器实现属私有侧管线消费面，见文件头注记） ──
-    py::class_<PyMethodPassBase, std::shared_ptr<PyMethodPassBase>>(m, "MethodPass")
-        .def(py::init<>(), "子类化并实现 run(mref) -> mjt.changed()/mjt.preserved_all()/bool/None");
+    py::class_<PyMethodPassBase, std::shared_ptr<PyMethodPassBase>>(
+        m, "MethodPass",
+        "自定义 pass 类型锚（Python 侧继承）：子类实现 run(mref)，返回 "
+        "mjt.changed() / mjt.preserved_all() 报告是否改动。适配到具体管线的 "
+        "实现在私有侧，基座面只保类型形状。")
+        .def(py::init<>(), "构造（子类化并实现 run(mref)）。");
     // MethodPass.run 返回锚（不透明：Python 侧只从 changed()/preserved_all() 取）。
-    py::class_<PyPreserved>(m, "PreservedAnalyses")
+    py::class_<PyPreserved>(m, "PreservedAnalyses",
+                            "MethodPass.run 的返回锚（不透明值，不可构造）。")
         .def("__repr__", [](const PyPreserved& p) {
             return p.changed ? "PreservedAnalyses.none" : "PreservedAnalyses.all";
         });
-    m.def("changed", [] { return PyPreserved{true}; });
-    m.def("preserved_all", [] { return PyPreserved{false}; });
+    m.def("changed", [] { return PyPreserved{true}; },
+          "MethodPass.run 返回值：报告本 pass 有改动。");
+    m.def("preserved_all", [] { return PyPreserved{false}; },
+          "MethodPass.run 返回值：报告本 pass 无改动（全部保留）。");
+
+    // ── 协作层 deadline（长操作检查点抛 mjt.DeadlineExceeded） ──
+    m.def("set_deadline_ms",
+          [](std::int64_t ms) { setDeadlineMs(ms); },
+          py::arg("ms"),
+          "设置整体 deadline（毫秒，从现在起）。\n\n"
+          "Args:\n"
+          "    ms: 大于 0 生效；小于 0 立即过期（测试位）；0 清除。\n\n"
+          "facade 长操作（import/flush/verify/sanitize/run_pass 等检查点）越限\n"
+          "抛 mjt.DeadlineExceeded（KeyboardInterrupt 子类）。嵌入宿主另有逐行\n"
+          "trace 与 watchdog 硬层，见 doc_ai/pysdk-script-limits.md。");
+    m.def("clear_deadline", [] { setDeadlineMs(0); },
+          "清除 deadline（回到无上限）。");
 
     // ── 合成样本 ──
     m.def("write_demo_jar", &writeSyntheticDemoJar, py::arg("path"),
-          "合成混淆形态演示 jar（unittest/上手演示用；零样本字节入库）");
+          "写出合成混淆形态演示 jar（unittest/上手演示用；零样本字节入库）。\n\n"
+          "Args:\n"
+          "    path: 输出 jar 路径。\n\n"
+          "罐内 5 个类：me/demo/{Api,App,Color,Crypto,Util}，带假 handler、\n"
+          "恒假谓词、字符串解密调用点等可辨形态。");
 
-    // ── v3 平函数面（契约 v3 §2；主面）──
+    // ── 平函数面（主面）──
     bindFacade(m);
 
     // ── 常量面：mjt.opcodes（JVM 规范序助记名 → opcode 值）+ mjt.acc（访问标志）。

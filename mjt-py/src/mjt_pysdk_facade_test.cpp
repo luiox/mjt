@@ -6,12 +6,16 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <thread>
 
 #include "pysdk_facade.hpp"
 #include "pysdk_jar.hpp"
+#include "pysdk_jasm.hpp"
+#include "pysdk_limits.hpp"
 
 namespace fs = std::filesystem;
 using namespace mjt::pysdk;
@@ -1069,5 +1073,218 @@ TEST(FacadeTree, TokenCommitPreservesDirtyTreeEdits)
     }
     EXPECT_EQ(iconst1, 1);
     EXPECT_EQ(facadeInsnCount(s, "me/demo/Util", "add", "(II)I"), before + 1);
+    FacadeRegistry::instance().close(h);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 脚本资源上限（协作层）：deadline 检查点与 watchdog 触发逻辑。
+// 进程级退出码契约（watchdog _Exit(3) 等）在 mjt_pysdk_embedtest。
+// ═══════════════════════════════════════════════════════════════════════
+
+TEST(FacadeLimits, DeadlineCheckpointFailsLongOpsClosed)
+{
+    const auto h = openDemo("mjt_facade_limits.jar");
+    auto&      s = FacadeRegistry::instance().get(h);
+    facadeParseClass(s, "me/demo/Util");
+    facadeRenameMethod(s, "me/demo/Util", "add", "(II)I", "plus");   // 造脏树：flush 才有活干
+    EXPECT_EQ(deadlineRemainingMs(), -1);   // 缺省无上限
+
+    setDeadlineMs(-1);                       // 测试位：立即过期
+    EXPECT_EQ(deadlineRemainingMs(), 0);
+    EXPECT_THROW(facadeFlush(s, true), DeadlineExceeded);
+    EXPECT_THROW(facadeVerifyContainer(s), DeadlineExceeded);
+    EXPECT_THROW(facadeSanitizeLvt(s), DeadlineExceeded);
+
+    // 清除后必须完全复原（不得毒化同进程的后续用例）。
+    setDeadlineMs(0);
+    EXPECT_EQ(deadlineRemainingMs(), -1);
+    EXPECT_NO_THROW(facadeFlush(s, true));
+    FacadeRegistry::instance().close(h);
+}
+
+TEST(FacadeLimits, WatchdogFiresHookOnceAndStopsClean)
+{
+    int              fired   = 0;
+    std::int64_t firedWith = 0;
+    startDeadlineWatchdog(80, [&](std::int64_t ms) {
+        ++fired;
+        firedWith = ms;
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    EXPECT_EQ(fired, 1);
+    EXPECT_EQ(firedWith, 80);
+    stopDeadlineWatchdog();   // hook 已执行过：join 立即返回
+
+    // ms <= 0 为空操作路径；stop 幂等。
+    startDeadlineWatchdog(0, [](std::int64_t) { FAIL() << "must not fire"; });
+    stopDeadlineWatchdog();
+    stopDeadlineWatchdog();
+
+    // 未到点即停：hook 不得再触发。
+    int unfired = 0;
+    startDeadlineWatchdog(10000, [&](std::int64_t) { ++unfired; });
+    stopDeadlineWatchdog();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT_EQ(unfired, 0);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Jasm 文本面（libjhasm 绑定）：读 / patch / diff / fail-closed。
+// 恒等锚是规范化文本（disassemble→assemble 的字节不保证逐字节恒等——
+// 常量池排布可漂），字节级断言只做语义面（insns 操作码）。
+// ═══════════════════════════════════════════════════════════════════════
+
+TEST(FacadeJasm, ClassRoundtripAndValidateZeroCommit)
+{
+    const auto h = openDemo("mjt_facade_jasm_rt.jar");
+    auto&      s = FacadeRegistry::instance().get(h);
+    const auto text = facadeClassJasm(s, "me/demo/Util");
+    EXPECT_EQ(text.internalName, "me/demo/Util");
+    EXPECT_NE(text.source.find(".class public super me/demo/Util"), std::string::npos);
+    EXPECT_NE(text.source.find(".method public static add (II)I"), std::string::npos);
+    EXPECT_NE(text.source.find("iadd"), std::string::npos);
+
+    // validate 全绿且零诊断。
+    const auto okReport = facadeValidateJasm(s, "me/demo/Util", "", text.source);
+    EXPECT_TRUE(okReport.ok());
+    EXPECT_TRUE(okReport.diagnostics.empty());
+    EXPECT_EQ(okReport.internalName, "me/demo/Util");
+
+    // validate 绝不落容器：字节恒等。
+    const auto before = facadeClassBytes(s, "me/demo/Util");
+    EXPECT_EQ(facadeClassBytes(s, "me/demo/Util"), before);
+
+    // apply 同文往返：报告 ok；重读文本恒等（恒等锚）。
+    const auto applied = facadeApplyJasm(s, "me/demo/Util", "", text.source);
+    EXPECT_TRUE(applied.ok());
+    EXPECT_EQ(applied.internalName, "me/demo/Util");
+    EXPECT_GT(applied.written, ca::usize{0});
+    EXPECT_EQ(facadeClassJasm(s, "me/demo/Util").source, text.source);
+    FacadeRegistry::instance().close(h);
+}
+
+TEST(FacadeJasm, ApplyInvalidatesDirtyTree)
+{
+    const auto h = openDemo("mjt_facade_jasm_inv.jar");
+    auto&      s = FacadeRegistry::instance().get(h);
+    facadeParseClass(s, "me/demo/Util");
+    facadeRenameMethod(s, "me/demo/Util", "add", "(II)I", "plus");
+    EXPECT_NO_THROW(facadeMethodInfo(s, "me/demo/Util", "plus", "(II)I"));
+
+    // jasm apply = 外部改字节：未 write_back 的脏树让位（set_class_bytes 同款）。
+    const auto text = facadeClassJasm(s, "me/demo/Util").source;
+    EXPECT_TRUE(facadeApplyJasm(s, "me/demo/Util", "", text).ok());
+    bool hasAdd = false;
+    for (const auto& [n, d, a] : facadeMembers(s, "me/demo/Util", true)) {
+        if (n == "add") hasAdd = true;
+    }
+    EXPECT_TRUE(hasAdd);
+    FacadeRegistry::instance().close(h);
+}
+
+TEST(FacadeJasm, MethodJasmDiffApplyChangesOpcode)
+{
+    const auto h = openDemo("mjt_facade_jasm_diff.jar");
+    auto&      s = FacadeRegistry::instance().get(h);
+    const auto method = facadeMethodJasm(s, "me/demo/Util", "add", "(II)I");
+    EXPECT_EQ(method.descriptor, "(II)I");
+    EXPECT_NE(method.source.find("iadd"), std::string::npos);
+
+    // 全量替换（原样）→ ok。
+    EXPECT_TRUE(facadeApplyMethodJasm(s, "me/demo/Util", "add", "(II)I", "", method.source).ok());
+
+    // diff：iadd → isub（方法源内行号 5）。
+    const std::string diff =
+        "@@ -5,1 +5,1 @@\n"
+        "-            iadd\n"
+        "+            isub\n";
+    const auto report = facadeApplyMethodJasmDiff(s, "me/demo/Util", "add", "(II)I", diff);
+    ASSERT_TRUE(report.ok()) << (report.diagnostics.empty() ? "" :
+                                 report.diagnostics.front().message);
+
+    // 语义面核验：操作码 0x60(iadd) → 0x64(isub)，ireturn 保留。
+    bool sawIsub = false;
+    for (const auto& insn : facadeInsns(s, "me/demo/Util", "add", "(II)I")) {
+        if (insn.opcode == 0x64) sawIsub = true;
+        else EXPECT_NE(insn.opcode, 0x60);
+    }
+    EXPECT_TRUE(sawIsub);
+    // 类全文里的方法段同步更新（method_jasm 与类内方法段逐字节一致的契约面）。
+    EXPECT_NE(facadeMethodJasm(s, "me/demo/Util", "add", "(II)I").source.find("isub"),
+              std::string::npos);
+    EXPECT_EQ(facadeMethodJasm(s, "me/demo/Util", "add", "(II)I").source.find("iadd"),
+              std::string::npos);
+    FacadeRegistry::instance().close(h);
+}
+
+TEST(FacadeJasm, DiffContextMismatchCarriesHunkNumber)
+{
+    const auto h = openDemo("mjt_facade_jasm_badctx.jar");
+    auto&      s = FacadeRegistry::instance().get(h);
+    const std::string diff =
+        "@@ -4,1 +4,1 @@\n"
+        "-            iadd\n"
+        "+            isub\n";
+    const auto report = facadeApplyJasmDiff(s, "me/demo/Util", diff);
+    EXPECT_FALSE(report.ok());
+    ASSERT_EQ(report.diagnostics.size(), std::size_t{1});
+    EXPECT_EQ(report.diagnostics.front().severity, 0);
+    EXPECT_NE(report.diagnostics.front().message.find("hunk #1"), std::string::npos);
+    EXPECT_NE(report.diagnostics.front().message.find("context mismatch"), std::string::npos);
+    FacadeRegistry::instance().close(h);
+}
+
+TEST(FacadeJasm, ValidateRejectsBrokenAndNameMismatch)
+{
+    const auto h = openDemo("mjt_facade_jasm_reject.jar");
+    auto&      s = FacadeRegistry::instance().get(h);
+    const auto before = facadeClassBytes(s, "me/demo/Util");
+
+    // 语法坏源：error 诊断，字节不动。
+    const auto broken = facadeValidateJasm(s, "me/demo/Util", "", "this is not jasm");
+    EXPECT_FALSE(broken.ok());
+    EXPECT_FALSE(broken.diagnostics.empty());
+    EXPECT_EQ(facadeClassBytes(s, "me/demo/Util"), before);
+
+    // 名不符：expected/got 全在文案里（fail-closed 防索引错位）。
+    const auto mismatch =
+        facadeValidateJasm(s, "me/demo/Util", "",
+                           ".super java/lang/Object\n.class public me/demo/Other {\n}\n");
+    EXPECT_FALSE(mismatch.ok());
+    EXPECT_NE(mismatch.diagnostics.front().message.find("me/demo/Other"), std::string::npos);
+    EXPECT_EQ(facadeClassBytes(s, "me/demo/Util"), before);
+
+    // apply 坏源同样不落容器。
+    EXPECT_FALSE(facadeApplyJasm(s, "me/demo/Util", "", "garbage").ok());
+    EXPECT_EQ(facadeClassBytes(s, "me/demo/Util"), before);
+    FacadeRegistry::instance().close(h);
+}
+
+TEST(FacadeJasm, UnknownClassAndMethodFailClosed)
+{
+    const auto h = openDemo("mjt_facade_jasm_stale.jar");
+    auto&      s = FacadeRegistry::instance().get(h);
+    EXPECT_THROW(facadeClassJasm(s, "me/demo/Nope"), StaleRefError);
+    EXPECT_THROW(facadeMethodJasm(s, "me/demo/Util", "nope", "()V"), StaleRefError);
+    EXPECT_THROW(facadeMethodJasm(s, "me/demo/Util", "add", "(JJ)J"), StaleRefError);
+    EXPECT_THROW(facadeValidateJasm(s, "me/demo/Nope", "", "x"), StaleRefError);
+    FacadeRegistry::instance().close(h);
+}
+
+TEST(FacadeJasm, ValidationModeAcceptsThreeTiersAndRejectsUnknown)
+{
+    const auto h = openDemo("mjt_facade_jasm_validation.jar");
+    auto&      s = FacadeRegistry::instance().get(h);
+    const auto text = facadeClassJasm(s, "me/demo/Util").source;
+
+    // 三档词表齐收（默认 relaxed 等位）；off 同样走全管线（汇编后校验跳过）。
+    for (const auto* mode : {"relaxed", "strict", "off"}) {
+        const auto report = facadeValidateJasm(s, "me/demo/Util", "", text, mode);
+        EXPECT_TRUE(report.ok()) << mode;
+    }
+
+    // 词表外值在参数层拒绝（对齐 MCP schema enum 文案）。
+    EXPECT_THROW(facadeValidateJasm(s, "me/demo/Util", "", text, "lenient"),
+                 std::invalid_argument);
     FacadeRegistry::instance().close(h);
 }

@@ -5,26 +5,26 @@ description: 在 mjt-mcp 上对 JAR 做只读侦察：建立类目与资源概�
 
 # 侦察汇总
 
-把一个打开的工作区变成结构化概览和一份候选信号清单。先读
+把一个打开的工程变成结构化概览和一份候选信号清单。先读
 [共享契约](../../workflows/common.md)与[侦察工作流](../../workflows/recon.md)。
 
 ## Preferred tools
 
-`workspace_info`, `workspace_resources`, `class_list`, `search_classes`,
-`search_strings`, `search_numbers`, `search_instructions`, `class_get`；
-`shadow_generate` 仅在授权后使用。
+`project_info`、`class_query`（kind=`list`/`class`）、`search`
+（kind=`classes`/`members`/`strings`/`numbers`/`instructions`/`resources`）；
+shadow 解析用 `search`（kind=`shadow`），sidecar 由 SDK 生成、本角色只读。
 
 ## Decisions that matter
 
-- 所有检索都分页：limit 默认 100、上限 1000，截断页带 `total` 与
-  `next_cursor`。返回条数等于有效 limit 时可能被截断——要么翻页到底，
-  要么声明覆盖比例；重复同参数查询不是翻页。
-- cursor 只是本次会话的翻页游标，不是跨 revision 的书签；工作区发生变更后
+- 所有检索都分页：`page_size` 默认 50、上限 1000（与 `limit` 互斥），
+  截断页带 `total` 与 `next_cursor`。返回条数等于有效页大小时可能被
+  截断——要么翻页到底，要么声明覆盖比例；重复同参数查询不是翻页。
+- cursor 只是本次会话的翻页游标，不是跨 revision 的书签；有变更提交后
   重新查询。
 - "查询无命中"只支持"该查询无命中"，不支持"行为不存在"的结论；单个损坏
   class 不会中断其余类的搜索。
-- `shadow_generate`/`shadow_prune` 只写 sidecar 文件、永不改 jar；机械占位名
-  跨类可能重号，引用前用 `shadow_to_raw` 解析确认。
+- shadow sidecar 只落盘不改 jar；机械占位名跨类可能重号，引用前用
+  `search(kind=shadow)` 双向解析确认。
 - 信号只回答"值得看"，不回答"是什么"。家族判断与置信归分诊角色。
 
 ## Deliverable

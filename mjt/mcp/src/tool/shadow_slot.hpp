@@ -16,7 +16,7 @@ namespace mjt::mcp::slot {
 
 using Json = nlohmann::json;
 
-///@brief workspace 缺省 shadow sidecar 的加载产物（T2 name 槽接线用）。
+///@brief workspace 缺省 shadow sidecar 的加载产物（name 槽接线用）。
 ///
 ///`present` = sidecar 文件存在且成功解析。文件缺失**或损坏**都按
 ///`present=false`（空表）处理——raw 路径零漂移（今日无 sidecar 工作流不受
@@ -88,6 +88,23 @@ bool resolveMethodSlots(const WorkspaceShadowTable& slots,
                         std::string&                descriptor,
                         Json&                       error);
 
+///@brief descriptor 省略时的名称解析回填。
+///
+///owner+name 无 descriptor 时按宿主类真实成员解析：唯一命中回填 descriptor
+///正常执行；名字不存在报错并说明 owner 内无此名（该名字以另一形态存在时
+///附提示，复用既有的候选枚举机）；真重载（同多名异描述符）报歧义并列出
+///全部候选描述符，响应附同一格式的 diagnostics 数组。owner 类不可解析
+///时按无操作放行（descriptor 保持为空），由下游 workspace 给出 canonical
+///错误（表外类如 java/lang/Object 的直通查询不受影响）。
+///@param field true 按字段池解析（xref target=field），false 按方法池。
+///@return false 时 `error` 已填结构化 toolError（含 diagnostics）。
+bool backfillMemberDescriptor(mjbase::workspace::IWorkspace& workspace,
+                              const std::string&             ownerRaw,
+                              const std::string&             memberName,
+                              bool                           field,
+                              std::string&                   descriptor,
+                              Json&                          error);
+
 ///@brief arguments 内 class 语义键（`class`）就地解析：Ref → 内部名；
 ///raw → verifyRaw 核表后原样。空值直通（workspace 既有 canonical 错误）。
 ///@return false 时 `error` 已填结构化 toolError。
@@ -108,6 +125,18 @@ bool resolveClassUriArgument(mjbase::workspace::IWorkspace& workspace,
                              const std::string&                    key,
                              std::string&                          out,
                              Json&                                 error);
+
+///@brief 显式描述符失配诊断：name 在宿主类存在但 descriptor 与任一候选都
+///不符时，给结构化错误并列出该名全部候选描述符（与省略 descriptor 时的
+///歧义路径同一呈现面）。name 不存在 / owner 不可解析 / descriptor 恰好命中
+///时返回 true（不适配——失败另有其因，走 canonical 错误）。
+///@return false 时 `error` 已填结构化 toolResult（含 diagnostics）。
+bool memberDescriptorMismatch(mjbase::workspace::IWorkspace& workspace,
+                              const std::string&             ownerRaw,
+                              const std::string&             memberName,
+                              const std::string&             descriptor,
+                              bool                           field,
+                              Json&                          error);
 
 ///@brief 错误 Json（toolError 同形）：四分类码前缀 + 诊断。
 Json slotError(const std::string& message);

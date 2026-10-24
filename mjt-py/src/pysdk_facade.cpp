@@ -1,14 +1,21 @@
 ﻿#include "pysdk_facade.hpp"
 
+#include "pysdk_limits.hpp"
+
 #include "mjbase/asm/remapper/resource_remapper.hpp"
+#include "mjbase/jasm/jvm_jasm_service.hpp"
 #include "mjbase/mapping/mapping_format_registry.hpp"
 #include "mjbase/mapping/shadow_alias_format.hpp"
 #include "mjbase/model/resource_helper.hpp"
 #include "mjbase/model/resource_model.hpp"
 #include "mjbase/renamer/name_suggestion_file.hpp"
 #include "mjbase/renamer/rename_engine.hpp"
+#include "mjbase/renamer/shadow_alias.hpp"
+
+#include "shared/decompiler.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <set>
@@ -165,6 +172,9 @@ void facadeImportJar(FacadeSession& session, const std::string& path)
     if (!std::filesystem::is_regular_file(path, ec)) {
         throw std::runtime_error("import: not a file: " + path);
     }
+    // 协作层取消检查点：importFromJar 内部循环引擎私有，检查点只能落在入口
+    // （逐条目粒度进不去，这是接受的成本，见 doc_ai/pysdk-script-limits.md）。
+    deadlineCheck();
     // mjbase importFromJar 返回 ModelResult<void>（不再抛异常）。
     const auto imported = ResourceHelper::importFromJar(*session.container, path);
     if (imported.is_err()) {
@@ -1598,6 +1608,7 @@ std::vector<std::string> facadeFlush(FacadeSession& s, bool computeFrames)
     std::vector<std::string> out;
     for (const auto& [name, te] : s.trees) {
         if (!te.dirty) continue;
+        deadlineCheck();   // 协作层取消检查点（每类粒度）
         facadeWriteBack(s, name, computeFrames);
         out.push_back(name);
     }
@@ -1808,6 +1819,7 @@ ContainerVerifyReport facadeVerifyContainer(FacadeSession& s)
 
     s.container->visitResources([&](std::string_view uriView, const IResource& resource) {
         const std::string uri(uriView);
+        deadlineCheck();   // 协作层取消检查点（每条目粒度；只读操作可安全中断）
         const auto* cr = ca::core::tag_cast::dyn_cast<const ClassResource>(&resource);
         if (!cr) {
             ++rep.nonClass;
@@ -1884,6 +1896,7 @@ SanitizeLvtReport facadeSanitizeLvt(FacadeSession& s)
 {
     SanitizeLvtReport rep;
     for (const auto& name : facadeClassNames(s)) {
+        deadlineCheck();   // 协作层取消检查点（每类粒度）
         TreeEntry* tePtr = nullptr;
         try {
             tePtr = &resolveTree(s, name);
@@ -2080,6 +2093,385 @@ facadeShadowEntries(FacadeSession& s)
                          std::string(e.token8));
     }
     return out;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 工具等位物批（退役 MCP 工具语义迁位；workspace.cpp 同口径的本地复刻——
+// diffContainers/scanJarRepairIssues 是基座 workspace 编译单元的文件内私有，
+// SDK 面按同一算法在 ResourceContainer 上重实现）。
+// ═══════════════════════════════════════════════════════════════════════
+
+namespace {
+
+/// 资源字节读出（Class 原字节 / Manifest 序列化现值 / Unknown 原样）。
+std::vector<ca::u8> resourceBytes(const IResource& resource)
+{
+    if (const auto* cls = ca::core::tag_cast::dyn_cast<const ClassResource>(&resource)) {
+        return cls->get();
+    }
+    if (const auto* mf = ca::core::tag_cast::dyn_cast<const ManifestResource>(&resource)) {
+        return mf->get().toBytes();
+    }
+    if (const auto* unk = ca::core::tag_cast::dyn_cast<const UnknownResource>(&resource)) {
+        return unk->get();
+    }
+    return {};
+}
+
+}   // namespace
+
+/// 容器深拷贝（workspace cloneContainer 同款三分支；URI 视图指向资源自持
+/// 文本，先物化再写入新容器）。
+std::unique_ptr<ResourceContainer> facadeCloneContainer(const FacadeSession& s)
+{
+    auto out = std::make_unique<ResourceContainer>();
+    s.container->visitResources([&](std::string_view uri, const IResource& resource) {
+        const std::string key(uri);
+        if (const auto* cls = ca::core::tag_cast::dyn_cast<const ClassResource>(&resource)) {
+            out->addResource(key, std::make_unique<ClassResource>(key, cls->get()));
+        }
+        else if (const auto* mf =
+                     ca::core::tag_cast::dyn_cast<const ManifestResource>(&resource)) {
+            out->addResource(key, std::make_unique<ManifestResource>(mf->get()));
+        }
+        else if (const auto* unk =
+                     ca::core::tag_cast::dyn_cast<const UnknownResource>(&resource)) {
+            out->addResource(key, std::make_unique<UnknownResource>(key, unk->get()));
+        }
+    });
+    return out;
+}
+
+/// diffContainers 同口径：全 uri 并集升序，逐条目单次公共前后缀收缩。
+std::vector<JarByteDiff> facadeDiffContainers(const ResourceContainer& before,
+                                              const ResourceContainer& after)
+{
+    std::set<std::string> uris;
+    before.visitResources([&](std::string_view uri, const IResource&) { uris.insert(std::string(uri)); });
+    after.visitResources([&](std::string_view uri, const IResource&) { uris.insert(std::string(uri)); });
+
+    std::vector<JarByteDiff> diffs;
+    for (const auto& uri : uris) {
+        const IResource* beforeResource = before.getResource(uri);
+        const IResource* afterResource  = after.getResource(uri);
+        std::vector<ca::u8> beforeBytes, afterBytes;
+        if (beforeResource != nullptr) beforeBytes = resourceBytes(*beforeResource);
+        if (afterResource != nullptr) afterBytes = resourceBytes(*afterResource);
+        if (beforeBytes == afterBytes) continue;
+
+        ca::usize start = 0;
+        while (start < beforeBytes.size() && start < afterBytes.size() &&
+               beforeBytes[start] == afterBytes[start]) {
+            ++start;
+        }
+        ca::usize beforeEnd = beforeBytes.size();
+        ca::usize afterEnd  = afterBytes.size();
+        while (beforeEnd > start && afterEnd > start &&
+               beforeBytes[beforeEnd - 1] == afterBytes[afterEnd - 1]) {
+            --beforeEnd;
+            --afterEnd;
+        }
+        JarByteDiff diff;
+        diff.uri        = uri;
+        diff.beforeSize = beforeBytes.size();
+        diff.afterSize  = afterBytes.size();
+        diff.ranges.push_back({start, beforeEnd - start, afterEnd - start});
+        diffs.push_back(std::move(diff));
+    }
+    return diffs;
+}
+
+JarDiffReport facadeJarDiff(FacadeSession& s, const std::string& referencePath)
+{
+    if (referencePath.empty()) throw std::runtime_error("reference path is empty");
+    deadlineCheck();
+    ResourceContainer reference;
+    auto imported = ResourceHelper::importFromJar(reference, referencePath);
+    if (imported.is_err()) {
+        throw std::runtime_error(std::string("import reference jar failed: ") +
+                                 mjbase::model::to_string(std::move(imported).unwrap_err()));
+    }
+    JarDiffReport report;
+    report.referencePath = referencePath;
+    report.diffs         = facadeDiffContainers(*s.container, reference);
+    for (const auto& diff : report.diffs) {
+        if (s.container->getResource(diff.uri) == nullptr) {
+            ++report.referenceOnly;
+        }
+        else if (reference.getResource(diff.uri) == nullptr) {
+            ++report.workspaceOnly;
+        }
+        else {
+            ++report.modified;
+        }
+    }
+    return report;
+}
+
+namespace {
+
+/// jar 修复扫描（workspace scanJarRepairIssues 同口径：ClassResource 过
+/// JvmJasmService 校验、.class 扩展名非类条目、corrupt_output_stream 标记）。
+std::vector<JarRepairIssueView> scanJarRepairIssuesLocal(const ResourceContainer& container,
+                                                         bool removeInvalidClassEntries,
+                                                         bool removeCorruptOutputMarkers,
+                                                         ca::usize& classCount)
+{
+    mjbase::jasm::JvmJasmService validator;
+    std::vector<JarRepairIssueView> issues;
+    container.visitResources([&](std::string_view uriView, const IResource& resource) {
+        const std::string uri(uriView);
+        const auto* classResource =
+            ca::core::tag_cast::dyn_cast<const ClassResource>(&resource);
+        if (classResource != nullptr) {
+            ++classCount;
+            if (!validator.validate(classResource->get()).isOk()) {
+                issues.push_back({uri,
+                                  "invalid_class",
+                                  "class bytes did not pass Jasm validation",
+                                  classResource->get().size(),
+                                  removeInvalidClassEntries});
+            }
+        }
+        else {
+            constexpr char kExtension[] = ".class";
+            const bool classExtended =
+                uri.size() >= sizeof(kExtension) - 1 &&
+                uri.compare(uri.size() - (sizeof(kExtension) - 1), sizeof(kExtension) - 1,
+                            kExtension) == 0;
+            if (classExtended) {
+                const auto bytes = resourceBytes(resource);
+                issues.push_back({uri,
+                                  "invalid_class_entry",
+                                  "a .class entry was not recognized as valid class bytes",
+                                  bytes.size(),
+                                  removeInvalidClassEntries});
+            }
+        }
+        if (uri.find("corrupt_output_stream") != std::string::npos) {
+            const auto bytes = resourceBytes(resource);
+            issues.push_back({uri,
+                              "corrupt_output_marker",
+                              "resource name matches a known corrupt output marker",
+                              bytes.size(),
+                              removeCorruptOutputMarkers});
+        }
+    });
+    std::sort(issues.begin(), issues.end(),
+              [](const JarRepairIssueView& left, const JarRepairIssueView& right) {
+                  if (left.uri != right.uri) return left.uri < right.uri;
+                  return left.kind < right.kind;
+              });
+    return issues;
+}
+
+JarRepairReport jarRepairCommon(FacadeSession& s, bool removeInvalidClassEntries,
+                                bool removeCorruptOutputMarkers, bool apply)
+{
+    deadlineCheck();
+    JarRepairReport report;
+    report.resourceCount = s.container->size();
+    report.issues        = scanJarRepairIssuesLocal(*s.container,
+                                                    removeInvalidClassEntries,
+                                                    removeCorruptOutputMarkers,
+                                                    report.classCount);
+    if (!apply) return report;
+    for (const auto& issue : report.issues) {
+        if (issue.selected) report.removed.push_back(issue.uri);
+    }
+    for (const auto& uri : report.removed) {
+        facadeRemoveEntry(s, uri);
+    }
+    return report;
+}
+
+}   // namespace
+
+JarRepairReport facadeJarRepairAnalyze(FacadeSession& s, bool removeInvalidClassEntries,
+                                       bool removeCorruptOutputMarkers)
+{
+    return jarRepairCommon(s, removeInvalidClassEntries, removeCorruptOutputMarkers, false);
+}
+
+JarRepairReport facadeJarRepairApply(FacadeSession& s, bool removeInvalidClassEntries,
+                                     bool removeCorruptOutputMarkers)
+{
+    return jarRepairCommon(s, removeInvalidClassEntries, removeCorruptOutputMarkers, true);
+}
+
+DecompileCompareReport facadeDecompilerCompare(FacadeSession& s, const std::string& name,
+                                               const std::string& cfrJar,
+                                               const std::string& vineflowerJar,
+                                               const std::string& javaProgram,
+                                               std::int64_t       timeoutMs)
+{
+    deadlineCheck();
+    if (!s.nameToUri.count(name)) {
+        throw StaleRefError("class not indexed: " + name);
+    }
+    namespace fs = std::filesystem;
+    const auto root = fs::path(fs::temp_directory_path()) /
+                      ("mjt_pysdk_compare_" +
+                       std::to_string(std::chrono::steady_clock::now()
+                                          .time_since_epoch()
+                                          .count()));
+    fs::create_directories(root);
+    struct RootGuard
+    {
+        fs::path root;
+        ~RootGuard()
+        {
+            std::error_code ec;
+            fs::remove_all(root, ec);
+        }
+    } guard{root};
+
+    const auto snapshot = root / "workspace.jar";
+    facadeExportJar(s, snapshot.u8string(), {});
+
+    DecompileCompareReport report;
+    report.internalName = name;
+    const auto backends = {
+        std::pair{mjt::DecompilerKind::Cfr, cfrJar},
+        std::pair{mjt::DecompilerKind::Vineflower, vineflowerJar},
+    };
+    for (const auto& [kind, jarOverride] : backends) {
+        auto available = mjt::inspectDecompiler(kind, jarOverride, javaProgram);
+        if (!available.artifactAvailable || !available.javaAvailable) {
+            throw std::runtime_error("decompiler backend '" + available.id +
+                                     "' is not available: " + available.unavailableReason);
+        }
+        mjt::DecompileRequest request;
+        request.inputPath     = snapshot.u8string();
+        request.outputPath    = (root / "sources").u8string();
+        request.kind          = kind;
+        request.decompilerJar = available.decompilerJar;
+        request.javaProgram   = available.javaProgram;
+        request.timeout       = std::chrono::milliseconds(timeoutMs > 0
+                                                             ? timeoutMs
+                                                             : 120000);
+        request.tempRoot      = root.u8string();
+        auto decompiled = mjt::decompile(request);
+        if (decompiled.is_err()) {
+            throw std::runtime_error("decompile with " + available.id + " failed: " +
+                                     decompiled.unwrap_err().to_string());
+        }
+        const auto sourcePath = fs::path(request.outputPath) / (name + ".java");
+        std::error_code ec;
+        if (!fs::is_regular_file(sourcePath, ec) || ec) {
+            throw std::runtime_error("decompiler did not produce source for " + name);
+        }
+        std::ifstream source(sourcePath, std::ios::binary);
+        const std::string text((std::istreambuf_iterator<char>(source)),
+                               std::istreambuf_iterator<char>());
+        report.sources.push_back({name,
+                                  available.id,
+                                  std::move(decompiled).unwrap().decompilerJar,
+                                  "class",
+                                  text});
+    }
+    return report;
+}
+
+namespace {
+
+ca::str::Utf8StringRef pathRefOf(const std::string& value)
+{
+    return ca::str::Utf8StringRef::from_data(reinterpret_cast<const ca::u8*>(value.data()),
+                                             value.size());
+}
+
+/// sidecar 文件面共用前段：路径规约（缺省 `<jar>.mjt-shadow`；file 显式覆盖
+/// 但不得指向 jar 本身）+ jar 存在检查 + 导入临时容器。
+ResourceContainer importForSidecar(const std::string& jarPath, const std::string& file,
+                                   std::string& sidecarPath)
+{
+    sidecarPath = file.empty() ? jarPath + ".mjt-shadow" : file;
+    if (!file.empty() && sidecarPath == jarPath) {
+        throw std::runtime_error("shadow sidecar path must not be the jar itself: " +
+                                 sidecarPath);
+    }
+    std::error_code fsError;
+    if (!std::filesystem::exists(jarPath, fsError) || fsError) {
+        throw std::runtime_error("jar not found: " + jarPath);
+    }
+    ResourceContainer container;
+    auto imported = ResourceHelper::importFromJar(container, jarPath);
+    if (imported.is_err()) {
+        throw std::runtime_error(std::string("import jar failed: ") +
+                                 mjbase::model::to_string(std::move(imported).unwrap_err()));
+    }
+    return container;
+}
+
+/// 读既有 sidecar 进表（缺失 = 空表；解析失败 fail-closed）。
+mjbase::renamer::ShadowAliasTable loadSidecarTable(const std::string& sidecarPath)
+{
+    mjbase::renamer::ShadowAliasTable table;
+    std::error_code                   fsError;
+    if (!std::filesystem::exists(sidecarPath, fsError)) return table;
+    auto existing = mjbase::mapping::readShadowAliasFile(pathRefOf(sidecarPath));
+    if (existing.is_err()) {
+        throw std::runtime_error(
+            "read shadow sidecar failed: " +
+            std::move(existing).unwrap_err().message.to_std_string());
+    }
+    return mjbase::renamer::ShadowAliasTable::fromMapping(std::move(existing).unwrap());
+}
+
+void writeSidecarTable(const std::string& sidecarPath,
+                       const mjbase::renamer::ShadowAliasTable& table)
+{
+    auto written =
+        mjbase::mapping::writeShadowAliasFile(pathRefOf(sidecarPath), table.toMapping());
+    if (written.is_err()) {
+        throw std::runtime_error(
+            "write shadow sidecar failed: " +
+            std::move(written).unwrap_err().message.to_std_string());
+    }
+}
+
+}   // namespace
+
+ShadowSidecarReport facadeShadowGenerateFile(const std::string& jarPath,
+                                             const std::string& file)
+{
+    deadlineCheck();
+    std::string sidecarPath;
+    auto container = importForSidecar(jarPath, file, sidecarPath);
+    auto table     = loadSidecarTable(sidecarPath);
+    // mjbase 补号幂等：已分配条目保留（kept），随机源失败走 Err 值语义。
+    auto generated = mjbase::renamer::generateMechanicalShadowNames(container, table);
+    if (generated.is_err()) {
+        throw std::runtime_error("generate shadow names failed: " +
+                                 std::move(generated).unwrap_err());
+    }
+    const auto& stats = generated.unwrap();
+    writeSidecarTable(sidecarPath, table);
+    return {sidecarPath,
+            stats.assignedClasses,
+            stats.assignedMethods,
+            stats.assignedFields,
+            stats.keptEntries,
+            0,
+            table.size()};
+}
+
+ShadowSidecarReport facadeShadowPruneFile(const std::string& jarPath,
+                                          const std::string& file)
+{
+    deadlineCheck();
+    std::string sidecarPath;
+    auto container = importForSidecar(jarPath, file, sidecarPath);
+    std::error_code fsError;
+    if (!std::filesystem::exists(sidecarPath, fsError)) {
+        throw std::runtime_error("shadow sidecar not found: " + sidecarPath +
+                                 " (generate it with shadow_generate_file first)");
+    }
+    auto table   = loadSidecarTable(sidecarPath);
+    auto removed = mjbase::renamer::pruneShadowAliases(container, table);
+    if (removed > 0) writeSidecarTable(sidecarPath, table);
+    return {sidecarPath, 0, 0, 0, 0, removed, table.size()};
 }
 
 }   // namespace mjt::pysdk

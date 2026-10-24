@@ -16,7 +16,7 @@ struct JobState final
     std::mutex       mutex;
     std::atomic_bool cancellationRequested{false};
     std::string      id;
-    std::string      workspaceId;
+    std::string      projectId;
     std::string      kind;
     ca::u64          sourceRevision = 0;
     std::string      state = "queued";

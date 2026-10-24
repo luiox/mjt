@@ -13,7 +13,7 @@
 //（perf）超长类名链路的 mjt-mcp 面测量：ClassWriter 运行时生成
 //内部名总长 8/64/512/819/4096/65000 的合法类（JVM 常量池 UTF8 上限 65535
 //字节，这些长度全部合法），普通名类作对照。经 McpSessionHarness 实测
-//workspace_open / class_list / class_get / class_jasm / search_classes /
+//project_open / class_query(kind=list|class|jasm|bytes) / search(kind=classes) /
 //class_bytes 六条操作的 wall time；另测「多类 × 长名」组合档
 //（200 类 × 819 字符 vs 200 类 × 普通名）验证索引/扫描是否随
 //类数 × 名长复合增长。本测试只产出数字与正确性断言，不设严格耗时
@@ -91,50 +91,57 @@ void measureGradient(std::vector<LengthRow>& rows)
         row.tag = std::to_string(length);
 
         row.openMs = measureMs([&] {
-            const auto closed = call(server, "workspace_close", {{"workspace_id", "perf"}});
+            const auto closed = call(server, "project_close", {{"project_id", "perf"}});
             (void)closed;
-            const auto opened = call(server, "workspace_open", {{"path", jar.string()},
-                                                                {"workspace_id", "perf"}});
+            const auto opened = call(server, "project_open", {{"path", jar.string()},
+                                                              {"project_id", "perf"}});
             ASSERT_FALSE(opened.at("result").at("isError")) << opened.dump();
         });
 
         row.listMs = measureMs([&] {
-            const auto classes = call(server, "class_list", {{"workspace_id", "perf"}});
+            const auto classes =
+                call(server, "class_query", {{"project_id", "perf"}, {"kind", "list"}});
             ASSERT_FALSE(classes.at("result").at("isError")) << classes.dump();
         });
 
         row.getMs = measureMs([&] {
-            const auto detail =
-                call(server, "class_get", {{"workspace_id", "perf"}, {"class", longName}});
+            const auto detail = call(server,
+                                     "class_query",
+                                     {{"project_id", "perf"}, {"kind", "class"}, {"class", longName}});
             ASSERT_FALSE(detail.at("result").at("isError")) << detail.dump();
-            EXPECT_EQ(longName, payload(detail).at("internal_name"));
+            EXPECT_EQ(longName, payload(detail).at("class"));
         });
 
         row.jasmMs = measureMs([&] {
-            const auto jasm =
-                call(server, "class_jasm", {{"workspace_id", "perf"}, {"class", longName}});
+            const auto jasm = call(server,
+                                   "class_query",
+                                   {{"project_id", "perf"}, {"kind", "jasm"}, {"class", longName}});
             ASSERT_FALSE(jasm.at("result").at("isError")) << jasm.dump();
         });
 
         //唯一命中长名类的探针：长度后缀 _<len>。
         const std::string probe = "_" + std::to_string(length);
         row.searchMs = measureMs([&] {
-            const auto search =
-                call(server, "search_classes", {{"workspace_id", "perf"}, {"query", probe}});
+            const auto search = call(server,
+                                     "search",
+                                     {{"project_id", "perf"}, {"kind", "classes"}, {"query", probe}});
             ASSERT_FALSE(search.at("result").at("isError")) << search.dump();
             ASSERT_EQ(1U, payload(search).at("items").size());
         });
 
         row.bytesMs = measureMs([&] {
-            const auto bytes =
-                call(server, "class_bytes", {{"workspace_id", "perf"}, {"class", longName}});
+            const auto bytes = call(server,
+                                    "class_query",
+                                    {{"project_id", "perf"}, {"kind", "bytes"}, {"class", longName}});
             ASSERT_FALSE(bytes.at("result").at("isError")) << bytes.dump();
         });
 
         //正确性钉住：长名类的 jasm 渲染非空且含 .class 声明行与完整长名。
-        const auto jasm = call(server, "class_jasm", {{"workspace_id", "perf"}, {"class", longName}});
+        const auto jasm = call(server,
+                               "class_query",
+                               {{"project_id", "perf"}, {"kind", "jasm"}, {"class", longName}});
         ASSERT_FALSE(jasm.at("result").at("isError"));
-        const auto& source = payload(jasm).at("source").get_ref<const std::string&>();
+        const auto& source = payload(jasm).at("jasm").get_ref<const std::string&>();
         EXPECT_NE(std::string::npos, source.find(".class public super"));
         EXPECT_NE(std::string::npos, source.find(longName));
 
@@ -161,15 +168,16 @@ void measureBulk(std::vector<LengthRow>& rows)
         row.tag = length == 0 ? "bulk200-norm" : "bulk200-819";
 
         row.openMs = measureMs([&] {
-            const auto closed = call(server, "workspace_close", {{"workspace_id", "bulk"}});
+            const auto closed = call(server, "project_close", {{"project_id", "bulk"}});
             (void)closed;
-            const auto opened = call(server, "workspace_open", {{"path", jar.string()},
-                                                                {"workspace_id", "bulk"}});
+            const auto opened = call(server, "project_open", {{"path", jar.string()},
+                                                              {"project_id", "bulk"}});
             ASSERT_FALSE(opened.at("result").at("isError")) << opened.dump();
         });
 
         row.listMs = measureMs([&] {
-            const auto classes = call(server, "class_list", {{"workspace_id", "bulk"}});
+            const auto classes =
+                call(server, "class_query", {{"project_id", "bulk"}, {"kind", "list"}});
             ASSERT_FALSE(classes.at("result").at("isError")) << classes.dump();
         });
 
@@ -177,27 +185,31 @@ void measureBulk(std::vector<LengthRow>& rows)
             length == 0 ? "mcp/Bulk199"
                         : longInternalNameWithSuffix(length, "_" + std::to_string(length) + "_199");
         row.getMs = measureMs([&] {
-            const auto detail =
-                call(server, "class_get", {{"workspace_id", "bulk"}, {"class", probe}});
+            const auto detail = call(server,
+                                     "class_query",
+                                     {{"project_id", "bulk"}, {"kind", "class"}, {"class", probe}});
             ASSERT_FALSE(detail.at("result").at("isError")) << detail.dump();
-            EXPECT_EQ(probe, payload(detail).at("internal_name"));
+            EXPECT_EQ(probe, payload(detail).at("class"));
         });
 
         row.jasmMs = measureMs([&] {
-            const auto jasm =
-                call(server, "class_jasm", {{"workspace_id", "bulk"}, {"class", probe}});
+            const auto jasm = call(server,
+                                   "class_query",
+                                   {{"project_id", "bulk"}, {"kind", "jasm"}, {"class", probe}});
             ASSERT_FALSE(jasm.at("result").at("isError")) << jasm.dump();
         });
 
         row.searchMs = measureMs([&] {
-            const auto search =
-                call(server, "search_classes", {{"workspace_id", "bulk"}, {"query", "_"}});
+            const auto search = call(server,
+                                     "search",
+                                     {{"project_id", "bulk"}, {"kind", "classes"}, {"query", "_"}});
             ASSERT_FALSE(search.at("result").at("isError")) << search.dump();
         });
 
         row.bytesMs = measureMs([&] {
-            const auto bytes =
-                call(server, "class_bytes", {{"workspace_id", "bulk"}, {"class", probe}});
+            const auto bytes = call(server,
+                                    "class_query",
+                                    {{"project_id", "bulk"}, {"kind", "bytes"}, {"class", probe}});
             ASSERT_FALSE(bytes.at("result").at("isError")) << bytes.dump();
         });
 
@@ -212,7 +224,7 @@ TEST(McpLongIdentifierPerfTest, MeasuresBulkJarsWithManyLongNames)
     printTable(rows);
 }
 
-///patch 往返档：patch_validate_jasm 用含长名的 jasm 源文本走
+///patch 往返档：edit_apply(kind=jasm, dry_run) 用含长名的 jasm 源文本走
 ///装配 → 严格校验 → diff 全链（dry_run，不落 revision）。jasm 装配器
 ///解析长名源文本是 MCP 面最后一个未测量的潜在慢点。
 TEST(McpLongIdentifierPerfTest, MeasuresJasmPatchRoundTripWithLongNames)
@@ -228,16 +240,18 @@ TEST(McpLongIdentifierPerfTest, MeasuresJasmPatchRoundTripWithLongNames)
         const auto jar = writeLongNameFixture(length);
         const auto longName = longInternalName(length);
         McpSessionHarness server;
-        const auto opened = call(server, "workspace_open", {{"path", jar.string()}});
+        const auto opened = call(server, "project_open", {{"path", jar.string()}});
         ASSERT_FALSE(opened.at("result").at("isError")) << opened.dump();
-        const auto workspaceId = payload(opened).at("workspace_id").get<std::string>();
+        const auto projectId = payload(opened).at("project_id").get<std::string>();
 
         PatchRow row;
         row.tag = std::to_string(length);
         row.validateMs = measureMs([&] {
             const auto preview = call(server,
-                                      "patch_validate_jasm",
-                                      {{"workspace_id", workspaceId},
+                                      "edit_apply",
+                                      {{"project_id", projectId},
+                                       {"kind", "jasm"},
+                                       {"dry_run", true},
                                        {"uri", longName + ".class"},
                                        {"source", classSourceFor(longName, "42")},
                                        {"expected_revision", 0},
@@ -272,21 +286,19 @@ TEST(McpLongIdentifierPerfTest, RealCfrDecompileWithLongNames)
         const auto jar = writeLongNameFixture(length);
         const auto longName = longInternalName(length);
         McpSessionHarness session;
-        const auto settings = call(session,
-                                   "decompiler_settings_set",
-                                   {{"backend", "cfr"},
-                                    {"cfr_jar", cfrPath},
-                                    {"java", java},
-                                    {"timeout_ms", 120000}});
-        ASSERT_FALSE(settings.at("result").at("isError")) << settings.dump();
-        const auto opened = call(session, "workspace_open", {{"path", jar.string()}});
+        const auto opened = call(session, "project_open", {{"path", jar.string()}});
         ASSERT_FALSE(opened.at("result").at("isError")) << opened.dump();
-        const auto workspaceId = payload(opened).at("workspace_id").get<std::string>();
+        const auto projectId = payload(opened).at("project_id").get<std::string>();
 
         const auto start = std::chrono::steady_clock::now();
+        //后端参数改为每次调用显式给出（decompiler_settings_* 已 SDK 化出 MCP 面）。
         const auto source = call(session,
-                                 "class_source",
-                                 {{"workspace_id", workspaceId}, {"class", longName}});
+                                 "decompile",
+                                 {{"project_id", projectId},
+                                  {"class", longName},
+                                  {"decompiler_jar", cfrPath},
+                                  {"java", java},
+                                  {"timeout_ms", 120000}});
         const double ms = std::chrono::duration<double, std::milli>(
                               std::chrono::steady_clock::now() - start)
                               .count();

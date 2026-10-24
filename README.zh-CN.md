@@ -30,9 +30,11 @@ xmake build mjt-mcp
 ```
 
 依赖经 [luiox-repo](https://github.com/luiox/luiox-repo) 直连拉取：libca、libmcp、
-libjstr、libjbytecode、libjzip、libgarena、libjclassfile；libarchive / zlib /
-nlohmann_json 走 [xrepo](https://xmake.io)。其中 libjbytecode 为 legacy 冻结件
-（visitor 架构），已被 libjbc 取代，仅作本仓 `mbase/` 层过渡期的底座。
+libjstr、libjbytecode、libjzip、libgarena、libjclassfile、libjstd、
+libjdk_finder、libjblw、libjhasm；libarchive / zlib / nlohmann_json 走
+[xrepo](https://xmake.io)。libjbc 走项目内联包定义（git 直连 + commit 锁，与
+mjbase 同版本）。字节码基座本体是 mjbase，打包进 luiox-repo 前以兄弟目录源码级
+依赖消费（`--mjbase_root`，默认 `../mjbase`）。
 
 ### 测试
 
@@ -45,7 +47,7 @@ xmake run mjt_mcp_unittest --gtest_brief=1
 部分用例需要 JDK；缺失时相关用例 `GTEST_SKIP` 而非失败。测试产物落在各项目根的
 `test/` 目录，可用 `LIBCA_TEST_OUT_ROOT` 改写。
 
-仓内各库自带单测（`libjhasm_unittest`、`libjblw_unittest`、
+已包化的各库在 `unittest/` 自带单测（`libjhasm_unittest`、`libjblw_unittest`、
 `libjdk_finder_unittest`），构建与运行方式相同。
 
 ## 运行
@@ -68,14 +70,16 @@ mjt/mcp/src/     MCP 服务器与工具集（核心产品代码）
 mjt/mcp/test/    MCP 层单测
 mjt/src/shared/  MCP 工具集共用的底层能力（反编译接入、jar 重映射、workspace…）
 mjt/skills/      MCP 技能定义
-mbase/           字节码分析与编辑层（classfile、字节码、mapping、xref、pass 管线）
-libs/            仓内小库：JASM 汇编/反汇编、class 字节码封装、JDK/工具链探测、
-                 Java 标准库语义
+mjt-py/src/      嵌入式 Python SDK（mjt --script 嵌入解释器与 mjt.pyd
+                 pybind11 binding；--with_pysdk 门控）
+unittest/        已包化各库的单测（libjhasm、libjblw、libjdk_finder）
 test_helper/     测试脚手架（gtest 集成、产物路径解析）
-xmake/           构建开关、libca 规则内嵌、Windows manifest 规则、包仓覆盖
+xmake/           构建开关、libjbc 内联包定义、libca 规则内嵌、Windows manifest
+                 规则、包仓覆盖
 ```
 
-`mbase` 与 `libs` 是共享层，`mjt` 是唯一的产品线。
+共享层在仓外：mjbase 源码树（兄弟目录依赖）与 luiox-repo 各包。`mjt` 是产品线，
+`mjt-py` 是可选的 SDK 组件。
 
 ## 约定
 

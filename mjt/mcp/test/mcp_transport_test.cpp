@@ -15,32 +15,32 @@ namespace {
 
 using namespace test_support;
 
-TEST(McpServerTest, KeepsDecompilerSettingsIsolatedPerMcpSession)
+TEST(McpServerTest, KeepsProjectSessionsIsolatedPerMcpSession)
 {
     McpSessionHarness first;
     McpSessionHarness second;
 
-    const auto changed = call(first,
-                              "decompiler_settings_set",
-                              {{"backend", "vineflower"},
-                               {"timeout_ms", 1234},
-                               {"max_memory_mib", 321}});
-    ASSERT_FALSE(changed.at("result").at("isError"));
-    const auto firstSettings = call(first, "decompiler_settings_get", Json::object());
-    const auto secondSettings = call(second, "decompiler_settings_get", Json::object());
-    ASSERT_FALSE(firstSettings.at("result").at("isError"));
-    ASSERT_FALSE(secondSettings.at("result").at("isError"));
-    EXPECT_EQ("vineflower", payload(firstSettings).at("settings").at("backend"));
-    EXPECT_EQ(1234, payload(firstSettings).at("settings").at("timeout_ms"));
-    EXPECT_EQ("cfr", payload(secondSettings).at("settings").at("backend"));
-    EXPECT_EQ(120000, payload(secondSettings).at("settings").at("timeout_ms"));
+    const auto fixture = writeFixture();
+    const auto opened =
+        call(first, "project_open", {{"path", fixture.string()}, {"project_id", "iso"}});
+    ASSERT_FALSE(opened.at("result").at("isError"));
+    const auto firstInfo = call(first, "project_info", {{"project_id", "iso"}});
+    ASSERT_FALSE(firstInfo.at("result").at("isError"));
+    //工程会话按 MCP session 隔离：第二个会话用同名 project_id 不可见。
+    const auto secondInfo = call(second, "project_info", {{"project_id", "iso"}});
+    ASSERT_TRUE(secondInfo.at("result").at("isError"));
+    const auto& details = secondInfo.at("result").at("structuredContent");
+    EXPECT_NE(std::string::npos,
+              details.at("error").get_ref<const std::string&>().find("project not found"));
 }
 
 TEST(McpServerTest, KeepsStdioAndHttpToolErrorsEquivalentBeyondOldBodyLimit)
 {
     McpSessionHarness stdio;
-    const Json invalidArguments = {{"unexpected", true}};
-    const auto stdioError = call(stdio, "decompiler_list", invalidArguments, 90);
+    //带合法 project_id：required 先于 additionalProperties 校验，带上后
+    //才会走到「未声明属性」拒绝路径。
+    const Json invalidArguments = {{"project_id", "missing"}, {"unexpected", true}};
+    const auto stdioError = call(stdio, "project_info", invalidArguments, 90);
     ASSERT_TRUE(stdioError.at("result").at("isError"));
 
     HttpServerRunner http;
@@ -62,7 +62,7 @@ TEST(McpServerTest, KeepsStdioAndHttpToolErrorsEquivalentBeyondOldBodyLimit)
         client,
         url,
         mcpPost(request("tools/call",
-                        {{"name", "decompiler_list"},
+                        {{"name", "project_info"},
                          {"arguments", invalidArguments}},
                         92),
                 session));
@@ -71,12 +71,13 @@ TEST(McpServerTest, KeepsStdioAndHttpToolErrorsEquivalentBeyondOldBodyLimit)
     ASSERT_TRUE(httpError.at("result").at("isError"));
     EXPECT_EQ(payload(stdioError), httpError.at("result").at("structuredContent"));
 
-    const Json largeArguments = {{"padding", std::string(9U * 1024U * 1024U, 'x')}};
+    const Json largeArguments = {{"project_id", "missing"},
+                                 {"padding", std::string(9U * 1024U * 1024U, 'x')}};
     auto largeResponse = sendHttp(
         client,
         url,
         mcpPost(request("tools/call",
-                        {{"name", "decompiler_list"},
+                        {{"name", "project_info"},
                          {"arguments", largeArguments}},
                         93),
                 session));
@@ -126,9 +127,9 @@ TEST(McpServerTest, ServesIsolatedLibmcpHttpSessionsWithSseReplay)
         client,
         url,
         mcpPost(request("tools/call",
-                        {{"name", "workspace_open"},
+                        {{"name", "project_open"},
                          {"arguments",
-                          {{"path", fixture.string()}, {"workspace_id", "session-private"}}}},
+                          {{"path", fixture.string()}, {"project_id", "session-private"}}}},
                         102),
                 sessionA));
     ASSERT_EQ(200, opened.status);
@@ -150,8 +151,8 @@ TEST(McpServerTest, ServesIsolatedLibmcpHttpSessionsWithSseReplay)
         client,
         url,
         mcpPost(request("tools/call",
-                        {{"name", "class_list"},
-                         {"arguments", {{"workspace_id", "session-private"}}}},
+                        {{"name", "class_query"},
+                         {"arguments", {{"project_id", "session-private"}, {"kind", "list"}}}},
                         104),
                 sessionB));
     ASSERT_EQ(200, hidden.status);
@@ -161,8 +162,8 @@ TEST(McpServerTest, ServesIsolatedLibmcpHttpSessionsWithSseReplay)
         client,
         url,
         mcpPost(request("tools/call",
-                        {{"name", "class_list"},
-                         {"arguments", {{"workspace_id", "session-private"}}}},
+                        {{"name", "class_query"},
+                         {"arguments", {{"project_id", "session-private"}, {"kind", "list"}}}},
                         105),
                 sessionA,
                 "application/json, text/event-stream"));
@@ -203,9 +204,6 @@ TEST(McpServerTest, DeletesLibmcpHttpSessionAndCleansRunningWorkflowJob)
     const auto slowDecompiler = test::getTempOutPath("fake-mcp-decompiler-slow.jar");
     std::ofstream(slowDecompiler, std::ios::binary | std::ios::trunc) << "fake";
     const auto fakeJava = test::getBuildTargetPath("mjt_mcp_unittest");
-    const auto output = test::getTempOutPath("mjt_mcp_deleted_http_session_workflow.jar");
-    std::error_code outputError;
-    std::filesystem::remove(output, outputError);
 
     auto initialized = sendHttp(client, url, mcpPost(initializeHttpRequest(301)));
     ASSERT_EQ(200, initialized.status);
@@ -222,9 +220,9 @@ TEST(McpServerTest, DeletesLibmcpHttpSessionAndCleansRunningWorkflowJob)
         client,
         url,
         mcpPost(request("tools/call",
-                        {{"name", "workspace_open"},
+                        {{"name", "project_open"},
                          {"arguments",
-                          {{"path", fixture.string()}, {"workspace_id", "delete-session"}}}},
+                          {{"path", fixture.string()}, {"project_id", "delete-session"}}}},
                         302),
                 session));
     ASSERT_EQ(200, opened.status);
@@ -234,13 +232,12 @@ TEST(McpServerTest, DeletesLibmcpHttpSessionAndCleansRunningWorkflowJob)
         client,
         url,
         mcpPost(request("tools/call",
-                        {{"name", "analysis_workflow"},
+                        {{"name", "decompile"},
                          {"arguments",
-                          {{"workspace_id", "delete-session"},
-                           {"decompile_class", "mcp/Subject"},
+                          {{"project_id", "delete-session"},
+                           {"class", "mcp/Subject"},
                            {"decompiler_jar", slowDecompiler.string()},
                            {"java", fakeJava.string()},
-                           {"export_path", output.string()},
                            {"async", true}}}},
                         303),
                 session));
@@ -254,7 +251,6 @@ TEST(McpServerTest, DeletesLibmcpHttpSessionAndCleansRunningWorkflowJob)
         url,
         mcpPost(request("tools/list", Json::object(), 304), session));
     EXPECT_EQ(404, closed.status);
-    EXPECT_FALSE(std::filesystem::exists(output));
     expectNoNewWorkflowTemporaryArtifacts(temporaryBefore);
 }
 

@@ -1,6 +1,6 @@
 # pysdk_selftest.py — mjt-py SDK 绑定层自测（由 mjt_pysdk_unittest 嵌入执行）。
 #
-# v3 函数面（Ref=键）16 阶段：装载/导航 → util 判据 + 直改直删 + verify 落盘 →
+# v3 函数面（Ref=键）25 阶段：装载/导航 → util 判据 + 直改直删 + verify 落盘 →
 # 内置单 pass（run_pass）+ 报告读出 → MethodPass 类型锚（适配器属私有侧管线面）→
 # rename token + sidecar → dry_run（分叉试算 + verify 门）→ 字节往返 + 普查 →
 # 管线写回链路 → fail-closed 异常面 + 容器体检 + rename→export→verify 闭环 →
@@ -8,8 +8,16 @@
 # rename_apply_suggestions 被拒流水 → fold_to_ldc 解密点回填（实参同摘 +
 # fail-closed 边界）→ clone_method 体逐条重建（异常表/跳转/直调/虚调）→
 # dream2 折叠路径（普查→回填→残留归零）→ call_sites 定点普查 + fold_call_sites
-# （str 键解密器批折 + 实例 callee 守卫）。
+# （str 键解密器批折 + 实例 callee 守卫）→ 协作层 deadline → Jasm 文本面 →
+# jar_diff（自身零差异 + 单类修改识别）→ jar_fix（三类问题扫描 + 开关 +
+# apply 移除）→ pass 管线面（pass_describe/run_pipeline 互斥面/opt_preview
+# 试算零改动/opt_apply 落盘）→ analysis_evaluate（求值/化简/绑定/fail-closed）→
+# shadow sidecar 文件面（generate 幂等/prune 失配清理/缺侧车报错）→
+# decompiler_compare（fail-closed + fake java 双后端实跑）→ init_order（静态
+# 初始化拓扑序：超类边 + clinit 引用边 + 环报告 + roots 子图）。
 # 全程合成样本（mjt.write_demo_jar），零样本字节入库。
+# 文件尾有 __main__ 兜底入口：--script 宿主 exec 的 __name__ 是 "__main__"，
+# 直接 `--script pysdk_selftest.py` 即跑全套并按 fail 数定退出码。
 
 
 def run_all():
@@ -21,8 +29,8 @@ def run_all():
     from mjt.util import (call_sites, clone_method, decryptor_sites,
                           dry_run, dump_sites, fold_call_sites,
                           fold_decryptor_sites, fold_to_ldc, guard_patterns,
-                          identity_rethrows, residual_sites, save_verified,
-                          string_census)
+                          identity_rethrows, init_order, residual_sites,
+                          save_verified, string_census)
 
     fails = []
 
@@ -30,7 +38,17 @@ def run_all():
         if not cond:
             fails.append(f"{name}: {detail}")
 
+    #干净环境冒烟（env -i）没有 TEMP/TMP，gettempdir 在 Windows 上会退到
+    #C:\Windows 且不可写。此时以脚本所在目录 .smoke-tmp 兜底（交付目录必可写），
+    #并回写进程环境——C++ 侧（反编译工作目录走 GetTempPath）同享兜底。
     tmp = tempfile.gettempdir()
+    fallback_tmp = None
+    if not (os.environ.get("TEMP") or os.environ.get("TMP") or os.environ.get("TMPDIR")):
+        fallback_tmp = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".smoke-tmp")
+        os.makedirs(fallback_tmp, exist_ok=True)
+        tmp = fallback_tmp
+        os.environ["TEMP"] = tmp
+        os.environ["TMP"] = tmp
 
     def fresh(name):
         p = os.path.join(tmp, f"mjt_pysdk_{name}.jar")
@@ -634,4 +652,324 @@ def run_all():
     mjt.close_container(h4)
     mjt.close_container(h)
 
+    # ── 17. 协作层 deadline（set_deadline_ms → 长操作检查点抛 DeadlineExceeded） ──
+    p17, h17 = fresh("limits")
+    mjt.parse_class((h17, "me/demo/Util"))
+    mjt.rename_method((h17, "me/demo/Util", "add", "(II)I"), "plus")
+    mjt.set_deadline_ms(-1)   # 测试位：立即过期
+    try:
+        mjt.flush(h17, compute_frames=True)
+        check("limits flush raises", False, "no exception")
+    except mjt.DeadlineExceeded as e:
+        check("limits flush raises", isinstance(e, KeyboardInterrupt),
+              "DeadlineExceeded must be a KeyboardInterrupt subclass")
+    mjt.clear_deadline()
+    mjt.flush(h17, compute_frames=True)   # 清除后复原（不得毒化后续阶段）
+    mjt.close_container(h17)
+
+    # ── 18. Jasm 文本面（类/方法级读写 + patch/diff + fail-closed） ──
+    p18, h18 = fresh("jasm")
+    cls = (h18, "me/demo/Util")
+    text = mjt.class_jasm(h18, "me/demo/Util")["source"]
+    check("jasm class shape", ".class public super me/demo/Util" in text
+          and ".method public static add (II)I" in text and "iadd" in text, text[:80])
+    check("jasm validate ok", mjt.class_validate_jasm(h18, "me/demo/Util", text)["ok"],
+          str(mjt.class_validate_jasm(h18, "me/demo/Util", text)))
+    check("jasm apply fixpoint",
+          mjt.class_apply_jasm(h18, "me/demo/Util", text)["ok"]
+          and mjt.class_jasm(h18, "me/demo/Util")["source"] == text, "roundtrip drift")
+    m = mjt.method_jasm(h18, "me/demo/Util", "add", "(II)I")
+    check("jasm method shape", m["descriptor"] == "(II)I" and "iadd" in m["source"],
+          str(m["source"]))
+    diff = "@@ -5,1 +5,1 @@\n-            iadd\n+            isub\n"
+    rep = mjt.method_apply_jasm_diff(h18, "me/demo/Util", "add", "(II)I", diff)
+    check("jasm method diff apply", rep["ok"], str(rep))
+    mjt.write_back(cls, compute_frames=True)
+    mref = mjt.get_method(cls, "add", "(II)I")
+    ops = [mjt.insn_detail(mref, u)["opcode"] for u, o, k in mjt.insns(mref) if k == "insn"]
+    check("jasm method diff opcode", 0x64 in ops and 0x60 not in ops,
+          str([hex(o) for o in ops]))
+    bad = mjt.class_apply_jasm_diff(h18, "me/demo/Util",
+                                    "@@ -4,1 +4,1 @@\n-            iadd\n+            isub\n")
+    check("jasm diff context mismatch", not bad["ok"]
+          and "context mismatch" in bad["diagnostics"][0]["message"], str(bad))
+    other_source = (".super java/lang/Object\n"
+                    ".class public me/demo/Other {\n"
+                    "}\n")
+    check("jasm name mismatch rejected",
+          not mjt.class_validate_jasm(h18, "me/demo/Util", other_source)["ok"],
+          "name mismatch must fail")
+    try:
+        mjt.class_jasm(h18, "me/demo/Nope")
+        check("jasm unknown class", False, "no exception")
+    except KeyError:
+        check("jasm unknown class", True)
+    mjt.close_container(h18)
+
+    # ── 19. jar_diff（自身零差异 + 单类修改识别 + 缺文件 fail-closed） ──
+    p19, h19 = fresh("jardiff")
+    same = mjt.jar_diff(h19, p19)
+    check("jardiff self clean",
+          same["workspace_only"] == 0 and same["reference_only"] == 0
+          and same["modified"] == 0 and same["diffs"] == [], str(same))
+    # 参考侧单类改动（iadd → isub 同长替换）：diff 收缩为单 range。
+    h19b = mjt.open_jar(p19)
+    diff19 = "@@ -5,1 +5,1 @@\n-            iadd\n+            isub\n"
+    rep19 = mjt.method_apply_jasm_diff(h19b, "me/demo/Util", "add", "(II)I", diff19)
+    check("jardiff ref edit ok", rep19["ok"], str(rep19))
+    p19b = os.path.join(tmp, "mjt_pysdk_jardiff_ref.jar")
+    mjt.save(h19b, p19b)
+    mjt.close_container(h19b)
+    changed = mjt.jar_diff(h19, p19b)
+    check("jardiff modified count", changed["modified"] == 1
+          and changed["workspace_only"] == 0 and changed["reference_only"] == 0,
+          str(changed))
+    check("jardiff util uri", len(changed["diffs"]) == 1
+          and changed["diffs"][0]["uri"] == "me/demo/Util.class"
+          and len(changed["diffs"][0]["ranges"]) == 1
+          and changed["diffs"][0]["ranges"][0]["before_length"] >= 1
+          and changed["diffs"][0]["ranges"][0]["after_length"] >= 1, str(changed))
+    try:
+        mjt.jar_diff(h19, os.path.join(tmp, "mjt_pysdk_missing_ref.jar"))
+        check("jardiff missing ref", False, "no exception")
+    except RuntimeError:
+        check("jardiff missing ref", True)
+    mjt.close_container(h19)
+
+    # ── 20. jar_fix（三类问题扫描 + 开关回填 + apply 移除） ──
+    # 注：demo jar 的 App 类带守卫/死代码形态，本就过不了 Jasm 校验——断言
+    # 只钉注入的两类问题，App 的 invalid_class 属既有底噪。
+    p20, h20 = fresh("jarfix")
+    mjt.set_entry_bytes(h20, "me/demo/Util.class", b"\xCA\xFE\xBA\xBE\x00\x00\x00\x33")
+    mjt.add_entry(h20, "corrupt_output_stream/tmp.bin", b"marker")
+    all_off = mjt.jar_fix_analyze(h20, remove_invalid_class_entries=False,
+                                  remove_corrupt_output_markers=False)
+    kinds = {issue["kind"] for issue in all_off["issues"]}
+    check("jarfix kinds", {"corrupt_output_marker", "invalid_class"} <= kinds, str(all_off))
+    flagged = {issue["uri"]: issue for issue in all_off["issues"]}
+    check("jarfix injected flagged", "me/demo/Util.class" in flagged
+          and flagged["me/demo/Util.class"]["kind"] == "invalid_class"
+          and "corrupt_output_stream/tmp.bin" in flagged
+          and flagged["corrupt_output_stream/tmp.bin"]["kind"] == "corrupt_output_marker",
+          str(all_off))
+    check("jarfix unselected", all(not issue["selected"] for issue in all_off["issues"]),
+          str(all_off))
+    check("jarfix class count", all_off["class_count"] == 5
+          and all_off["resource_count"] >= 7, str(all_off))
+    all_on = mjt.jar_fix_analyze(h20, remove_invalid_class_entries=True,
+                                 remove_corrupt_output_markers=True)
+    check("jarfix selected", all(issue["selected"] for issue in all_on["issues"]),
+          str(all_on))
+    applied = mjt.jar_fix_apply(h20, remove_invalid_class_entries=True,
+                                remove_corrupt_output_markers=True)
+    check("jarfix removed", "me/demo/Util.class" in applied["removed"]
+          and "corrupt_output_stream/tmp.bin" in applied["removed"], str(applied))
+    clean = mjt.jar_fix_analyze(h20, remove_invalid_class_entries=True,
+                                remove_corrupt_output_markers=True)
+    check("jarfix clean after apply", clean["issues"] == []
+          and clean["removed"] == [], str(clean))
+    check("jarfix util gone", "me/demo/Util" not in mjt.class_names(h20),
+          str(mjt.class_names(h20)))
+    mjt.close_container(h20)
+
+    # ── 21. pass 管线面（describe/run_pipeline 互斥/opt_preview 零改动/opt_apply） ──
+    p21, h21 = fresh("pipeline")
+    cat = mjt.pass_describe()
+    names21 = [p["name"] for p in cat["passes"]]
+    check("describe passes", "NopRemover" in names21 and "ClassMemberSorter" in names21
+          and all(p["description"] != "" and p["scope"] in ("method", "class", "global")
+                  for p in cat["passes"]), str(cat)[:200])
+    check("describe pipelines", any(p["name"] == "default-optimize" for p in cat["pipelines"]),
+          str(cat["pipelines"]))
+    stats21 = mjt.run_pipeline(h21, pass_names=["NopRemover", "ClassMemberSorter"])
+    check("runpipe multi slots",
+          {s["name"] for s in stats21.slots} == {"NopRemover", "ClassMemberSorter"},
+          str(stats21.slots))
+    for bad_args in ({"pass_names": ["NopRemover"], "pipeline": "default-optimize"},
+                     {}):
+        try:
+            mjt.run_pipeline(h21, **bad_args)
+            check("runpipe xor", False, f"no exception for {bad_args}")
+        except ValueError:
+            check("runpipe xor", True)
+    try:
+        mjt.run_pipeline(h21, pipeline="no-such-pipeline")
+        check("runpipe unknown pipeline", False, "no exception")
+    except ValueError:
+        check("runpipe unknown pipeline", True)
+    stats_named = mjt.run_pipeline(h21, pipeline="default-optimize")
+    check("runpipe named", stats_named.pipeline == "default-optimize", str(stats_named))
+    bytes_before = mjt.class_bytes(h21, "me/demo/Util")
+    preview = mjt.opt_preview(h21)
+    check("preview shape", isinstance(preview["changed"], bool)
+          and isinstance(preview["diffs"], list), str(preview)[:200])
+    check("preview zero mutation", mjt.class_bytes(h21, "me/demo/Util") == bytes_before,
+          "opt_preview must not touch the session container")
+    mjt.opt_preview(h21, pipeline="default-optimize")   # 显式管线 + 回落两用面
+    stats_apply = mjt.opt_apply(h21)
+    check("optapply default", stats_apply.pipeline == "default-optimize", str(stats_apply))
+    p21b = os.path.join(tmp, "mjt_pysdk_optapplied.jar")
+    mjt.save(h21, p21b)
+    mjt.close_container(h21)
+    h21b = mjt.open_jar(p21b)
+    verify21 = mjt.verify_container(h21b)
+    check("optapply verify clean", verify21["malformed"] == 0 and verify21["mismatch"] == 0,
+          str({"malformed": verify21["malformed"], "mismatch": verify21["mismatch"]}))
+    mjt.close_container(h21b)
+
+    # ── 22. analysis_evaluate（求值/化简/绑定/fail-closed） ──
+    r22 = mjt.analysis_evaluate("1 + 2 * 3")
+    check("expr eval", r22["evaluated"] and r22["value"] == 7
+          and r22["simplified"] is False and isinstance(r22["normalized"], str), str(r22))
+    r22b = mjt.analysis_evaluate("1 + 2 * 3", simplify=True)
+    check("expr simplify flag", r22b["simplified"] is True and r22b["evaluated"], str(r22b))
+    r22c = mjt.analysis_evaluate("x + 1", bindings={"x": 41})
+    check("expr bindings", r22c["evaluated"] and r22c["value"] == 42, str(r22c))
+    r22d = mjt.analysis_evaluate("y * 2")
+    check("expr unbound", not r22d["evaluated"] and "error" in r22d, str(r22d))
+    for bad_expr in ({"expression": "1 + * 2"},
+                     {"expression": "1 + 1", "max_depth": 0},
+                     {"expression": "1 + 1", "max_depth": 8192}):
+        try:
+            mjt.analysis_evaluate(**bad_expr)
+            check("expr fail-closed", False, f"no exception for {bad_expr}")
+        except ValueError:
+            check("expr fail-closed", True)
+
+    # ── 23. shadow sidecar 文件面（generate 幂等/prune 失配清理/缺侧车报错） ──
+    p23, h23 = fresh("shadowfile")
+    mjt.close_container(h23)
+    sidecar23 = p23 + ".mjt-shadow"
+    gen23 = mjt.shadow_generate_file(p23)
+    check("shadow gen file", gen23["file"] == sidecar23
+          and gen23["assigned_classes"] > 0 and gen23["total_entries"] > 0
+          and gen23["removed"] == 0, str(gen23))
+    regen23 = mjt.shadow_generate_file(p23)
+    check("shadow gen idempotent", regen23["assigned_classes"] == 0
+          and regen23["kept_entries"] == gen23["total_entries"]
+          and regen23["total_entries"] == gen23["total_entries"], str(regen23))
+    prune_idle = mjt.shadow_prune_file(p23)
+    check("shadow prune idle", prune_idle["removed"] == 0
+          and prune_idle["total_entries"] == gen23["total_entries"], str(prune_idle))
+    h23b = mjt.open_jar(p23)
+    mjt.remove_entry(h23b, "me/demo/Color.class")
+    mjt.save(h23b, p23)
+    mjt.close_container(h23b)
+    prune23 = mjt.shadow_prune_file(p23)
+    check("shadow prune stale", prune23["removed"] > 0
+          and prune23["total_entries"] < gen23["total_entries"], str(prune23))
+    p23b, h23c = fresh("shadowfile_nosidecar")
+    mjt.close_container(h23c)
+    try:
+        mjt.shadow_prune_file(p23b)
+        check("shadow prune missing sidecar", False, "no exception")
+    except RuntimeError:
+        check("shadow prune missing sidecar", True)
+    try:
+        mjt.shadow_generate_file(p23b, file=p23b)
+        check("shadow sidecar is jar", False, "no exception")
+    except RuntimeError:
+        check("shadow sidecar is jar", True)
+
+    # ── 24. decompiler_compare（fail-closed + fake java 双后端实跑） ──
+    p24, h24 = fresh("compare")
+    try:
+        mjt.decompiler_compare(h24, "me/demo/App", jar="no-such-decompiler.jar")
+        check("compare fail-closed", False, "no exception")
+    except RuntimeError as e:
+        check("compare fail-closed", "not available" in str(e), str(e))
+    fake_java = os.environ.get("MJT_PYSDK_FAKE_JAVA", "")
+    # unittest 宿主注入替身 java（本 exe 再入）；独立冒烟无宿主环境，
+    # 按 GTEST_SKIP 惯例记 skip 而非 fail，保持 smoke_sdk.py 独立可跑。
+    check("compare fake java env", True,
+          "skip: MJT_PYSDK_FAKE_JAVA unset outside unittest host"
+          if not fake_java else "")
+    if fake_java:
+        import zipfile
+        fake_cfr = os.path.join(tmp, "fake-pysdk-decompiler.jar")
+        fake_vf = os.path.join(tmp, "fake-pysdk-vineflower.jar")
+        for jar_path in (fake_cfr, fake_vf):
+            with zipfile.ZipFile(jar_path, "w") as zf:
+                zf.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\n")
+        compared = mjt.decompiler_compare(h24, "me/demo/App", jar=fake_cfr,
+                                          vineflower_jar=fake_vf, java=fake_java)
+        check("compare shape", compared["internal_name"] == "me/demo/App"
+              and len(compared["sources"]) == 2, str(compared)[:200])
+        backends = [s["backend"] for s in compared["sources"]]
+        check("compare backends", backends == ["cfr", "vineflower"], str(backends))
+        check("compare sources", all(s["source_scope"] == "class"
+                                     and "public class App" in s["source"]
+                                     and s["decompiler_jar"] != ""
+                                     for s in compared["sources"]), str(compared)[:200])
+    mjt.close_container(h24)
+
+    # ── 25. init_order（静态初始化拓扑序：超类边 + clinit 引用边 + 环 + roots 子图） ──
+    # demo 罐本无 <clinit>，这里用绑定面合成依赖结构：Crypto 自含 clinit；
+    # Util 无引用 clinit 但 super 改指 Crypto（超类边来源）；App 的 clinit 引用
+    # Color 与 Crypto；Color 的 clinit 引用 App（App↔Color 成环）。
+    # jasm 面读落账字节，树编辑后先 flush 再查。
+    p25, h25 = fresh("initorder")
+    op25 = mjt.opcodes
+    mjt.add_method((h25, "me/demo/Crypto"), "<clinit>", "()V",
+                   mjt.acc["STATIC"], 0, 0)
+    mjt.emit_insn((h25, "me/demo/Crypto", "<clinit>", "()V"), op25["return"])
+    mjt.class_set_super((h25, "me/demo/Util"), "me/demo/Crypto")
+    mjt.add_method((h25, "me/demo/Util"), "<clinit>", "()V",
+                   mjt.acc["STATIC"], 0, 0)
+    mjt.emit_insn((h25, "me/demo/Util", "<clinit>", "()V"), op25["return"])
+    mjt.add_method((h25, "me/demo/App"), "<clinit>", "()V",
+                   mjt.acc["STATIC"], 2, 0)
+    app_cl = (h25, "me/demo/App", "<clinit>", "()V")
+    mjt.emit_method_call(app_cl, op25["invokestatic"], "me/demo/Color", "values",
+                         "()[Lme/demo/Color;", False)
+    mjt.emit_insn(app_cl, op25["pop"])
+    mjt.emit_insn(app_cl, op25["iconst_0"])
+    mjt.emit_insn(app_cl, op25["iconst_0"])
+    mjt.emit_method_call(app_cl, op25["invokestatic"], "me/demo/Crypto", "decode",
+                         "(II)Ljava/lang/String;", False)
+    mjt.emit_insn(app_cl, op25["pop"])
+    mjt.emit_insn(app_cl, op25["return"])
+    mjt.add_method((h25, "me/demo/Color"), "<clinit>", "()V",
+                   mjt.acc["STATIC"], 1, 0)
+    color_cl = (h25, "me/demo/Color", "<clinit>", "()V")
+    mjt.emit_insn(color_cl, op25["aconst_null"])
+    mjt.emit_method_call(color_cl, op25["invokestatic"], "me/demo/App", "main",
+                         "([Ljava/lang/String;)V", False)
+    mjt.emit_insn(color_cl, op25["return"])
+    mjt.flush(h25, compute_frames=True)
+    full = init_order(h25)
+    check("init full order", full["order"] == ["me/demo/Crypto", "me/demo/Util"],
+          str(full["order"]))
+    check("init full cycles", full["cycles"] == [["me/demo/App", "me/demo/Color"]],
+          str(full["cycles"]))
+    check("init no_clinit", full["no_clinit"] == ["me/demo/Api"], str(full["no_clinit"]))
+    leaf = init_order(h25, ["me/demo/Crypto"])
+    check("init roots leaf", leaf["order"] == ["me/demo/Crypto"] and leaf["cycles"] == [],
+          str(leaf))
+    sub = init_order(h25, ["me/demo/Util"])
+    check("init roots super closure",
+          sub["order"] == ["me/demo/Crypto", "me/demo/Util"] and sub["cycles"] == [],
+          str(sub))
+    cyc = init_order(h25, ["me/demo/App"])
+    check("init roots cycle", cyc["order"] == ["me/demo/Crypto"]
+          and cyc["cycles"] == [["me/demo/App", "me/demo/Color"]], str(cyc))
+    mjt.close_container(h25)
+
+    if fallback_tmp is not None:
+        import shutil
+        shutil.rmtree(fallback_tmp, ignore_errors=True)
     return fails
+
+
+if __name__ == "__main__":
+    # --script 宿主 exec 本文件时 globals 的 __name__ 是 "__main__"，本块生效；
+    # unittest 宿主走 import（__name__ = 模块名），本块不进。退出码对齐宿主契约
+    # （pysdk_embed）：0=全绿、1=有 fail——sys.exit 抛 SystemExit，走
+    # PyErr_Print 的 handle_system_exit 通道按码整进程退出，不落 traceback；
+    # 2（用法错）与 3（watchdog 硬终止）是宿主侧码，脚本面不产。
+    import sys
+
+    _fails = run_all()
+    for _f in _fails:
+        print("FAIL " + _f)
+    sys.exit(1 if _fails else 0)

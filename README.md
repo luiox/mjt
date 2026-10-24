@@ -35,11 +35,13 @@ xmake build mjt-mcp
 
 Dependencies are pulled directly from
 [luiox-repo](https://github.com/luiox/luiox-repo): libca, libmcp, libjstr,
-libjbytecode, libjzip, libgarena, libjclassfile; libarchive / zlib /
-nlohmann_json come from [xrepo](https://xmake.io). Of these, libjbytecode is a
-legacy frozen package (visitor architecture) that has been superseded by libjbc,
-and is consumed here only as the transitional foundation for the in-repo
-`mbase/` layer.
+libjbytecode, libjzip, libgarena, libjclassfile, libjstd, libjdk_finder,
+libjblw, libjhasm; libarchive / zlib / nlohmann_json come from
+[xrepo](https://xmake.io). libjbc is defined as an in-repo inline package
+(git direct with a pinned commit, kept at the same version as mjbase). The
+bytecode foundation itself is mjbase, consumed as a source-level sibling
+directory dependency (`--mjbase_root`, default `../mjbase`) until it is
+packaged into luiox-repo.
 
 ### Tests
 
@@ -53,8 +55,9 @@ Some cases require a JDK; when one is missing they `GTEST_SKIP` instead of
 failing. Test artifacts land in the `test/` directory of each project root and
 can be redirected with `LIBCA_TEST_OUT_ROOT`.
 
-The in-repo libraries ship their own suites (`libjhasm_unittest`,
-`libjblw_unittest`, `libjdk_finder_unittest`), built and run the same way.
+The packaged libraries ship their own suites under `unittest/`
+(`libjhasm_unittest`, `libjblw_unittest`, `libjdk_finder_unittest`), built and
+run the same way.
 
 ## Run
 
@@ -78,17 +81,19 @@ mjt/mcp/test/    MCP-layer unit tests
 mjt/src/shared/  capabilities shared across the MCP tool set
                  (decompiler integration, jar remapping, workspace…)
 mjt/skills/      MCP skill definitions
-mbase/           bytecode analysis and editing layer
-                 (classfile, bytecode, mapping, xref, pass pipeline)
-libs/            in-repo small libraries: JASM assembler/disassembler,
-                 class bytecode wrapper, JDK/toolchain detection,
-                 Java standard-library semantics
+mjt-py/src/      embedded Python SDK (mjt --script embedded interpreter and
+                 the mjt.pyd pybind11 binding; gated by --with_pysdk)
+unittest/        suites for the packaged libraries (libjhasm, libjblw,
+                 libjdk_finder)
 test_helper/     test scaffolding (gtest integration, artifact path resolution)
-xmake/           build switches, embedded libca rules, Windows manifest rule,
-                 package repository overrides
+xmake/           build switches, inline libjbc package definition, embedded
+                 libca rules, Windows manifest rule, package repository
+                 overrides
 ```
 
-`mbase` and `libs` are the shared layer; `mjt` is the only product line.
+The shared layer lives outside the repo: the mjbase source tree (sibling
+directory dependency) plus the luiox-repo packages. `mjt` is the product line;
+`mjt-py` is an optional SDK component.
 
 ## Conventions
 

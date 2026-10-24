@@ -14,20 +14,21 @@
 ## 输入与范围
 
 接受目标类/符号清单、命名参考（哪里来的语义线索）与授权边界（是否允许
-写操作、是否允许导出）。一轮只改一层：符号修复与形态反制（`pass_run`
-等）不混在同一次提交，否则 `jar_diff` 无法归因。
+写操作、是否允许导出）。一轮只改一层：符号修复与形态反制（优化管线等）
+不混在同一次提交，否则归因困难。
 
 ## 门 1：配置
 
-`decompiler_list` 确认 backend 可用；不可用时先修环境（JAR 路径、Java
-版本、`decompiler_settings_set` 的超时/内存/源码上限），修不了就降级为
-Jasm 阅读并在交接里声明。检查：backend 选择与版本记进任务，后续所有
-产物可归因。
+`project_info` 的 decompilers 面确认 backend 可用；不可用时先修环境
+（`decompile` 的 `decompiler_jar`/`java`/`timeout_ms`/`max_memory_mib`
+参数按调用注入），修不了就降级为 Jasm 阅读并在交接里声明。检查：
+backend 选择与版本记进任务，后续所有产物可归因。
 
 ## 门 2：修符号
 
-逐符号：`rename_analyze` 拿 `mappings[]`、`overrides[]`、`impact`
-（前后引用数、byte diff、风险）→ 审 override 组件 → `rename_apply`。
+逐符号：`edit_apply`(kind=`rename`, `dry_run: true`) 拿 `mappings[]`、
+`overrides[]`、`impact`（前后引用数、byte diff、风险）→ 审 override
+组件 → 去掉 dry_run 提交。
 
 - `requires_override_review` 为真时逐条确认：父类/接口/实现一致命名，
   `cascade_overrides` 的取舍有理由。
@@ -35,25 +36,25 @@ Jasm 阅读并在交接里声明。检查：backend 选择与版本记进任务�
 - 传播由服务端完成；返回的 `affected_classes`/`affected_references` 是
   传播结果的权威记录，归档进交接——不手工同步引用，也不复核对服务端
   传播面的信任。
-- 已有 mapping 源时走 `mapping_analyze`/`mapping_apply`，与逐符号 rename
+- 已有 mapping 源时走 `edit_apply`(kind=`mapping`)，与逐符号 rename
   二选一为主，避免同符号两路冲突。
 
-检查：rename 未过 override 审查不 apply；每次 apply 带 `expected_revision`，
+检查：rename 未过 override 审查不提交；每次提交带 `expected_revision`，
 成功后刷新 revision。
 
 ## 门 3：反编译
 
-`class_source`/`method_source` 反编译目标类；大类用 `async: true` 拿
-`job_id`，`job_get` 轮询到终态（succeeded/failed/cancelled），完成后
-`job_release` 释放。对照类用 `decompiler_compare` 看双 backend 分歧。
+`decompile`（class 选择或三元组）反编译目标类；大类用 `async: true` 拿
+`job_id`，`decompile`(action=`poll`) 轮询到终态（succeeded/failed/
+cancelled），完成后 `decompile`(action=`release`) 释放。
 
-job 规则：取消只对 queued/running 生效，进入 committing 不可取消；超时与
-失败不产生任何写回（无导出、revision 不变）；组合事务 `analysis_workflow`
-对发起时 revision 做 stale 校验——**job 运行期间不并行提交其他变更**，
-被改则 ABORTED。
+job 规则：取消走 `decompile`(action=`cancel`)，只对 queued/running 生效，
+进入 committing 不可取消；超时与失败不产生任何写回（无导出、revision
+不变）；job 按 `project_id` 归属隔离，跨工程引用 job_id 按不存在处理——
+**job 运行期间不并行提交其他变更**，提交会撞 stale 拒绝。
 
-检查：产物带 backend/版本与告警；读取失败区分"超时"（DEADLINE_EXCEEDED
-侧车）与"反编译错误"。
+检查：产物带 backend/版本与告警；读取失败区分"超时"
+（DEADLINE_EXCEEDED 侧车）与"反编译错误"。
 
 ## 门 4：迭代
 
@@ -62,15 +63,15 @@ job 规则：取消只对 queued/running 生效，进入 committing 不可取消
 （语法糖还原、record 伪影幂等修复）按 `doc/recover-source-from-jar-guide.md`
 对应章节执行 → 再反编译验证。
 
-失败排查顺序：`decompiler_list` 可用性 → 超时/内存上限 → 类形态（未剥
-CFF、nest 元数据残留）→ 派指令分析师确认。原参数重跑不超过一次。
+失败排查顺序：`project_info` 的 backend 可用性 → 超时/内存上限 → 类形态
+（未剥 CFF、nest 元数据残留）→ 派指令分析师。原参数重跑不超过一次。
 
 ## 交付
 
 最终源码 + mapping/重命名记录（含传播面）+ 失败区域与残余风险清单。
 按"反编译了哪些类、成功多少、失败分布"记账。需要落盘时导出走协调者批准
-的 `workspace_export`（只写此前不存在的新路径）或组合事务的 export 阶段；
-交付文本永远标 `reconstruction` 级。
+的 `project_export`（只写此前不存在的新路径）；交付文本永远标
+`reconstruction` 级。
 
 ## 完成
 

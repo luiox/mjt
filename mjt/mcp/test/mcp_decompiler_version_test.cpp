@@ -123,30 +123,59 @@ TEST(McpDecompilerVersionTest, InspectDecompilerFillsVersionWhenArtifactAvailabl
     EXPECT_EQ("", absent.version);
 }
 
-TEST(McpDecompilerVersionTest, DecompilerListSurfacesBackendVersion)
+TEST(McpDecompilerVersionTest, ProjectInfoSurfacesBackendVersions)
 {
+    //decompiler_settings_* 已 SDK 化出 MCP 面：project_info 直接报告会话默认
+    //配置下的后端可用性；version 恒为字符串（稳定契约），未配置 JAR 时值为空。
     McpSessionHarness server;
-    const auto        jar = writeManifestJar(
-        "mjt_version_list.jar",
-        "Manifest-Version: 1.0\n"
-        "Implementation-Version: 0.152\n"
-        "\n");
-    const auto fakeJava = test::getBuildTargetPath("mjt_mcp_unittest");
-
-    const auto settingsSet = call(server,
-                                  "decompiler_settings_set",
-                                  {{"cfr_jar", jar.string()},
-                                   {"java", fakeJava.string()}});
-    ASSERT_FALSE(settingsSet.at("result").at("isError"));
-    const auto& backends = payload(settingsSet).at("backends");
+    const auto fixture = writeFixture();
+    const auto opened  = call(server, "project_open", {{"path", fixture.string()}});
+    ASSERT_FALSE(opened.at("result").at("isError"));
+    const auto info =
+        call(server, "project_info", {{"project_id", payload(opened).at("project_id")}});
+    ASSERT_FALSE(info.at("result").at("isError"));
+    const auto& backends = payload(info).at("decompilers");
     ASSERT_EQ(2U, backends.size());
-    EXPECT_EQ("0.152", backends.at(0).at("version").get<std::string>());
-    //vineflower 后端未配置 JAR：version 必须是字符串（稳定契约），值为空。
+    EXPECT_TRUE(backends.at(0).at("version").is_string());
     EXPECT_TRUE(backends.at(1).at("version").is_string());
+}
 
-    const auto listed = call(server, "decompiler_list", nlohmann::json::object());
-    ASSERT_FALSE(listed.at("result").at("isError"));
-    EXPECT_EQ("0.152", payload(listed).at("backends").at(0).at("version").get<std::string>());
+
+//decompilers[] 报 JAR 来源层（explicit/env/package_dir）与可覆盖环境
+//变量 override_env；旧 environment 键删除（严格切换，无双轨）。
+TEST(McpDecompilerVersionTest, DiscoverySourceAndOverrideEnv)
+{
+    const auto jar = writeManifestJar(
+        "mjt_source_layer.jar",
+        "Manifest-Version: 1.0\n"
+        "\n");
+    const auto explicitHit = inspectDecompiler(DecompilerKind::Cfr, jar.u8string(), "java");
+    EXPECT_EQ("explicit", explicitHit.discoverySource);
+    EXPECT_EQ("MJT_CFR_JAR", explicitHit.environmentVariable);
+
+    const auto vineflower = inspectDecompiler(DecompilerKind::Vineflower, {}, "java");
+    EXPECT_EQ("MJT_VINEFLOWER_JAR", vineflower.environmentVariable);
+    EXPECT_TRUE(vineflower.discoverySource == "env" ||
+                vineflower.discoverySource == "package_dir")
+        << vineflower.discoverySource;
+
+    McpSessionHarness server;
+    const auto fixture = writeFixture();
+    const auto opened  = call(server, "project_open", {{"path", fixture.string()}});
+    ASSERT_FALSE(opened.at("result").at("isError"));
+    const auto info =
+        call(server, "project_info", {{"project_id", payload(opened).at("project_id")}});
+    ASSERT_FALSE(info.at("result").at("isError"));
+    const auto& backends = payload(info).at("decompilers");
+    ASSERT_EQ(2U, backends.size());
+    EXPECT_EQ("MJT_CFR_JAR", backends.at(0).at("override_env").get<std::string>());
+    EXPECT_EQ("MJT_VINEFLOWER_JAR", backends.at(1).at("override_env").get<std::string>());
+    for (const auto& backend : backends) {
+        EXPECT_FALSE(backend.contains("environment"));
+        const auto& source = backend.at("source").get_ref<const std::string&>();
+        EXPECT_TRUE(source == "explicit" || source == "env" || source == "package_dir")
+            << source;
+    }
 }
 
 }   //namespace

@@ -58,6 +58,7 @@ ca::StatusOr<DecompiledSource> decompileWorkspaceClass(
     mjbase::workspace::IWorkspace& workspace,
     const std::string& className,
     const DecompilerOptions& options);
-Json decompiledSourceJson(const DecompiledSource& result, const char* sourceScope);
+Json decompiledSourceJson(const DecompiledSource& result, const char* sourceScope,
+                          bool cached = false);
 
 }   //namespace mjt::mcp::detail
