@@ -16,6 +16,10 @@ if has_config("with_pysdk") then
     if pyHome == nil or pyHome == "" then
         pyHome = os.getenv("MJT_PYTHON_HOME") or "D:/sdk/python/Python314"
     end
+    --烧进字符串字面量的路径必须归一为正斜杠：反斜杠里的 \3（八进制）、\x…
+    --（十六进制）会被 C++ 编译器当转义序列吃掉（CI 的 hostedtoolcache
+    --Python\3.14.9\x64 实证）。Windows API 对正斜杠路径同接受。
+    pyHome = pyHome:gsub("\\", "/")
     local pybind11Root = os.getenv("MORPHER_PYBIND11_ROOT") or "D:/sdk/cpp/pybind11-3.1.0"
     -- mjt shared 反编译执行器（shared/decompiler.hpp 的 include 根）。
     local mjtSharedSrc = path.join(os.scriptdir(), "..", "mjt", "src")
