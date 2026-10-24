@@ -26,9 +26,11 @@ if has_config("with_pysdk") then
         set_default(false)
 
         add_includedirs("src", {public = true})
+        -- 只挂头文件路径，不链 python314：exe 对 Python 零加载期依赖（纯
+        -- MCP/用法模式在无 Python 的机器上可起，绿色部署前提）。CPython 入口
+        -- 经 pysdk_embed.cpp 的运行时绑定（GetProcAddress）解析；unittest/
+        -- embedtest 宿主如需直连可自行挂 libs（当前同样走运行时绑定）。
         add_includedirs(path.join(pyHome, "include"))
-        add_linkdirs(path.join(pyHome, "libs"))
-        add_links("python314")
         add_defines('MJT_PYTHON_HOME_DEFAULT="' .. pyHome .. '"')
         add_files("src/pysdk_embed.cpp", "src/pysdk_limits.cpp")
 

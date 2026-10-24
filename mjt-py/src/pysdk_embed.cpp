@@ -3,7 +3,8 @@
 // pysdk_embed.cpp — 嵌入解释器实现（纯 CPython API）。
 //
 // 契约（mjt-py/doc_ai/mjt-py-sdk-spec.md §4）：
-//   - python home：MJT_PYTHON_HOME env > 编译期 MJT_PYTHON_HOME_DEFAULT；
+//   - python home：MJT_PYTHON_HOME env > <exe_dir>/python（交付包形态）>
+//     编译期 MJT_PYTHON_HOME_DEFAULT；
 //   - sys.path 前插：exe 目录（mjt.pyd / mjt_util.py 缺位点）；
 //   - 预载 import mjt 并注入脚本 globals；
 //   - sys.argv = [script, *scriptArgs]；异常打 traceback，退出码 1；
@@ -24,14 +25,139 @@
 #include <windows.h>
 #endif
 
+// ── CPython 运行时绑定（Windows exe 零加载期依赖）──────────────────────────
+// exe 不链 python314.lib：纯 MCP/用法模式（不初始化解释器）对 Python 零加载
+// 期依赖，无 Python 运行时的机器上照常可起——绿色部署的前提。/DELAYLOAD 不
+// 可行：PyExc_* 等是数据导出，delayimp 只覆盖函数导入（LNK1194 实证）。故
+// Windows 上全部 CPython 入口在 pythonPreInit 装载 python314.dll 后经
+// GetProcAddress 解析进 g_py；Py_None 走 Py_GetConstantBorrowed（3.14 的
+// _Py_NoneStruct 不再按可导入口径供非 limited API 使用）。宏重定向仅本文件
+// 生效，签名与 <Python.h> 一致；非 Windows 维持直连（libpython 常规链接）。
+#ifdef _WIN32
 namespace mjt::pysdk {
 namespace {
 
-std::string envOr(const char* name, const std::string& fallback)
+struct PyApi
 {
-    const char* v = std::getenv(name);
-    return (v && *v) ? std::string(v) : fallback;
-}
+    void      (*PreConfig_InitPythonConfig)(PyPreConfig*);
+    PyStatus  (*PreInitialize)(const PyPreConfig*);
+    int       (*Status_Exception)(PyStatus);
+    void      (*Config_InitPythonConfig)(PyConfig*);
+    PyStatus  (*Config_SetBytesString)(PyConfig*, wchar_t**, const char*);
+    void      (*Config_Clear)(PyConfig*);
+    PyStatus  (*InitializeFromConfig)(const PyConfig*);
+    int       (*FinalizeEx)(void);
+    int       (*Run_SimpleString)(const char*);
+    PyObject* (*Run_String)(const char*, int, PyObject*, PyObject*);
+    PyObject* (*CompileStringExFlags)(const char*, const char*, int, PyCompilerFlags*, int);
+    PyObject* (*Eval_EvalCode)(PyObject*, PyObject*, PyObject*);
+    PyObject* (*Eval_GetBuiltins)(void);
+    int       (*Eval_SetTrace)(Py_tracefunc, PyObject*);
+    PyObject* (*Import_AddModule)(const char*);
+    PyObject* (*Import_ImportModule)(const char*);
+    PyObject* (*Object_GetAttrString)(PyObject*, const char*);
+    PyObject* (*List_New)(Py_ssize_t);
+    PyObject* (*List_GetItem)(PyObject*, Py_ssize_t);
+    int       (*List_SetItem)(PyObject*, Py_ssize_t, PyObject*);
+    long long (*Long_AsLongLong)(PyObject*);
+    void      (*Err_SetString)(PyObject*, const char*);
+    void      (*Err_Print)(void);
+    int       (*Sys_SetObject)(const char*, PyObject*);
+    PyObject* (*Dict_New)(void);
+    int       (*Dict_SetItemString)(PyObject*, const char*, PyObject*);
+    PyObject* (*Unicode_FromString)(const char*);
+    void      (*DecRef)(PyObject*);
+    PyObject* (*GetConstantBorrowed)(unsigned int);
+    PyObject* excKeyboardInterrupt;   ///< PyExc_KeyboardInterrupt 装载后快照
+};
+
+PyApi g_py;   ///< pythonPreInit 成功后有效；调用面限于解释器生命周期内
+
+}   // namespace
+}   // namespace mjt::pysdk
+
+// 头文件自带同名宏（Py_None/Py_DECREF 族为宏，PyRun 族 3.14 亦然）——本文件
+// 统一改走运行时绑定，先 #undef 再重定义，消 C4005。
+#undef Py_PreInitialize
+#undef PyStatus_Exception
+#undef PyPreConfig_InitPythonConfig
+#undef PyConfig_InitPythonConfig
+#undef PyConfig_SetBytesString
+#undef PyConfig_Clear
+#undef Py_InitializeFromConfig
+#undef Py_FinalizeEx
+#undef PyRun_SimpleString
+#undef PyRun_String
+#undef Py_CompileString
+#undef PyEval_EvalCode
+#undef PyEval_GetBuiltins
+#undef PyEval_SetTrace
+#undef PyImport_AddModule
+#undef PyImport_ImportModule
+#undef PyObject_GetAttrString
+#undef PyList_New
+#undef PyList_GetItem
+#undef PyList_SetItem
+#undef PyLong_AsLongLong
+#undef PyErr_SetString
+#undef PyErr_Print
+#undef PySys_SetObject
+#undef PyDict_New
+#undef PyDict_SetItemString
+#undef PyUnicode_FromString
+#undef Py_None
+#undef PyExc_KeyboardInterrupt
+#undef Py_DECREF
+#undef Py_XDECREF
+#undef Py_CLEAR
+
+#define Py_PreInitialize            ::mjt::pysdk::g_py.PreInitialize
+#define PyStatus_Exception          ::mjt::pysdk::g_py.Status_Exception
+#define PyPreConfig_InitPythonConfig ::mjt::pysdk::g_py.PreConfig_InitPythonConfig
+#define PyConfig_InitPythonConfig   ::mjt::pysdk::g_py.Config_InitPythonConfig
+#define PyConfig_SetBytesString     ::mjt::pysdk::g_py.Config_SetBytesString
+#define PyConfig_Clear              ::mjt::pysdk::g_py.Config_Clear
+#define Py_InitializeFromConfig     ::mjt::pysdk::g_py.InitializeFromConfig
+#define Py_FinalizeEx               ::mjt::pysdk::g_py.FinalizeEx
+#define PyRun_SimpleString          ::mjt::pysdk::g_py.Run_SimpleString
+#define PyRun_String                ::mjt::pysdk::g_py.Run_String
+#define Py_CompileString(s, f, k) \
+    ::mjt::pysdk::g_py.CompileStringExFlags((s), (f), (k), nullptr, -1)
+#define PyEval_EvalCode             ::mjt::pysdk::g_py.Eval_EvalCode
+#define PyEval_GetBuiltins          ::mjt::pysdk::g_py.Eval_GetBuiltins
+#define PyEval_SetTrace             ::mjt::pysdk::g_py.Eval_SetTrace
+#define PyImport_AddModule          ::mjt::pysdk::g_py.Import_AddModule
+#define PyImport_ImportModule       ::mjt::pysdk::g_py.Import_ImportModule
+#define PyObject_GetAttrString      ::mjt::pysdk::g_py.Object_GetAttrString
+#define PyList_New                  ::mjt::pysdk::g_py.List_New
+#define PyList_GetItem              ::mjt::pysdk::g_py.List_GetItem
+#define PyList_SetItem              ::mjt::pysdk::g_py.List_SetItem
+#define PyLong_AsLongLong           ::mjt::pysdk::g_py.Long_AsLongLong
+#define PyErr_SetString             ::mjt::pysdk::g_py.Err_SetString
+#define PyErr_Print                 ::mjt::pysdk::g_py.Err_Print
+#define PySys_SetObject             ::mjt::pysdk::g_py.Sys_SetObject
+#define PyDict_New                  ::mjt::pysdk::g_py.Dict_New
+#define PyDict_SetItemString        ::mjt::pysdk::g_py.Dict_SetItemString
+#define PyUnicode_FromString        ::mjt::pysdk::g_py.Unicode_FromString
+#define Py_None (::mjt::pysdk::g_py.GetConstantBorrowed(Py_CONSTANT_NONE))
+#define PyExc_KeyboardInterrupt (::mjt::pysdk::g_py.excKeyboardInterrupt)
+#define Py_DECREF(op) ::mjt::pysdk::g_py.DecRef(op)
+#define Py_XDECREF(op)                \
+    do {                              \
+        if (op != nullptr) {          \
+            ::mjt::pysdk::g_py.DecRef(op); \
+        }                             \
+    } while (0)
+#define Py_CLEAR(field)                       \
+    do {                                      \
+        PyObject* _mjt_tmp = (field);         \
+        (field) = nullptr;                    \
+        ::mjt::pysdk::g_py.DecRef(_mjt_tmp);  \
+    } while (0)
+#endif   // _WIN32
+
+namespace mjt::pysdk {
+namespace {
 
 /// 窄串路径 → python 字符串字面量（forward slash 规范化，规避 raw-string 尾反斜杠）。
 std::string pyPathLiteral(const std::string& p)
@@ -127,14 +253,63 @@ constexpr std::int64_t kScriptHardExitGraceMs = 5000;
 
 }   // namespace
 
-std::string pythonHome()
+#ifdef _WIN32
+namespace {
+
+/// 逐项解析 CPython 导出；缺任一即失败（版本错配防护，错误指名缺失符号）。
+bool resolvePythonApi(HMODULE module)
 {
-#ifdef MJT_PYTHON_HOME_DEFAULT
-    return envOr("MJT_PYTHON_HOME", MJT_PYTHON_HOME_DEFAULT);
-#else
-    return envOr("MJT_PYTHON_HOME", "");
-#endif
+#define MJT_PY_PROC(field, name)                                              \
+    do {                                                                      \
+        g_py.field = reinterpret_cast<decltype(g_py.field)>(                  \
+            reinterpret_cast<void*>(GetProcAddress(module, name)));           \
+        if (g_py.field == nullptr) {                                          \
+            std::fprintf(stderr, "mjt: python314.dll missing export %s\n",    \
+                         name);                                               \
+            return false;                                                     \
+        }                                                                     \
+    } while (0)
+    MJT_PY_PROC(PreConfig_InitPythonConfig, "PyPreConfig_InitPythonConfig");
+    MJT_PY_PROC(PreInitialize, "Py_PreInitialize");
+    MJT_PY_PROC(Status_Exception, "PyStatus_Exception");
+    MJT_PY_PROC(Config_InitPythonConfig, "PyConfig_InitPythonConfig");
+    MJT_PY_PROC(Config_SetBytesString, "PyConfig_SetBytesString");
+    MJT_PY_PROC(Config_Clear, "PyConfig_Clear");
+    MJT_PY_PROC(InitializeFromConfig, "Py_InitializeFromConfig");
+    MJT_PY_PROC(FinalizeEx, "Py_FinalizeEx");
+    MJT_PY_PROC(Run_SimpleString, "PyRun_SimpleString");
+    MJT_PY_PROC(Run_String, "PyRun_String");
+    MJT_PY_PROC(CompileStringExFlags, "Py_CompileStringExFlags");
+    MJT_PY_PROC(Eval_EvalCode, "PyEval_EvalCode");
+    MJT_PY_PROC(Eval_GetBuiltins, "PyEval_GetBuiltins");
+    MJT_PY_PROC(Eval_SetTrace, "PyEval_SetTrace");
+    MJT_PY_PROC(Import_AddModule, "PyImport_AddModule");
+    MJT_PY_PROC(Import_ImportModule, "PyImport_ImportModule");
+    MJT_PY_PROC(Object_GetAttrString, "PyObject_GetAttrString");
+    MJT_PY_PROC(List_New, "PyList_New");
+    MJT_PY_PROC(List_GetItem, "PyList_GetItem");
+    MJT_PY_PROC(List_SetItem, "PyList_SetItem");
+    MJT_PY_PROC(Long_AsLongLong, "PyLong_AsLongLong");
+    MJT_PY_PROC(Err_SetString, "PyErr_SetString");
+    MJT_PY_PROC(Err_Print, "PyErr_Print");
+    MJT_PY_PROC(Sys_SetObject, "PySys_SetObject");
+    MJT_PY_PROC(Dict_New, "PyDict_New");
+    MJT_PY_PROC(Dict_SetItemString, "PyDict_SetItemString");
+    MJT_PY_PROC(Unicode_FromString, "PyUnicode_FromString");
+    MJT_PY_PROC(DecRef, "Py_DecRef");
+    MJT_PY_PROC(GetConstantBorrowed, "Py_GetConstantBorrowed");
+#undef MJT_PY_PROC
+    const auto exc = reinterpret_cast<PyObject**>(
+        reinterpret_cast<void*>(GetProcAddress(module, "PyExc_KeyboardInterrupt")));
+    if (exc == nullptr || *exc == nullptr) {
+        std::fprintf(stderr, "mjt: python314.dll missing export PyExc_KeyboardInterrupt\n");
+        return false;
+    }
+    g_py.excKeyboardInterrupt = *exc;
+    return true;
 }
+}   // namespace（resolvePythonApi 所在匿名域）
+#endif   // _WIN32
 
 std::string exeDir()
 {
@@ -149,14 +324,48 @@ std::string exeDir()
 #endif
 }
 
+std::string pythonHome()
+{
+    if (const char* env = std::getenv("MJT_PYTHON_HOME"); env && *env) return env;
+#ifdef _WIN32
+    // 交付包形态：exe 同目录的 python/（绿色部署，零环境变量）。存在性以
+    // python314.dll 为准——目录在而运行时缺位不算命中，让位给编译期缺省。
+    if (!exeDir().empty()) {
+        std::error_code           ec;
+        const std::filesystem::path bundled = std::filesystem::path(exeDir()) / "python";
+        if (std::filesystem::exists(bundled / "python314.dll", ec)) {
+            return bundled.u8string();
+        }
+    }
+#endif
+#ifdef MJT_PYTHON_HOME_DEFAULT
+    return MJT_PYTHON_HOME_DEFAULT;
+#else
+    return {};
+#endif
+}
+
 bool pythonPreInit()
 {
 #ifdef _WIN32
-    const std::string dll = (std::filesystem::path(pythonHome()) / "python314.dll").u8string();
-    if (!LoadLibraryExA(dll.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH)) {
+    const std::string home = pythonHome();
+    if (home.empty()) {
+        std::fprintf(stderr, "mjt: python runtime not found (set MJT_PYTHON_HOME)\n");
+        return false;
+    }
+    // 解释器目录挂入进程 DLL 搜索路径：python314.dll 本体走绝对路径装载，
+    // 其依赖（vcruntime140 等）与 delay-load thunk 的按名解析都在同目录命中。
+    // exe 是 UTF-8 activeCodePage（win_utf8_manifest），A 口径即 UTF-8；进程
+    // 生命周期内保留挂载，后续 import mjt 的 pyd 依赖解析同样受益。
+    SetDllDirectoryA(home.c_str());
+    const std::string dll =
+        (std::filesystem::path(home) / "python314.dll").generic_u8string();
+    const HMODULE module = LoadLibraryExA(dll.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+    if (module == nullptr) {
         std::fprintf(stderr, "mjt: cannot load %s (set MJT_PYTHON_HOME)\n", dll.c_str());
         return false;
     }
+    if (!resolvePythonApi(module)) return false;
 #endif
     return true;
 }
@@ -198,7 +407,14 @@ bool pythonInit()
     return !PyStatus_Exception(st);
 }
 
-int pythonFinalize() { return Py_FinalizeEx(); }
+int pythonFinalize()
+{
+#ifdef _WIN32
+    // 未装载（纯 MCP 模式无解释器生命周期）零动作。
+    if (::mjt::pysdk::g_py.FinalizeEx == nullptr) return 0;
+#endif
+    return Py_FinalizeEx();
+}
 
 int runEmbeddedScript(const EmbedOptions& options)
 {
