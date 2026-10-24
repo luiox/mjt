@@ -19,6 +19,7 @@
 #include <mcp/streamable_http_server.hpp>
 #include <mcp/tool_registry.hpp>
 
+#include "cesu8.hpp"
 #include "tool/service.hpp"
 #include "tool/limits.hpp"
 
@@ -78,7 +79,9 @@ Json fromLibmcpJson(const ca::json::JsonValue& value)
     case JsonType::Bool: return value.as_bool();
     case JsonType::Int: return value.as_int();
     case JsonType::Float: return value.as_float();
-    case JsonType::String: return value.as_string().to_std_string();
+    //JS/UTF-16 宿主按码元序列化，增补平面字符可能以 CESU-8 送达；nlohmann
+    //严格校验会整体拒收参数对象（服务端消毒成本远低于等客户端修好）。
+    case JsonType::String: return sanitizeCesu8Text(value.as_string().to_std_string());
     case JsonType::Array:
     {
         Json result = Json::array();
@@ -89,7 +92,7 @@ Json fromLibmcpJson(const ca::json::JsonValue& value)
     {
         Json result = Json::object();
         for (const auto& item : value.as_object())
-            result[item.first.to_std_string()] = fromLibmcpJson(item.second);
+            result[sanitizeCesu8Text(item.first.to_std_string())] = fromLibmcpJson(item.second);
         return result;
     }
     }
