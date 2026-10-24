@@ -178,7 +178,9 @@ option("mjbase_root")
     set_description("Path to the mjbase source tree.")
 option_end()
 
-includes(path.join(get_config("mjbase_root"), "mjbase"))
+-- 首次干净配置时脚本加载早于 CLI 选项合并，get_config 可能为 nil：回退
+-- 缺省兄弟目录，后续加载再吃已记录的配置值。
+includes(path.join(get_config("mjbase_root") or "../mjbase", "mjbase"))
 
 includes("test_helper")
 includes("mjt")
