@@ -789,9 +789,10 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
                 instructions.push_back({{"index", item.index},
                                         {"opcode", item.opcode},
                                         {"mnemonic", item.mnemonic},
-                                        //按指令语义分类（invoke/field/ldc/…），
-                                        //不再是把全部 CP 形态标成 ldc 的布局命名。
-                                        {"node_type", detail::instructionSemanticKind(item.mnemonic)}});
+                                        //mjbase instructionNodeType 语义归类
+                                        //（invoke/field/ldc/cp_ref/…），单一
+                                        //事实源在基座，此处直取不再本地重建。
+                                        {"node_type", item.nodeType}});
             //指令摘要只有 index/opcode/mnemonic/node_type,操作数级证据在
             //jasm 全文;两份一次取齐,调用方不必退回自写解析器。
             Json payload{{"method", methodJson(value.unwrap().method)},

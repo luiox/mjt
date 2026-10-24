@@ -143,7 +143,7 @@ TEST(McpServerTest, ExposesProjectQueriesAndTransactionalEdits)
                                   {"limit", 4}});
     ASSERT_FALSE(classBytes.at("result").at("isError"));
     EXPECT_EQ("mcp/Subject.class", payload(classBytes).at("resource_uri"));
-    EXPECT_EQ("mcp/Subject", payload(classBytes).at("internal_name"));
+    EXPECT_EQ("mcp/Subject", payload(classBytes).at("class"));
     EXPECT_EQ(0U,
               payload(classBytes).at("fingerprint").get<std::string>().find("fnv1a64:"));
     EXPECT_EQ(0, payload(classBytes).at("offset"));
@@ -213,7 +213,7 @@ TEST(McpServerTest, ExposesProjectQueriesAndTransactionalEdits)
     const auto supportSource = std::find_if(
         payload(relations).at("sources").begin(),
         payload(relations).at("sources").end(),
-        [](const Json& source) { return source.at("internal_name") == "support/McpLibrary"; });
+        [](const Json& source) { return source.at("class") == "support/McpLibrary"; });
     ASSERT_NE(supportSource, payload(relations).at("sources").end());
     EXPECT_TRUE(supportSource->at("supporting"));
     EXPECT_EQ(supportId, supportSource->at("support_id"));
@@ -492,7 +492,7 @@ TEST(McpServerTest, ExposesProjectQueriesAndTransactionalEdits)
                                {"kind", "class"},
                                {"class", "mcp/RenamedSubject"}});
     ASSERT_FALSE(renamed.at("result").at("isError"));
-    EXPECT_EQ("mcp/RenamedSubject", payload(renamed).at("internal_name"));
+    EXPECT_EQ("mcp/RenamedSubject", payload(renamed).at("class"));
 }
 
 TEST(McpServerTest, KeepsLargeClassListResponsesBounded)

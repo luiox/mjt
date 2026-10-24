@@ -116,11 +116,11 @@ TEST(McpShadowTokenTest, EchoToolIssuesHandlesAndClassRefResolvesAcrossQueryFace
     //查询面三工具：ClassRef → 真名。
     const auto detail = call(server, "class_query", {{"project_id", projectId}, {"kind", "class"}, {"class", classRef}});
     ASSERT_FALSE(detail.at("result").at("isError")) << detail.dump();
-    EXPECT_EQ("mcp/Subject", payload(detail).at("internal_name"));
+    EXPECT_EQ("mcp/Subject", payload(detail).at("class"));
 
     const auto bytes = call(server, "class_query", {{"project_id", projectId}, {"kind", "bytes"}, {"class", classRef}});
     ASSERT_FALSE(bytes.at("result").at("isError")) << bytes.dump();
-    EXPECT_EQ("mcp/Subject", payload(bytes).at("internal_name"));
+    EXPECT_EQ("mcp/Subject", payload(bytes).at("class"));
 
     const auto jasm = call(server, "class_query", {{"project_id", projectId}, {"kind", "jasm"}, {"class", classRef}});
     ASSERT_FALSE(jasm.at("result").at("isError")) << jasm.dump();
@@ -288,7 +288,7 @@ TEST(McpShadowTokenTest, MissingSidecarHardErrorsReferencesButRawStaysZeroDrift)
     const auto raw =
         call(server, "class_query", {{"project_id", projectId}, {"kind", "class"}, {"class", "mcp/Subject"}});
     EXPECT_FALSE(raw.at("result").at("isError")) << raw.dump();
-    EXPECT_EQ("mcp/Subject", payload(raw).at("internal_name"));
+    EXPECT_EQ("mcp/Subject", payload(raw).at("class"));
 
     //损坏 sidecar：同缺表口径（note 带原因），raw 仍零漂移。
     std::ofstream garbage(jar.string() + ".mjt-shadow", std::ios::binary);

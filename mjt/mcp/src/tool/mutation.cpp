@@ -685,7 +685,7 @@ std::optional<Json> McpToolService::callMutationTool(
         const auto& relations = value.unwrap();
         Json sources = Json::array();
         for (const auto& source : relations.sources) {
-            sources.push_back({{"internal_name", source.internalName},
+            sources.push_back({{"class", source.internalName},
                                {"supporting", source.supporting},
                                {"support_id", source.supportId}});
         }

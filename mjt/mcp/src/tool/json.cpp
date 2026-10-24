@@ -202,65 +202,11 @@ Json classSummaryJson(const ClassSummary& clazz)
             {"method_count", clazz.methodCount}};
 }
 
-const char* instructionSemanticKind(const std::string& mnemonic)
-{
-    //按指令语义分类：jbc 无 ASM 节点类型，旧 nodeType 按
-    //操作数布局命名，把所有 CP 形态指令（invokevirtual/getstatic/putfield/
-    //invokespecial/new…）全标成 ldc。此处按助记符前缀/精确名归类；摘要之外
-    //的证据（操作数、跳转目标、行号）以 jasm 全文为权威。
-    const auto isAnyOf = [&mnemonic](std::initializer_list<std::string_view> names) {
-        return std::any_of(names.begin(), names.end(), [&](std::string_view name) {
-            return mnemonic == name;
-        });
-    };
-    if (mnemonic == "invokedynamic") return "invokedynamic";
-    if (mnemonic.rfind("invoke", 0) == 0) return "invoke";
-    if (isAnyOf({"getfield", "getstatic", "putfield", "putstatic"})) return "field";
-    if (isAnyOf({"ldc", "ldc_w", "ldc2_w"})) return "ldc";
-    if (isAnyOf({"new", "anewarray", "checkcast", "instanceof"})) return "cp_ref";
-    if (mnemonic == "multianewarray") return "multianewarray";
-    if (mnemonic == "iinc") return "iinc";
-    if (isAnyOf({"tableswitch", "lookupswitch"})) return mnemonic.c_str();
-    if (mnemonic.rfind("if", 0) == 0 || isAnyOf({"goto", "goto_w", "jsr", "jsr_w", "ret"}))
-        return "jump";
-    //局部变量加载/存储族：类型前缀（i/l/f/d/a）+ load/store；带槽位的短格式
-    //（aload_0 等）先剥掉数字后缀再匹配。
-    auto baseMnemonic = mnemonic;
-    const auto underscore = mnemonic.rfind('_');
-    if (underscore != std::string::npos &&
-        std::all_of(mnemonic.begin() + static_cast<std::ptrdiff_t>(underscore) + 1,
-                    mnemonic.end(),
-                    [](unsigned char c) { return std::isdigit(c) != 0; }))
-        baseMnemonic = mnemonic.substr(0, underscore);
-    if (baseMnemonic.size() >= 5) {
-        const auto stem = baseMnemonic.substr(0, baseMnemonic.size() - 4);
-        if (baseMnemonic.compare(baseMnemonic.size() - 4, 4, "load") == 0 &&
-            stem.size() == 1 && std::string("ilfda").find(stem[0]) != std::string::npos)
-            return "var";
-        const auto storeStem = baseMnemonic.substr(0, baseMnemonic.size() - 5);
-        if (baseMnemonic.compare(baseMnemonic.size() - 5, 5, "store") == 0 &&
-            storeStem.size() == 1 && std::string("ilfda").find(storeStem[0]) != std::string::npos)
-            return "var";
-    }
-    if (baseMnemonic == "ret") return "var";
-    //数组元素加载/存储（栈上取数组与索引，无立即数操作数）。
-    static const std::array<const char*, 16> kArrayOps = {
-        "iaload", "laload", "faload", "daload", "aaload", "baload", "caload", "saload",
-        "iastore", "lastore", "fastore", "dastore", "aastore", "bastore", "castore", "sastore"};
-    for (const auto* op : kArrayOps) {
-        if (mnemonic == op) return "array";
-    }
-    if (mnemonic.rfind("iconst", 0) == 0 || mnemonic.rfind("lconst", 0) == 0 ||
-        mnemonic.rfind("fconst", 0) == 0 || mnemonic.rfind("dconst", 0) == 0 ||
-        isAnyOf({"aconst_null", "bipush", "sipush"}))
-        return "const";
-    return "insn";
-}
-
 bool parseInstructionHitValue(const std::string& value, InstructionHitParts& output)
 {
     //mjbase 拼接口径：`<mnemonic> <node_type> <opcode>[ 操作数…]`，单空格
-    //分词；node_type 槽是历史遗留分类位（见 instructionSemanticKind），跳过。
+    //分词；node_type 槽由 mjbase instructionNodeType 语义归类（invoke/field/
+    //ldc/cp_ref/…），此处只消费不重建，跳过。
     output = InstructionHitParts{};
     std::vector<std::string> tokens;
     std::string::size_type begin = 0;

@@ -17,18 +17,13 @@ Json diagnosticJson(const mjbase::jasm::Diagnostic& diagnostic);
 Json methodJson(const mjbase::workspace::MethodInfo& method);
 Json supportingResourceJson(const mjbase::workspace::SupportingResourceInfo& support);
 Json classJson(const mjbase::workspace::ClassInfo& clazz);
-///@brief 指令命助记符 → 语义分类标签（method_bytecode 响应的 node_type）。
-///
-///按指令语义分类（invoke/field/ldc/cp_ref/var/array/jump/const/…），修正旧
-///「按操作数布局」命名把 invokevirtual/getstatic/putfield/invokespecial/new
-///全标成 ldc 的漂移。标签只是摘要：操作数与跳转以 jasm 全文为权威。
-const char* instructionSemanticKind(const std::string& mnemonic);
 
 ///@brief instructions 搜索命中 value（拼接文本）的结构化拆解。
 ///
 ///value 由 mjbase 按 `<mnemonic> <node_type> <opcode>[ 操作数…]` 拼接；
-///node_type 槽是历史遗留分类位，拆解时跳过。cst 是常量/引用语义的摘要文本
-///（仅 CP 支持的助记符非空，即 ldc/field/invoke/new/cast/instanceof 族）。
+///node_type 由 mjbase instructionNodeType 语义归类（invoke/field/ldc/
+///cp_ref/var/array/jump/const/…），拆解时跳过。cst 是常量/引用语义的摘要
+///文本（仅 CP 支持的助记符非空，即 ldc/field/invoke/new/cast/instanceof 族）。
 struct InstructionHitParts final
 {
     std::string mnemonic;
