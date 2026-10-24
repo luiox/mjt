@@ -9,6 +9,7 @@
 // 首语义（#962）：容器内同名类按 JVM first-wins 保留首条目，落选者记入
 // duplicateUris_；唯一 winner（或被晋升者）可经类名寻址。
 
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <optional>
@@ -559,5 +560,110 @@ void facadeShadowDumpFile(FacadeSession& s, const std::string& path);
 std::vector<std::tuple<std::string, std::string, std::string, std::string, std::string,
                        std::string>>
 facadeShadowEntries(FacadeSession& s);
+
+// ── 工具等位物批（退役 MCP 工具的 SDK 语义迁位；jar_diff/jar_fix/对比/侧车） ──
+
+/// 单条目字节级 diff（mjbase diffContainers 同口径：单一公共前后缀收缩，
+/// 一个 range 覆盖第一差异字节到最后差异字节）。
+struct JarByteRange
+{
+    ca::usize offset        = 0;
+    ca::usize beforeLength = 0;
+    ca::usize afterLength  = 0;
+};
+
+struct JarByteDiff
+{
+    std::string             uri;
+    ca::usize               beforeSize = 0;
+    ca::usize               afterSize  = 0;
+    std::vector<JarByteRange> ranges;
+};
+
+/// 会话容器 vs 外部参考 JAR 的全资源字节比较（retired jar_diff 等位物）。
+/// 计数口径：workspaceOnly = 仅会话容器有；referenceOnly = 仅参考有；
+/// modified = 两侧都有但字节不同（清单不含三者，只含差异条目）。
+struct JarDiffReport
+{
+    std::string             referencePath;
+    ca::usize               workspaceOnly = 0, referenceOnly = 0, modified = 0;
+    std::vector<JarByteDiff> diffs;
+};
+
+/// jar_diff：参考 JAR 导入临时容器后与会话容器全量比对；uri 升序。
+JarDiffReport facadeJarDiff(FacadeSession& s, const std::string& referencePath);
+
+/// 容器深拷贝（opt_preview 试算隔离面；workspace cloneContainer 同口径）。
+std::unique_ptr<mjbase::model::ResourceContainer> facadeCloneContainer(const FacadeSession& s);
+
+/// diffContainers 同口径字节 diff（jar_diff / opt_preview 共用算法面）；
+/// uri 升序，逐条目单次公共前后缀收缩。
+std::vector<JarByteDiff> facadeDiffContainers(const mjbase::model::ResourceContainer& before,
+                                              const mjbase::model::ResourceContainer& after);
+
+/// 单个修复候选问题（retired jar_fix 扫描口径）。
+struct JarRepairIssueView
+{
+    std::string uri, kind, message;
+    ca::usize   size = 0;
+    bool        selected = false;
+};
+
+struct JarRepairReport
+{
+    ca::usize                        resourceCount = 0, classCount = 0;
+    std::vector<JarRepairIssueView>  issues;
+    /// apply 时实际移除的条目（analyze 恒空）。
+    std::vector<std::string>         removed;
+};
+
+/// jar_fix_analyze：只读扫描（invalid_class = ClassResource 过不了 Jasm 校验；
+/// invalid_class_entry = .class 扩展名但不是 ClassResource；corrupt_output_marker
+/// = uri 含 corrupt_output_stream 标记）。selected 按 request 开关回填。
+JarRepairReport facadeJarRepairAnalyze(FacadeSession& s, bool removeInvalidClassEntries,
+                                       bool removeCorruptOutputMarkers);
+
+/// jar_fix_apply：同扫描后移除全部 selected 条目（索引/树缓存同步清理）。
+JarRepairReport facadeJarRepairApply(FacadeSession& s, bool removeInvalidClassEntries,
+                                     bool removeCorruptOutputMarkers);
+
+/// 单后端反编译产物（retired decompiler_compare 的 source 形状）。
+struct DecompileCompareSource
+{
+    std::string internalName, backend, decompilerJar, sourceScope, source;
+};
+
+struct DecompileCompareReport
+{
+    std::string                        internalName;
+    std::vector<DecompileCompareSource> sources;
+};
+
+/// decompiler_compare：会话容器导出快照后用 CFR 与 Vineflower 各跑一次同名类，
+/// 双源并列返回。后端不可用（jar/java 发现失败）fail-closed 抛错。
+DecompileCompareReport facadeDecompilerCompare(FacadeSession& s, const std::string& name,
+                                               const std::string& cfrJar,
+                                               const std::string& vineflowerJar,
+                                               const std::string& javaProgram,
+                                               std::int64_t       timeoutMs);
+
+/// shadow sidecar 文件面报告（generate 用 assigned* 字段，prune 用 removed）。
+struct ShadowSidecarReport
+{
+    std::string file;
+    ca::usize   assignedClasses = 0, assignedMethods = 0, assignedFields = 0;
+    ca::usize   keptEntries = 0, removed = 0, totalEntries = 0;
+};
+
+/// shadow_generate_file：jar 导入临时容器 + 既有 sidecar 幂等回填 +
+/// 机械占位名补号后写 sidecar（缺省 `<jar>.mjt-shadow`，file 显式覆盖但
+/// 不得指向 jar 本身）。只写 sidecar，永不改 jar。
+ShadowSidecarReport facadeShadowGenerateFile(const std::string& jarPath,
+                                             const std::string& file);
+
+/// shadow_prune_file：清 sidecar 里 jar 中已不存在的条目；sidecar 缺失报错；
+/// removed == 0 不回写文件。
+ShadowSidecarReport facadeShadowPruneFile(const std::string& jarPath,
+                                          const std::string& file);
 
 }   // namespace mjt::pysdk

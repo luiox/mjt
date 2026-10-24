@@ -2,12 +2,14 @@
 -- 独立顶层 SDK 组件（与 mjt 平级，消费 mjbase 基座）：
 --   mjt_py_embed          静态库：--script 嵌入解释器（纯 CPython API，无 pybind11），
 --                         由宿主 exe 消费；
---   mjt_pysdk             mjt.pyd：pybind11 裸 binding，纯基座面——全部 TU 只碰
---                         mjbase/libjbytecode/libca。方法级 pass 桥与 run_pipeline
---                         属私有侧管线消费面，不在开源基座实现；Python 类型锚
---                         （MethodPass/PreservedAnalyses/changed()/preserved_all()）
---                         保持脚本面形状，私有侧适配器按同款锚接自家管线；
---   mjt_pysdk_unittest    组件测试（C++ facade gtest + 内嵌解释器跑 Python 自测）。
+--   mjt_pysdk             mjt.pyd：pybind11 裸 binding，基座面 + mjt/shared 反编译
+--                         执行器（decompiler_compare 双后端复用 mjt/src/shared，
+--                         与 mjt-mcp 同一实现）。方法级 pass 桥属私有侧管线消费
+--                         面，不在开源基座实现；Python 类型锚（MethodPass/
+--                         PreservedAnalyses/changed()/preserved_all()）保持脚本
+--                         面形状，私有侧适配器按同款锚接自家管线；
+--   mjt_pysdk_unittest    组件测试（C++ facade gtest + 内嵌解释器跑 Python 自测；
+--                         exe 兼任 fake 反编译器 java 替身）。
 -- util 层 mjt_util.py（纯 Python）随 pyd 同目录部署。
 if has_config("with_pysdk") then
     local pyHome = get_config("python_home")
@@ -15,6 +17,8 @@ if has_config("with_pysdk") then
         pyHome = os.getenv("MJT_PYTHON_HOME") or "D:/sdk/python/Python314"
     end
     local pybind11Root = os.getenv("MORPHER_PYBIND11_ROOT") or "D:/sdk/cpp/pybind11-3.1.0"
+    -- mjt shared 反编译执行器（shared/decompiler.hpp 的 include 根）。
+    local mjtSharedSrc = path.join(os.scriptdir(), "..", "mjt", "src")
 
     target("mjt_py_embed")
         set_kind("static")
@@ -26,7 +30,7 @@ if has_config("with_pysdk") then
         add_linkdirs(path.join(pyHome, "libs"))
         add_links("python314")
         add_defines('MJT_PYTHON_HOME_DEFAULT="' .. pyHome .. '"')
-        add_files("src/pysdk_embed.cpp")
+        add_files("src/pysdk_embed.cpp", "src/pysdk_limits.cpp")
 
         if is_plat("windows") then
             add_cxflags("/utf-8", {tools = "cl"})
@@ -46,6 +50,7 @@ if has_config("with_pysdk") then
         -- 链接序，与 mjbase 包的 0.0.2 撞版本（LNK2019 实证）。消费方式与
         -- mjt-mcp binary 同款：只挂 deps + 显式闭包。
         add_includedirs("src")
+        add_includedirs(mjtSharedSrc)
         add_includedirs(path.join(pybind11Root, "include"))
         add_includedirs(path.join(pyHome, "include"))
         add_linkdirs(path.join(pyHome, "libs"))
@@ -54,8 +59,10 @@ if has_config("with_pysdk") then
         if is_plat("windows") then
             add_cxflags("/utf-8", {tools = "cl"})
         end
-        add_files("src/pysdk_jar.cpp", "src/pysdk_facade.cpp",
-                  "src/bind_core.cpp", "src/bind_facade.cpp")
+        add_files("src/pysdk_jar.cpp", "src/pysdk_facade.cpp", "src/pysdk_jasm.cpp",
+                  "src/pysdk_limits.cpp", "src/bind_core.cpp", "src/bind_facade.cpp")
+        add_files(path.join(mjtSharedSrc, "shared", "decompiler.cpp"),
+                  path.join(mjtSharedSrc, "shared", "jar_remapper.cpp"))
 
         -- xmake 3.x 不把静态 target 依赖传进 shared 链接：显式给全闭包，按
         -- 「消费者在前、被依赖在后」排序（MSVC 对序不敏感，此序为 GNU ld 兼容
@@ -80,12 +87,16 @@ if has_config("with_pysdk") then
             add_deps("mjbase")
             add_packages("gtest")
             add_includedirs("src")
+            add_includedirs(mjtSharedSrc)
             add_includedirs(path.join(pybind11Root, "include"))
             add_includedirs(path.join(pyHome, "include"))
             add_linkdirs(path.join(pyHome, "libs"))
             add_links("python314")
-            add_files("src/pysdk_jar.cpp", "src/pysdk_facade.cpp", "src/pysdk_embed.cpp",
+            add_files("src/pysdk_jar.cpp", "src/pysdk_facade.cpp", "src/pysdk_jasm.cpp",
+                      "src/pysdk_embed.cpp", "src/pysdk_limits.cpp",
                       "src/mjt_pysdk_unittest.cpp", "src/mjt_pysdk_facade_test.cpp")
+            add_files(path.join(mjtSharedSrc, "shared", "decompiler.cpp"),
+                      path.join(mjtSharedSrc, "shared", "jar_remapper.cpp"))
             mjt_binary_link_closure("mjbase", "libjhasm", "libjblw",
                                     "libjbytecode_util", "libjbytecode_commons",
                                     "libjbytecode_analysis", "libjbytecode_tree",
@@ -100,5 +111,29 @@ if has_config("with_pysdk") then
             if is_plat("linux") then
                 add_syslinks("pthread", "dl", "util")
             end
+        end
+
+    -- 嵌入宿主进程级测试：--script 的退出码契约含 watchdog 硬退出（_Exit(3)）
+    -- 与逐场景独立解释器生命周期，必须整进程观测——单进程 gtest 进不来。
+    -- 无 gtest：plain main，无参时逐场景 spawn 自身并断言退出码。
+    target("mjt_pysdk_embedtest")
+        set_kind("binary")
+        set_group("mjt-py/test")
+        set_default(false)
+
+        add_deps("mjbase")
+        add_includedirs("src")
+        add_includedirs(path.join(pyHome, "include"))
+        add_linkdirs(path.join(pyHome, "libs"))
+        add_links("python314")
+        add_files("src/pysdk_embed.cpp", "src/pysdk_limits.cpp", "src/mjt_pysdk_embedtest.cpp")
+        add_defines('MJT_PYTHON_HOME_DEFAULT="' .. pyHome .. '"')
+        set_rundir("$(projectdir)")
+
+        if is_plat("windows") then
+            add_cxflags("/utf-8", {tools = "cl"})
+        end
+        if is_plat("linux") then
+            add_syslinks("pthread", "dl", "util")
         end
 end
