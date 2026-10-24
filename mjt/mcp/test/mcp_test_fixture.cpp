@@ -3,6 +3,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <optional>
 #include <limits>
 #include <memory>
@@ -388,7 +389,8 @@ int runFakeDecompiler(int argc, char** argv)
     const auto decompilerName = std::filesystem::path(argv[jarIndex]).filename().string();
     if (decompilerName != "fake-mcp-decompiler.jar" &&
         decompilerName != "fake-mcp-decompiler-slow.jar" &&
-        decompilerName != "fake-mcp-decompiler-fail.jar") {
+        decompilerName != "fake-mcp-decompiler-fail.jar" &&
+        decompilerName != "fake-mcp-decompiler-partial.jar") {
         return -1;
     }
     if (decompilerName == "fake-mcp-decompiler-fail.jar") return 9;
@@ -404,6 +406,24 @@ int runFakeDecompiler(int argc, char** argv)
     }
     if (output.empty() && jarIndex + 1 < argc) output = argv[argc - 1];
     if (output.empty()) return 7;
+
+    //partial 注入：rc=0 但目标类缺席（后端类级异常只上 stderr、整体照常退出）
+    //——decompile 工具必须把 stderr 根因摘要带进产物缺失错误消息。
+    if (decompilerName == "fake-mcp-decompiler-partial.jar") {
+        std::error_code partialError;
+        std::filesystem::create_directories(output / "mcp", partialError);
+        if (partialError) return 7;
+        std::ofstream other(output / "mcp" / "Other.java",
+                            std::ios::binary | std::ios::trunc);
+        other << "package mcp;\npublic class Other { }\n";
+        if (!other) return 7;
+        other.close();
+        std::cerr << "WARNING: skipping class\n"
+                  << "org.benf.cfr.reader.util.ConfusedCFRException: Cannot decompile mcp/Subject\n"
+                  << "\tat org.benf.cfr.reader.State.getOrFallback(State.java)\n"
+                  << "Caused by: java.lang.IllegalStateException: deep cause for mcp/Subject\n";
+        return 0;
+    }
 
     std::error_code error;
     std::filesystem::create_directories(output / "mcp", error);

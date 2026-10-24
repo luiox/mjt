@@ -74,6 +74,11 @@ struct DecompileResult
     std::string stderrText;
 };
 
+///@brief 后端正常退出但产物缺席时的根因摘要：stderr（空则退 stdout）经
+///规范化为合法 UTF-8 后取根因行并截断；无任何输出返回空串。供调用方拼进
+///"产物缺失"错误消息，分诊「输入触发后端内部异常」还是「工具侧问题」。
+std::string composeBackendSummary(const std::string& stderrText, const std::string& stdoutText);
+
 ///@brief 一个反编译器后端在当前环境中的发现结果。
 struct DecompilerAvailability final
 {
