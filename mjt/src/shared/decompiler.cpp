@@ -554,11 +554,14 @@ std::string composeExecFailure(DecompilerKind       kind,
 }
 
 ca::Status normalizeClassOutput(const fs::path& generatedRoot, const fs::path& input,
-                                const fs::path& requestedOutput)
+                                const fs::path& requestedOutput,
+                                const std::string& backendSummary)
 {
     auto files = findJavaFiles(generatedRoot);
     if (files.empty()) {
-        return shared::errStatus(ca::StatusCode::NOT_FOUND, "mjt.shared.err.no_java_output");
+        std::string message = shared::trfStr("mjt.shared.err.no_java_output");
+        if (!backendSummary.empty()) message += "\n" + backendSummary;
+        return ca::ErrStatus(ca::StatusCode::NOT_FOUND, message);
     }
 
     auto       selected     = files.begin();
@@ -615,7 +618,8 @@ fs::path archiveEntryRelativePath(const std::string& entryName)
 
 namespace {
 ca::Status normalizeVineflowerJarOutput(const fs::path& generatedRoot,
-                                        const fs::path& decompilerInput)
+                                        const fs::path& decompilerInput,
+                                        const std::string& backendSummary)
 {
     const auto archivePath = generatedRoot / decompilerInput.filename();
     if (!isRegularFile(archivePath)) return ca::OkStatus();
@@ -660,16 +664,21 @@ ca::Status normalizeVineflowerJarOutput(const fs::path& generatedRoot,
     std::error_code error;
     fs::remove(archivePath, error);
     if (extracted == 0) {
-        return shared::errStatus(ca::StatusCode::NOT_FOUND, "mjt.shared.err.vineflower_no_java");
+        std::string message = shared::trfStr("mjt.shared.err.vineflower_no_java");
+        if (!backendSummary.empty()) message += "\n" + backendSummary;
+        return ca::ErrStatus(ca::StatusCode::NOT_FOUND, message);
     }
     return ca::OkStatus();
 }
 
-ca::Status copyJavaTree(const fs::path& generatedRoot, const fs::path& requestedOutput)
+ca::Status copyJavaTree(const fs::path& generatedRoot, const fs::path& requestedOutput,
+                        const std::string& backendSummary)
 {
     auto files = findJavaFiles(generatedRoot);
     if (files.empty()) {
-        return shared::errStatus(ca::StatusCode::NOT_FOUND, "mjt.shared.err.no_java_output");
+        std::string message = shared::trfStr("mjt.shared.err.no_java_output");
+        if (!backendSummary.empty()) message += "\n" + backendSummary;
+        return ca::ErrStatus(ca::StatusCode::NOT_FOUND, message);
     }
 
     for (const auto& file : files) {
@@ -1063,16 +1072,24 @@ ca::StatusOr<DecompileResult> decompile(const DecompileRequest& request)
                                           std::move(processResult.stderrText)});
         }
 
+        //后端正常退出但产物缺席（rc=0 空输出/目标类被后端内部跳过）时，错误
+        //消息附 stderr 根因摘要；分诊「输入触发后端内部异常」还是「工具侧问题」。
+        const auto cause =
+            composeBackendSummary(processResult.stderrText, processResult.stdoutText);
+        std::string backendSummary;
+        if (!cause.empty()) backendSummary = decompilerName(request.kind) + ": " + cause;
+
         if (classInput) {
-            auto status = normalizeClassOutput(generatedRoot, input, output);
+            auto status = normalizeClassOutput(generatedRoot, input, output, backendSummary);
             if (status.is_err()) return ca::Err(std::move(status));
         }
         else {
             if (request.kind == DecompilerKind::Vineflower) {
-                auto status = normalizeVineflowerJarOutput(generatedRoot, actualInput);
+                auto status =
+                    normalizeVineflowerJarOutput(generatedRoot, actualInput, backendSummary);
                 if (status.is_err()) return ca::Err(std::move(status));
             }
-            auto status = copyJavaTree(generatedRoot, output);
+            auto status = copyJavaTree(generatedRoot, output, backendSummary);
             if (status.is_err()) return ca::Err(std::move(status));
         }
 
@@ -1090,6 +1107,15 @@ ca::StatusOr<DecompileResult> decompile(const DecompileRequest& request)
     catch (...) {
         return ca::Err(shared::errStatus(ca::StatusCode::INTERNAL, "mjt.shared.err.orchestration_unknown"));
     }
+}
+
+std::string composeBackendSummary(const std::string& stderrText, const std::string& stdoutText)
+{
+    //GBK 规范化与 exec 失败路径同源：子进程在中文 Windows 上以 GBK 输出本地化
+    //异常文案，原始字节拼进错误消息会被 CLI 渲染软失败吞掉（历史"静默失败"）。
+    const std::string& raw        = stderrText.empty() ? stdoutText : stderrText;
+    const std::string  diagnostic = shared::text::toCanonicalUtf8(raw);
+    return truncateUtf8(extractRootCauseLine(diagnostic), kCauseSummaryLimit);
 }
 
 }   //namespace mjt

@@ -426,6 +426,40 @@ TEST(McpProjectTest, CachesDecompileByKeyAndFlushesOnClose)
     std::filesystem::remove_all(bundle, ec);
 }
 
+//decompile 后端 rc=0 但目标类缺席（类级异常只上 stderr、后端整体照常退出）：
+//错误消息附 backend stderr 根因摘要（最后一个 Caused by 行），分诊
+//「输入触发后端内部异常」与「工具侧问题」不必再手工跑 java -jar 复现。
+TEST(McpProjectTest, DecompileMissingTargetCarriesBackendSummary)
+{
+    const auto fixture = writeFixture();
+    McpSessionHarness server;
+    const auto opened = call(server, "project_open", {{"path", fixture.string()}});
+    ASSERT_FALSE(opened.at("result").at("isError"));
+    const auto projectId = payload(opened).at("project_id").get<std::string>();
+
+    //partial 假反编译器：产出 mcp/Other.java、stderr 打 CFR 风格异常栈、rc=0。
+    const auto partialDecompiler = test::getTempOutPath("fake-mcp-decompiler-partial.jar");
+    std::ofstream(partialDecompiler, std::ios::binary | std::ios::trunc) << "fake";
+    const auto fakeJava = test::getBuildTargetPath("mjt_mcp_unittest");
+
+    const auto failed = call(server,
+                             "decompile",
+                             {{"project_id", projectId},
+                              {"class", "mcp/Subject"},
+                              {"decompiler_jar", partialDecompiler.string()},
+                              {"java", fakeJava.string()}});
+    ASSERT_TRUE(failed.at("result").at("isError")) << payload(failed).dump();
+    const auto& message =
+        payload(failed).at("status").at("message").get_ref<const std::string&>();
+    EXPECT_NE(std::string::npos,
+              message.find("反编译器未生成目标 class 的源码: mcp/Subject"));
+    EXPECT_NE(std::string::npos, message.find("[cfr]"));
+    EXPECT_NE(std::string::npos,
+              message.find("Caused by: java.lang.IllegalStateException: deep cause for mcp/Subject"));
+    //根因行取最后一个 Caused by，WARNING 行不入选。
+    EXPECT_EQ(std::string::npos, message.find("WARNING: skipping class"));
+}
+
 //角色化多容器接线（RFC 0001 P5）：library/runtime 进 MountedContainerSet 并
 //登记 project.json（schema v2 role/parent）；卸载重建解析序、被遮蔽副本浮现
 //并透传；search/xref_query 的 role 过滤按挂载栈归位；primary 拒绝语义保持。

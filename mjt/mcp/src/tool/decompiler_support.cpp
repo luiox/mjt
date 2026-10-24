@@ -245,8 +245,15 @@ ca::StatusOr<DecompiledSource> decompileSnapshotClass(
     const auto sourcePath = sourceRoot / sourceRelative;
     std::error_code error;
     if (!fs::is_regular_file(sourcePath, error) || error) {
-        return ca::Err(ca::ErrStatus(ca::StatusCode::NOT_FOUND,
-                                     "反编译器未生成目标 class 的源码: " + internalName));
+        //后端 rc=0 但目标类缺席（类级异常被后端内部吞掉、整体照常退出）：
+        //附 stderr 根因摘要，分诊「输入触发后端内部异常」还是「工具侧问题」。
+        std::string message = "反编译器未生成目标 class 的源码: " + internalName;
+        const auto& backend  = decompiled.unwrap();
+        const auto  summary  = composeBackendSummary(backend.stderrText,
+                                                    backend.stdoutText);
+        if (!summary.empty())
+            message += "\n[" + std::string(decompilerKindId(options.kind)) + "] " + summary;
+        return ca::Err(ca::ErrStatus(ca::StatusCode::NOT_FOUND, message));
     }
     auto source = readDecompilerSource(sourcePath, options.maxSourceBytes);
     if (source.is_err()) return ca::Err(source.unwrap_err());
