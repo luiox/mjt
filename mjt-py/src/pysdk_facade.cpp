@@ -440,7 +440,9 @@ using jbytecode::tree::TryCatchBlockNode;
 
 ca::str::Utf8StringRef internIn(FacadeSession& s, const std::string& v)
 {
-    return s.arena->intern(ca::str::Utf8StringRef::from_cstr(v.c_str()));
+    // 按 byte_length 入池：ldc 字符串载荷是 MUTF-8 转换产物，可含内嵌 NUL，
+    // from_cstr 的 strlen 舞步会在首个 NUL 处截断。
+    return s.arena->intern(std::string_view(v));
 }
 
 /// lazy 解析：首触建缓存（契约 §3.1 单一真相：树只在缓存里一份）。
@@ -1656,7 +1658,8 @@ FacadeSession::RenameToken& renameTokenOf(FacadeSession& s)
 
 ca::str::Utf8StringRef internPlan(FacadeSession& s, const std::string& v)
 {
-    return s.arena->intern(ca::str::Utf8StringRef::from_cstr(v.c_str()));
+    // 同 internIn：按 byte_length 入池，不吃 c_str 截断。
+    return s.arena->intern(std::string_view(v));
 }
 
 /// 脚本面便捷：点分名 → internal name（token 面收点分/internal 均可，契约 §2.7）。
