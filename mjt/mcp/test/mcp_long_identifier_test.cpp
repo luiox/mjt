@@ -37,7 +37,7 @@ TEST(McpLongIdentifierTest, LegalLongNamesWorkEndToEnd)
                                   {"kind", "class"},
                                   {"class", longName}});
         ASSERT_FALSE(detail.at("result").at("isError")) << detail.dump();
-        EXPECT_EQ(longName, payload(detail).at("internal_name"));
+        EXPECT_EQ(longName, payload(detail).at("class"));
 
         const auto jasm = call(server,
                                "class_query",
@@ -65,7 +65,7 @@ TEST(McpLongIdentifierTest, LegalLongNamesWorkEndToEnd)
                                  {"class", longName}});
         ASSERT_FALSE(bytes.at("result").at("isError")) << bytes.dump();
         EXPECT_EQ(longName + ".class", payload(bytes).at("resource_uri"));
-        EXPECT_EQ(longName, payload(bytes).at("internal_name"));
+        EXPECT_EQ(longName, payload(bytes).at("class"));
     }
 }
 

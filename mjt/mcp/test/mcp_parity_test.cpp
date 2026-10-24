@@ -43,7 +43,7 @@ TEST(McpServerTest, PreservesParityFixtureEdgesAcrossQueriesTransactionsAndExpor
                                    {"class", "mcp/parity/Broken.class"}});
     ASSERT_FALSE(brokenBytes.at("result").at("isError"));
     EXPECT_EQ("mcp/parity/Broken.class", payload(brokenBytes).at("resource_uri"));
-    EXPECT_TRUE(payload(brokenBytes).at("internal_name").get<std::string>().empty());
+    EXPECT_TRUE(payload(brokenBytes).at("class").get<std::string>().empty());
     EXPECT_EQ(3, payload(brokenBytes).at("size"));
     EXPECT_EQ("yv66", payload(brokenBytes).at("content"));
 
@@ -106,7 +106,7 @@ TEST(McpServerTest, PreservesParityFixtureEdgesAcrossQueriesTransactionsAndExpor
                              {"kind", "jasm"},
                              {"class", "mcp/parity/Condy"}});
     ASSERT_FALSE(condy.at("result").at("isError"));
-    EXPECT_EQ("mcp/parity/Condy", payload(condy).at("internal_name"));
+    EXPECT_EQ("mcp/parity/Condy", payload(condy).at("class"));
     EXPECT_NE(std::string::npos,
               payload(condy).at("jasm").get<std::string>().find("fixtureConstant"));
 
@@ -196,7 +196,7 @@ TEST(McpServerTest, PreservesParityFixtureEdgesAcrossQueriesTransactionsAndExpor
                                      {"kind", "class"},
                                      {"class", "mcp/ExportedSubject"}});
     ASSERT_FALSE(mappedSubject.at("result").at("isError"));
-    EXPECT_EQ("mcp/ExportedSubject", payload(mappedSubject).at("internal_name"));
+    EXPECT_EQ("mcp/ExportedSubject", payload(mappedSubject).at("class"));
 
     const auto exportedFixture = test::getTempOutPath("mjt_mcp_parity_exported.jar");
     std::error_code exportError;
@@ -233,7 +233,7 @@ TEST(McpServerTest, PreservesParityFixtureEdgesAcrossQueriesTransactionsAndExpor
                                {"kind", "class"},
                                {"class", "mcp/ExportedSubject"}});
     ASSERT_FALSE(renamed.at("result").at("isError"));
-    EXPECT_EQ("mcp/ExportedSubject", payload(renamed).at("internal_name"));
+    EXPECT_EQ("mcp/ExportedSubject", payload(renamed).at("class"));
     const auto exportedBinary = call(server,
                                      "class_query",
                                      {{"project_id", exportedProjectId},

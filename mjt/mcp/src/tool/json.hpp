@@ -38,6 +38,13 @@ struct InstructionHitParts final
 
 bool parseInstructionHitValue(const std::string& value, InstructionHitParts& output);
 
+///@brief 常量池裸 UTF8 行的 string_kind 分面（响应与过滤共用同一判定）。
+///
+///按内容形态细分：utf8_descriptor（方法描述符 '(' 开头）、utf8_classref
+///（类型引用：内部名 / L…; / 数组描述符）、utf8_name（其余：属性名、
+///成员名等）。
+std::string utf8StringKind(const std::string& value);
+
 ///@brief 折叠工具分支的参数键契约。
 struct BranchKeys final
 {

@@ -222,6 +222,46 @@ bool backfillMemberDescriptor(mjbase::workspace::IWorkspace& workspace,
     return false;
 }
 
+bool memberDescriptorMismatch(mjbase::workspace::IWorkspace& workspace,
+                              const std::string&             ownerRaw,
+                              const std::string&             memberName,
+                              const std::string&             descriptor,
+                              bool                           field,
+                              Json&                          error)
+{
+    //空名/空描述符不适配：canonical 错误面在下游。
+    if (memberName.empty() || descriptor.empty()) return true;
+    auto info = workspace.classInfo(ownerRaw);
+    if (info.is_err()) return true;
+    const auto& clazz = info.unwrap();
+    //同名候选枚举（与 backfill 同一收集面）；描述符命中其一说明失败另有
+    //其因（如 owner 解析错位），不适配。
+    std::vector<std::string> candidates;
+    const auto visit = [&](const std::string& name, const std::string& desc) {
+        if (name == memberName &&
+            std::find(candidates.begin(), candidates.end(), desc) == candidates.end())
+            candidates.push_back(desc);
+    };
+    if (field)
+        for (const auto& item : clazz.fields) visit(item.name, item.descriptor);
+    else
+        for (const auto& item : clazz.methods) visit(item.name, item.descriptor);
+    if (candidates.empty()) return true;
+    if (std::find(candidates.begin(), candidates.end(), descriptor) != candidates.end())
+        return true;
+    const auto kindLabel = field ? "field" : "method";
+    std::string message = std::string("descriptor \"") + descriptor +
+                          "\" does not match any " + kindLabel + " named \"" + memberName +
+                          "\" in " + ownerRaw + "; candidates: ";
+    for (std::size_t index = 0; index < candidates.size(); ++index) {
+        if (index > 0) message += ", ";
+        message += candidates[index];
+    }
+    error = detail::toolResult({{"error", message}, {"diagnostics", Json::array({message})}},
+                               true);
+    return false;
+}
+
 bool resolveClassArgument(mjbase::workspace::IWorkspace& workspace,
                           const Json&                           arguments,
                           const std::string&                    key,

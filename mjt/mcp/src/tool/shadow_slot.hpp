@@ -126,6 +126,18 @@ bool resolveClassUriArgument(mjbase::workspace::IWorkspace& workspace,
                              std::string&                          out,
                              Json&                                 error);
 
+///@brief 显式描述符失配诊断：name 在宿主类存在但 descriptor 与任一候选都
+///不符时，给结构化错误并列出该名全部候选描述符（与省略 descriptor 时的
+///歧义路径同一呈现面）。name 不存在 / owner 不可解析 / descriptor 恰好命中
+///时返回 true（不适配——失败另有其因，走 canonical 错误）。
+///@return false 时 `error` 已填结构化 toolResult（含 diagnostics）。
+bool memberDescriptorMismatch(mjbase::workspace::IWorkspace& workspace,
+                              const std::string&             ownerRaw,
+                              const std::string&             memberName,
+                              const std::string&             descriptor,
+                              bool                           field,
+                              Json&                          error);
+
 ///@brief 错误 Json（toolError 同形）：四分类码前缀 + 诊断。
 Json slotError(const std::string& message);
 

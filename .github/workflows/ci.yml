@@ -33,7 +33,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: luiox/mjbase
-          ref: f5cf9556c690113d216e734f45be246726ccf3db
+          ref: 1d87450555d1d1a329a2db6fd3d6335ce97719a7
           path: mjbase-src
 
       - name: Install system deps
@@ -82,7 +82,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: luiox/mjbase
-          ref: f5cf9556c690113d216e734f45be246726ccf3db
+          ref: 1d87450555d1d1a329a2db6fd3d6335ce97719a7
           path: mjbase-src
 
       - name: Setup xmake
@@ -130,7 +130,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: luiox/mjbase
-          ref: f5cf9556c690113d216e734f45be246726ccf3db
+          ref: 1d87450555d1d1a329a2db6fd3d6335ce97719a7
           path: mjbase-src
 
       - name: Setup Python 3.14 (python314.dll / include / libs for mjt-py)

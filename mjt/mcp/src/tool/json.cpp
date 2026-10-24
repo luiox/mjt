@@ -177,7 +177,7 @@ Json classJson(const ClassInfo& clazz)
     for (const auto& method : clazz.methods) methods.push_back(methodJson(method));
     for (const auto& item : clazz.innerClasses) innerClasses.push_back(item);
     return {{"resource_uri", clazz.resourceUri},
-            {"internal_name", clazz.internalName},
+            {"class", clazz.internalName},
             {"super_name", clazz.superName},
             {"signature", clazz.signature},
             {"access", clazz.access},
@@ -510,10 +510,12 @@ Json searchHitJson(const SearchHit& hit)
     result["instruction_index"] = hit.instructionIndex;
     result["value"] = hit.value;
     //strings 分面：string_literal = 串常量（ldc 加载的 constant_pool_string
-    //与非 class 资源可打印串）；utf8_classref = 常量池 UTF8 纯引用（多为类名）。
+    //与非 class 资源可打印串）；裸 UTF8 行按内容形态细分（classref/descriptor/
+    //name）——属性名、方法名、字面量背书不再混进 classref。
     if (hit.kind == "constant_pool_string" || hit.kind == "resource_string")
         result["string_kind"] = "string_literal";
-    else if (hit.kind == "constant_pool_utf8") result["string_kind"] = "utf8_classref";
+    else if (hit.kind == "constant_pool_utf8")
+        result["string_kind"] = utf8StringKind(hit.value);
     //instructions 结构化摘要：从拼接文本 value 拆出 mnemonic/operand/cst，
     //替代拼接文本当唯一判别信息。
     if (hit.kind == "instruction") {
@@ -784,6 +786,19 @@ bool projectFields(const Json& arguments, const std::vector<std::string>& rowKey
 }
 
 }   //namespace
+
+/// 常量池裸 UTF8 行的分面细分：按内容形态区分描述符 / 类型引用 / 其他名。
+/// （"Code"、"decode" 这类属性名/方法名不是类引用，混进 utf8_classref 会让
+/// string_kind 过滤失去意义——评估反馈实证。）
+std::string utf8StringKind(const std::string& value)
+{
+    if (value.empty()) return "utf8_name";
+    if (value.front() == '(') return "utf8_descriptor";
+    if (value.front() == '[') return "utf8_classref";
+    if (value.front() == 'L' && value.back() == ';') return "utf8_classref";
+    if (value.find('/') != std::string::npos) return "utf8_classref";
+    return "utf8_name";
+}
 
 bool page(Json values, const Json& arguments, Json& out, std::string& error,
           const std::vector<std::string>& rowKeys)

@@ -625,16 +625,19 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
                         hitList.end());
         }
         if (op == "search_strings" && !stringKindFilter.empty()) {
-            //string_literal 放行串常量（ldc 加载 + 非 class 资源可打印串），
-            //utf8_classref 放行常量池 UTF8 纯引用（多为类名）。
+            //分面过滤：string_literal 放行串常量（ldc 加载 + 非 class 资源
+            //可打印串）；裸 UTF8 行按内容形态细分，与响应 string_kind 同一
+            //判定（utf8StringKind）。
             const bool wantLiteral = stringKindFilter == "string_literal";
             hitList.erase(std::remove_if(hitList.begin(),
                                          hitList.end(),
                                          [&](const mjbase::workspace::SearchHit& hit) {
-                                             return wantLiteral
-                                                        ? hit.kind != "constant_pool_string" &&
-                                                              hit.kind != "resource_string"
-                                                        : hit.kind != "constant_pool_utf8";
+                                             if (wantLiteral)
+                                                 return hit.kind != "constant_pool_string" &&
+                                                        hit.kind != "resource_string";
+                                             if (hit.kind != "constant_pool_utf8") return true;
+                                             return detail::utf8StringKind(hit.value) !=
+                                                    stringKindFilter;
                                          }),
                         hitList.end());
         }
@@ -715,7 +718,7 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         std::vector<ca::u8> chunk(value.bytes.begin() + static_cast<std::ptrdiff_t>(offset),
                                   value.bytes.begin() + static_cast<std::ptrdiff_t>(end));
         Json result = {{"resource_uri", value.resourceUri},
-                       {"internal_name", value.internalName},
+                       {"class", value.internalName},
                        {"fingerprint", value.fingerprint},
                        {"size", value.bytes.size()},
                        {"offset", offset},
@@ -747,7 +750,7 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
             for (const auto& item : value.diagnostics) diagnostics.push_back(diagnosticJson(item));
             return toolResult({{"diagnostics", std::move(diagnostics)}}, true);
         }
-        return toolResult({{"internal_name", value.value->internalName.to_std_string()},
+        return toolResult({{"class", value.value->internalName.to_std_string()},
                            {"jasm", utf8(value.value->source.ref())}});
     }
     if (op == "method_get" || op == "method_bytecode" || op == "method_jasm") {
@@ -767,6 +770,12 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         if (descriptor.empty() &&
             !slot::backfillMemberDescriptor(*current, ownerRaw, memberName, false, descriptor, slotError))
             return slotError;
+        //显式 descriptor 失配诊断：名字存在但描述符不符时列出候选（与省略
+        //descriptor 的歧义路径同一呈现面）；名字不存在/owner 表外走 canonical。
+        Json mismatchError;
+        if (!slot::memberDescriptorMismatch(*current, ownerRaw, memberName, descriptor,
+                                            false, mismatchError))
+            return mismatchError;
         if (op == "method_get") {
             auto value = current->methodInfo(ownerRaw, memberName, descriptor);
             if (value.is_err()) { const auto err = shared::toCaStatus(value.unwrap_err()); return toolError("get method failed", &err); }
@@ -803,7 +812,7 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
             for (const auto& item : value.diagnostics) diagnostics.push_back(diagnosticJson(item));
             return toolResult({{"diagnostics", std::move(diagnostics)}}, true);
         }
-        return toolResult({{"internal_name", value.value->internalName.to_std_string()},
+        return toolResult({{"class", value.value->internalName.to_std_string()},
                            {"name", value.value->name.to_std_string()},
                            {"descriptor", value.value->descriptor.to_std_string()},
                            {"jasm", utf8(value.value->source.ref())}});

@@ -467,12 +467,15 @@ Json toolsList()
               {"include_classes", {{"type", "boolean"}}},
               {"string_kind",
                {{"type", "string"},
-                {"enum", {"string_literal", "utf8_classref"}},
+                {"enum",
+                 {"string_literal", "utf8_classref", "utf8_descriptor", "utf8_name"}},
                 {"description",
                  "strings kind only: string_literal keeps string constants (ldc-loaded "
-                 "constant_pool_string and printable strings of non-class resources); "
-                 "utf8_classref keeps raw constant-pool UTF8 entries, mostly pure class-name "
-                 "references; omitted keeps all."}}},
+                 "constant_pool_string and printable strings of non-class resources); raw "
+                 "constant-pool UTF8 entries are classified by content shape: utf8_classref "
+                 "(type references: internal names, L...; forms, array descriptors), "
+                 "utf8_descriptor (method descriptors starting with '('), utf8_name "
+                 "(everything else: attribute names, member names); omitted keeps all."}}},
               {"mnemonic",
                {{"type", "string"},
                 {"description",

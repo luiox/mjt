@@ -109,7 +109,7 @@ void measureGradient(std::vector<LengthRow>& rows)
                                      "class_query",
                                      {{"project_id", "perf"}, {"kind", "class"}, {"class", longName}});
             ASSERT_FALSE(detail.at("result").at("isError")) << detail.dump();
-            EXPECT_EQ(longName, payload(detail).at("internal_name"));
+            EXPECT_EQ(longName, payload(detail).at("class"));
         });
 
         row.jasmMs = measureMs([&] {
@@ -189,7 +189,7 @@ void measureBulk(std::vector<LengthRow>& rows)
                                      "class_query",
                                      {{"project_id", "bulk"}, {"kind", "class"}, {"class", probe}});
             ASSERT_FALSE(detail.at("result").at("isError")) << detail.dump();
-            EXPECT_EQ(probe, payload(detail).at("internal_name"));
+            EXPECT_EQ(probe, payload(detail).at("class"));
         });
 
         row.jasmMs = measureMs([&] {
