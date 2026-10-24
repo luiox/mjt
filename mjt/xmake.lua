@@ -45,6 +45,13 @@ target("mjt-mcp")
     add_rules("mjt.win_utf8_manifest")
 
     add_deps("mjt_mcp_core", "mjt_shared")
+    if has_config("with_pysdk") then
+        -- --script 宿主接线：嵌入解释器静态库（纯 CPython API）。
+        -- MJT_WITH_PYSDK 供 main.cpp 分派编译期分支；python314 链接项由
+        -- mjt_py_embed 的 add_links/add_linkdirs 经 static 依赖传导。
+        add_deps("mjt_py_embed")
+        add_defines("MJT_WITH_PYSDK=1")
+    end
     -- GNU ld 单遍从左到右扫描归档：binary 必须显式给全静态闭包（消费者在前、
     -- 被依赖在后），否则 auto 排序把 libca 包归档排到 mjt_shared 前，链接期
     -- 报 ca::process 等符号 undefined（Linux CI 实证）。闭包序与 unittest 同款。

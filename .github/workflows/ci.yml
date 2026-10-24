@@ -1,6 +1,8 @@
-# mjt CI（Linux + Windows）
+# mjt CI（Linux + Windows；pysdk 链路仅 Windows）
 #
-# 范围：mjt-mcp 链路 + mjt_mcp_unittest。
+# 范围：mjt-mcp 链路 + mjt_mcp_unittest；with_pysdk job 产出 mjt-mcp.exe +
+# mjt.pyd + mjt_util.py 并跑 pysdk 组件测试（嵌入解释器 selftest + --script
+# 退出码契约 + 宿主脚本冒烟）。
 # 依赖：luiox-repo git 直连包（libca/libmcp/libjstr/libjbytecode/libjzip/
 # libgarena/libjclassfile），由 CI 显式注册（root xmake.lua 不声明
 # add_repositories 到 luiox-repo 以外的远端）；gtest/libarchive/zlib 走 xrepo。
@@ -116,3 +118,103 @@ jobs:
       - name: Run unit tests
         shell: bash
         run: xmake run mjt_mcp_unittest --gtest_brief=1
+
+  build-and-test-windows-pysdk:
+    name: build & test (windows, with_pysdk)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout mjbase (pinned source-level dep)
+        uses: actions/checkout@v4
+        with:
+          repository: luiox/mjbase
+          ref: f5cf9556c690113d216e734f45be246726ccf3db
+          path: mjbase-src
+
+      - name: Setup Python 3.14 (python314.dll / include / libs for mjt-py)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Fetch pybind11 (header-only, MORPHER_PYBIND11_ROOT)
+        shell: bash
+        run: |
+          curl -sL https://github.com/pybind/pybind11/archive/refs/tags/v3.1.0.tar.gz -o pybind11.tgz
+          tar -xzf pybind11.tgz
+          echo "MORPHER_PYBIND11_ROOT=$GITHUB_WORKSPACE/pybind11-3.1.0" >> "$GITHUB_ENV"
+
+      - name: Setup xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: v3.0.9
+          actions-cache-folder: '.xmake-cache'
+
+      - name: Cache xrepo packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/AppData/Local/.xmake/packages
+          key: mjt-xrepo-windows-x64-xmake309-pysdk-${{ hashFiles('xmake.lua') }}
+          restore-keys: |
+            mjt-xrepo-windows-x64-xmake309-pysdk-
+
+      - name: Register luiox-repo
+        shell: bash
+        run: xmake repo --add luiox-repo https://github.com/luiox/luiox-repo.git
+
+      # 嵌入层按 python home 预载 python314.dll，home 以 --python_home 烧进
+      # 编译期缺省（MJT_PYTHON_HOME env 仍可在运行期覆盖）。
+      - name: Configure (with tests + pysdk)
+        shell: bash
+        run: xmake f -p windows --with_tests=y --with_pysdk=y --python_home="$pythonLocation" --mjbase_root=mjbase-src -y
+
+      - name: Build host + pysdk artifacts
+        shell: bash
+        run: |
+          xmake build -y mjt-mcp
+          xmake build -y mjt_pysdk
+          xmake build -y mjt_pysdk_unittest
+          xmake build -y mjt_pysdk_embedtest
+          ls -la build/windows/x64/release/
+
+      - name: Run pysdk component tests
+        shell: bash
+        run: |
+          ./build/windows/x64/release/mjt_pysdk_unittest.exe --gtest_brief=1
+          ./build/windows/x64/release/mjt_pysdk_embedtest
+
+      # --script 宿主冒烟：嵌入解释器 + mjt 预载 + Jasm 往返（退出码即门）。
+      - name: Smoke mjt --script
+        shell: bash
+        run: |
+          cat > smoke_pysdk.py <<'EOF'
+          import os
+          import sys
+          import tempfile
+
+          import mjt
+
+          jar = os.path.join(tempfile.gettempdir(), "mjt_ci_smoke.jar")
+          mjt.write_demo_jar(jar)
+          h = mjt.open_jar(jar)
+          text = mjt.class_jasm(h, "me/demo/Util")["source"]
+          assert ".method public static add (II)I" in text
+          assert mjt.class_apply_jasm(h, "me/demo/Util", text)["ok"]
+          assert mjt.class_jasm(h, "me/demo/Util")["source"] == text
+          mjt.close_container(h)
+          print("smoke ok:", sys.argv[1])
+          EOF
+          ./build/windows/x64/release/mjt-mcp.exe --script smoke_pysdk.py argv-passed
+          ./build/windows/x64/release/mjt-mcp.exe --script no_such.py 2>/dev/null && exit 1 || test $? -eq 2
+
+      - name: Collect artifacts (exe + mjt.pyd + mjt_util.py)
+        uses: actions/upload-artifact@v4
+        with:
+          name: mjt-pysdk-windows-x64
+          path: |
+            build/windows/x64/release/mjt-mcp.exe
+            build/windows/x64/release/mjt.pyd
+            build/windows/x64/release/mjt_util.py
+          if-no-files-found: error
