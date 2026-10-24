@@ -29,8 +29,8 @@ def run_all():
     from mjt.util import (call_sites, clone_method, decryptor_sites,
                           dry_run, dump_sites, fold_call_sites,
                           fold_decryptor_sites, fold_to_ldc, guard_patterns,
-                          identity_rethrows, init_order, residual_sites,
-                          save_verified, string_census)
+                          identity_rethrows, init_order, native_table,
+                          residual_sites, save_verified, string_census)
 
     fails = []
 
@@ -527,6 +527,35 @@ def run_all():
           [mjt.insn_detail(d2, u)["cst"] for u, o, k in mjt.insns(d2) if k == "ldc"]
           == src_ldcs)
     mjt.close_container(h3)
+    mjt.close_container(h)
+
+    # ── 14b. native_table（跨容器 native 扫描表：glob 过滤/排序/位面） ──
+    p14b, h = fresh("native")
+    mjt.add_method((h, "me/demo/Util"), "nativeProbe", "()V",
+                   mjt.acc["NATIVE"] | mjt.acc["PUBLIC"], 0, 0)
+    mjt.add_method((h, "me/demo/Util"), "nativeStatic", "(I)I",
+                   mjt.acc["NATIVE"] | mjt.acc["STATIC"] | mjt.acc["PUBLIC"], 0, 0)
+    rows = native_table(h)
+    check("native rows", [r["name"] for r in rows] == ["nativeProbe", "nativeStatic"],
+          str(rows))
+    check("native row shape",
+          rows[0]["class"] == "me/demo/Util" and rows[0]["descriptor"] == "()V"
+          and rows[0]["static"] is False and rows[1]["static"] is True
+          and rows[1]["access"] & mjt.acc["NATIVE"], str(rows))
+    check("native filter desc",
+          [r["name"] for r in native_table(h, desc="(I)I")] == ["nativeStatic"])
+    check("native filter name",
+          [r["name"] for r in native_table(h, name="nativeStatic")] == ["nativeStatic"])
+    check("native filter cls",
+          all(r["class"] == "me/demo/Util" for r in native_table(h, cls="me/demo/*")))
+    check("native empty", native_table(h, cls="no/such/*") == [])
+    # 落盘重开保真：native 方法无 Code 属性，COMPUTE_FRAMES 写回后仍可扫出。
+    out14b = os.path.join(tmp, "mjt_pysdk_native_out.jar")
+    mjt.save(h, out14b)
+    h14b = mjt.open_jar(out14b)
+    check("native reopen", [r["name"] for r in native_table(h14b)]
+          == ["nativeProbe", "nativeStatic"], str(native_table(h14b)))
+    mjt.close_container(h14b)
     mjt.close_container(h)
 
     # ── 15. dream2 折叠路径（普查 → 批口信任门/守卫 → 残留台账口径） ──

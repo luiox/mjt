@@ -1,6 +1,6 @@
 # mjt-py SDK API 参考（pysdk-api.md）
 
-由 `gen_api_docs.py` 自省生成于 2026-10-24T12:02:20；函数改动后重跑本脚本即可刷新，勿手编。
+由 `gen_api_docs.py` 自省生成于 2026-10-25T00:43:14；函数改动后重跑本脚本即可刷新，勿手编。
 
 生成方式：`mjt-mcp.exe --script mjt-py/src/gen_api_docs.py mjt-py/doc_ai/pysdk-api.md`
 
@@ -119,7 +119,7 @@ MethodPass.run 返回值：报告本 pass 有改动。
 ### mjt.class_apply_jasm
 
 ```
-class_apply_jasm(h: typing.SupportsInt | typing.SupportsIndex, name: str, source: str, source_name: str = '') -> dict
+class_apply_jasm(h: typing.SupportsInt | typing.SupportsIndex, name: str, source: str, source_name: str = '', validation: str = 'relaxed') -> dict
 
 事务式汇编替换类字节（名称校验 + 候选工作区复验全过才落）。
 
@@ -128,6 +128,7 @@ Args:
     name: 目标类 internal name。
     source: 完整 Jasm 文本。
     source_name: 诊断定位用的源名；缺省 <name>.jasm。
+    validation: 校验档位（同 class_validate_jasm）。
 Returns:
     报告 dict（同 class_validate_jasm；成功时 written 为新类字节数），
     成功后该类缓存树作废。
@@ -139,7 +140,7 @@ Raises:
 ### mjt.class_apply_jasm_diff
 
 ```
-class_apply_jasm_diff(h: typing.SupportsInt | typing.SupportsIndex, name: str, diff: str) -> dict
+class_apply_jasm_diff(h: typing.SupportsInt | typing.SupportsIndex, name: str, diff: str, validation: str = 'relaxed') -> dict
 
 diff 应用后事务式汇编替换类字节。
 
@@ -147,6 +148,7 @@ Args:
     h: 容器句柄。
     name: 目标类 internal name。
     diff: 对当前规范全文的 unified diff。
+    validation: 校验档位（同 class_validate_jasm）。
 Returns:
     报告 dict（同 class_apply_jasm），成功后该类缓存树作废。
 Raises:
@@ -307,7 +309,7 @@ Raises:
 ### mjt.class_validate_jasm
 
 ```
-class_validate_jasm(h: typing.SupportsInt | typing.SupportsIndex, name: str, source: str, source_name: str = '') -> dict
+class_validate_jasm(h: typing.SupportsInt | typing.SupportsIndex, name: str, source: str, source_name: str = '', validation: str = 'relaxed') -> dict
 
 试汇编完整 Jasm（容器深拷贝上验证，绝不落容器）。
 
@@ -316,10 +318,14 @@ Args:
     name: 目标类 internal name（与 source 声明名一致才通过）。
     source: 完整 Jasm 文本。
     source_name: 诊断定位用的源名；缺省 <name>.jasm。
+    validation: 校验档位 "relaxed"（默认，JVM 赋值兼容语义）/ "strict"
+        （精确类型匹配）/ "off"（跳过校验门，含重建后 validate）；非法值
+        抛 ValueError。
 Returns:
     报告 dict：{ok, internal_name, written, diagnostics}；diagnostics
-    条目为 {severity, stage, message, line, column}（severity 0=error
-    1=warning）。内容性错误走 diagnostics 不抛异常。
+    条目为 {severity, stage, stage_name, gate, message, line, column}
+    （severity 0=error 1=warning；gate 区分编辑门 edit 与重建管线
+    rebuild）。内容性错误走 diagnostics 不抛异常。
 Raises:
     StaleRefError: 类名不存在。
     RuntimeError: 现类字节反汇编失败。
@@ -328,7 +334,7 @@ Raises:
 ### mjt.class_validate_jasm_diff
 
 ```
-class_validate_jasm_diff(h: typing.SupportsInt | typing.SupportsIndex, name: str, diff: str) -> dict
+class_validate_jasm_diff(h: typing.SupportsInt | typing.SupportsIndex, name: str, diff: str, validation: str = 'relaxed') -> dict
 
 diff 试汇编：对 class_jasm 当前全文应用 unified diff 后在容器拷贝上
 验证，绝不落容器。
@@ -337,6 +343,7 @@ Args:
     h: 容器句柄。
     name: 目标类 internal name。
     diff: 对当前规范全文的 unified diff。
+    validation: 校验档位（同 class_validate_jasm）。
 Returns:
     报告 dict（同 class_validate_jasm）；上下文失配在 diagnostics 里
     给 hunk 序号。
@@ -1042,7 +1049,7 @@ Raises:
 ### mjt.method_apply_jasm
 
 ```
-method_apply_jasm(h: typing.SupportsInt | typing.SupportsIndex, cls: str, name: str, desc: str, source: str, source_name: str = '') -> dict
+method_apply_jasm(h: typing.SupportsInt | typing.SupportsIndex, cls: str, name: str, desc: str, source: str, source_name: str = '', validation: str = 'relaxed') -> dict
 
 方法级 Jasm 全量替换（source 拼接回类全文后事务式汇编落容器）。
 
@@ -1051,6 +1058,7 @@ Args:
     cls/name/desc: 目标方法坐标。
     source: 完整 .method 声明文本。
     source_name: 诊断定位用的源名；缺省 <name>.jasm。
+    validation: 校验档位（同 class_validate_jasm）。
 Returns:
     报告 dict（同 class_apply_jasm），成功后该类缓存树作废。
 Raises:
@@ -1061,7 +1069,7 @@ Raises:
 ### mjt.method_apply_jasm_diff
 
 ```
-method_apply_jasm_diff(h: typing.SupportsInt | typing.SupportsIndex, cls: str, name: str, desc: str, diff: str) -> dict
+method_apply_jasm_diff(h: typing.SupportsInt | typing.SupportsIndex, cls: str, name: str, desc: str, diff: str, validation: str = 'relaxed') -> dict
 
 方法级 diff 应用：diff 相对 method_jasm 产物应用，拼接回类全文后
 事务式汇编落容器。
@@ -1070,6 +1078,7 @@ Args:
     h: 容器句柄。
     cls/name/desc: 目标方法坐标。
     diff: 对 method_jasm 产物的 unified diff。
+    validation: 校验档位（同 class_validate_jasm）。
 Returns:
     报告 dict（同 class_apply_jasm），成功后该类缓存树作废。
 Raises:
@@ -1184,7 +1193,7 @@ Raises:
 ### mjt.method_validate_jasm
 
 ```
-method_validate_jasm(h: typing.SupportsInt | typing.SupportsIndex, cls: str, name: str, desc: str, source: str, source_name: str = '') -> dict
+method_validate_jasm(h: typing.SupportsInt | typing.SupportsIndex, cls: str, name: str, desc: str, source: str, source_name: str = '', validation: str = 'relaxed') -> dict
 
 方法级 Jasm 全量替换试汇编（source 拼接回类全文后在容器拷贝上验证）。
 
@@ -1193,6 +1202,7 @@ Args:
     cls/name/desc: 目标方法坐标。
     source: 完整 .method 声明文本。
     source_name: 诊断定位用的源名；缺省 <name>.jasm。
+    validation: 校验档位（同 class_validate_jasm）。
 Returns:
     报告 dict（同 class_validate_jasm）。
 Raises:
@@ -1203,7 +1213,7 @@ Raises:
 ### mjt.method_validate_jasm_diff
 
 ```
-method_validate_jasm_diff(h: typing.SupportsInt | typing.SupportsIndex, cls: str, name: str, desc: str, diff: str) -> dict
+method_validate_jasm_diff(h: typing.SupportsInt | typing.SupportsIndex, cls: str, name: str, desc: str, diff: str, validation: str = 'relaxed') -> dict
 
 方法级 diff 试汇编：diff 相对 method_jasm 产物应用，拼接回类全文后
 在容器拷贝上验证，绝不落容器。
@@ -1212,6 +1222,7 @@ Args:
     h: 容器句柄。
     cls/name/desc: 目标方法坐标。
     diff: 对 method_jasm 产物的 unified diff。
+    validation: 校验档位（同 class_validate_jasm）。
 Returns:
     报告 dict（同 class_validate_jasm）。
 Raises:
@@ -2275,6 +2286,28 @@ Args:
 
 Returns:
     mref (h, cls, name, desc) 列表（声明序）。
+```
+
+### mjt.util.native_table
+
+```
+native_table(h, cls='*', name='*', desc='*')
+
+扫描容器内全部 native 方法生成数据表（trace/hook 点位底表）。
+
+组合 classes_where + methods_where(native=True)：类名按点分名 glob、
+方法名与描述符按 glob 过滤，全缺省即全量清单。
+
+Args:
+    h: 容器句柄。
+    cls: 类名过滤，点分名 glob（``*`` / ``?``），如 ``com/example/*``。
+    name: 方法名 glob。
+    desc: 方法描述符 glob，如 ``()V``、``*Ljava/lang/String;*``。
+
+Returns:
+    行字典列表，按 (class, name, descriptor) 升序：
+    {"class": 内部名, "name": 方法名, "descriptor": 描述符,
+     "static": 是否静态, "access": 原始 access 掩码}。
 ```
 
 ### mjt.util.reset_semantic_names
