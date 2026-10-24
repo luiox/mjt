@@ -1,7 +1,7 @@
 add_rules("plugin.compile_commands.autoupdate", {outputdir = "."})
 
 set_project("mjt")
-set_version("0.1.0")
+set_version("2.3.0")
 set_xmakever("2.9.3")
 set_allowedplats("windows", "linux", "macosx")
 set_defaultplat("windows")
