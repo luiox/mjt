@@ -38,7 +38,17 @@ def run_all():
         if not cond:
             fails.append(f"{name}: {detail}")
 
+    #干净环境冒烟（env -i）没有 TEMP/TMP，gettempdir 在 Windows 上会退到
+    #C:\Windows 且不可写。此时以脚本所在目录 .smoke-tmp 兜底（交付目录必可写），
+    #并回写进程环境——C++ 侧（反编译工作目录走 GetTempPath）同享兜底。
     tmp = tempfile.gettempdir()
+    fallback_tmp = None
+    if not (os.environ.get("TEMP") or os.environ.get("TMP") or os.environ.get("TMPDIR")):
+        fallback_tmp = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".smoke-tmp")
+        os.makedirs(fallback_tmp, exist_ok=True)
+        tmp = fallback_tmp
+        os.environ["TEMP"] = tmp
+        os.environ["TMP"] = tmp
 
     def fresh(name):
         p = os.path.join(tmp, f"mjt_pysdk_{name}.jar")
@@ -945,6 +955,9 @@ def run_all():
           and cyc["cycles"] == [["me/demo/App", "me/demo/Color"]], str(cyc))
     mjt.close_container(h25)
 
+    if fallback_tmp is not None:
+        import shutil
+        shutil.rmtree(fallback_tmp, ignore_errors=True)
     return fails
 
 
