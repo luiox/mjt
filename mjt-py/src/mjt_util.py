@@ -126,6 +126,41 @@ def methods_where(h, cref, **pred):
     return out
 
 
+def native_table(h, cls="*", name="*", desc="*"):
+    """扫描容器内全部 native 方法生成数据表（trace/hook 点位底表）。
+
+    组合 classes_where + methods_where(native=True)：类名按点分名 glob、
+    方法名与描述符按 glob 过滤，全缺省即全量清单。
+
+    Args:
+        h: 容器句柄。
+        cls: 类名过滤，点分名 glob（``*`` / ``?``），如 ``com/example/*``。
+        name: 方法名 glob。
+        desc: 方法描述符 glob，如 ``()V``、``*Ljava/lang/String;*``。
+
+    Returns:
+        行字典列表，按 (class, name, descriptor) 升序：
+        {"class": 内部名, "name": 方法名, "descriptor": 描述符,
+         "static": 是否静态, "access": 原始 access 掩码}。
+    """
+    cls  = cls or "*"
+    name = name or "*"
+    desc = desc or "*"
+    rows = []
+    for cref in classes_where(h, name=cls):
+        for mref in methods_where(h, cref, native=True, name=name):
+            info = mjt.method_info(mref)
+            if not _glob_match(desc, mref[3]):
+                continue
+            rows.append({"class": cref[1],
+                         "name": mref[2],
+                         "descriptor": mref[3],
+                         "static": bool(info["access"] & _ACC["STATIC"]),
+                         "access": info["access"]})
+    rows.sort(key=lambda row: (row["class"], row["name"], row["descriptor"]))
+    return rows
+
+
 # ── 恒等 rethrow 假 handler（混淆器假 handler 三形态保守子集） ────────────
 
 @dataclass
