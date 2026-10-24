@@ -10,29 +10,33 @@ description: 在 mjt-mcp 上回答指令级问题（方法字节码形态、引�
 
 ## Preferred tools
 
-`method_get`, `method_bytecode`, `method_jasm`, `xref_method`, `xref_field`,
-`method_callers`, `method_callees`, `method_overrides`, `class_relations`；
-编辑面 `method_apply_jasm(_diff)`, `patch_apply_jasm(_diff)`, `patch_apply`。
+`class_query`（kind=`method`/`bytecode`/`method_jasm`/`jasm`/`class`/`bytes`）、
+`xref_query`（kind=`references`/`relations`/`overrides`）；编辑面
+`edit_apply`（kind=`method_jasm(_diff)`/`jasm(_diff)`/`structured`/
+`class_bytes`）与 `edit_history`（savepoint/revert/undo/restore）。
 
 ## Gates that matter
 
-- 方法结论必须挂在 `owner + name + descriptor` 三元组上；没有 descriptor
-  先回 `class_get`/`method_get` 补齐，禁止拿同名第一个方法冒充。
-- `method_bytecode` 一次返回两份证据：`instructions` 摘要（index/opcode/
-  mnemonic/node_type，含 label 伪节点）与 `jasm` 全文——操作数、跳转目标、
-  行号以 `jasm` 为准。摘要不带操作数是设计如此，不要为此自写
-  classfile 解析器；原始字节才用 `class_bytes`。
+- 方法寻址 `owner + name` 必填，`descriptor` 可省略：唯一命中自动回填；真重载时工具报歧义并列出全部候选描述符，此时必须显式带上目标重载的 descriptor——工具不会替你挑同名第一个，方法级结论若依赖具体重载就优先显式给。
+- `class_query(kind=bytecode)` 一次返回两份证据：`instructions` 摘要
+  （index/opcode/mnemonic/node_type，含 label 伪节点）与 `jasm` 全文——
+  node_type 是按指令语义归类的粗粒度标签（invoke/field/ldc/var/…），
+  操作数、跳转目标、行号以 `jasm` 为准。摘要不带操作数是设计如此，不要
+  为此自写 classfile 解析器；原始字节才用 `class_query(kind=bytes)`。
 - 编辑粒度递进：能 diff 不全量、能单方法不整类、access/注解/成员增删直接
-  用 `patch_apply` 结构化改。diff 以 `class_jasm`/`method_jasm` 的 canonical
-  输出为 base，context 严格匹配、无 fuzz，失败时按返回的失败 hunk 重对齐。
-- 先验证后提交：`dry_run`/`*_validate_*` 拿诊断与 byte diff；提交带读到的
-  `expected_revision`；批量或跨类编辑前 `workspace_savepoint`。
-- 提交后必核对：`workspace_modified_classes` 对账变更面，重读
-  `method_bytecode`/`method_jasm` 确认落地形态；不符先回退再修。
-- revision stale（ABORTED）说明有并行写入：重读 `workspace_info`、核对
+  用 `edit_apply(kind=structured)` 改。diff 以 `class_query`(kind=`jasm`/
+  `method_jasm`) 的 canonical 输出为 base，context 严格匹配、无 fuzz，
+  失败时按返回的失败 hunk 重对齐。
+- 先验证后提交：`edit_apply` 先 `dry_run: true` 拿诊断与 byte diff；
+  提交带读到的 `expected_revision`；批量或跨类编辑前
+  `edit_history(action=savepoint)`。
+- 提交后必核对：`edit_history(action=modified_classes)` 对账变更面，重读
+  `class_query`(kind=`bytecode`/`method_jasm`) 确认落地形态；不符先
+  `edit_history` 回退再修。
+- revision stale（ABORTED）说明有并行写入：重读 `project_info`、核对
   变更面，再决定重放或放弃；不带着旧 revision 盲目重试。
-- 补丁可能被继承的方法前先查 `method_overrides`；反编译文本与本角色的
-  字节码证据冲突时以字节码为准并上报。
+- 补丁可能被继承的方法前先查 `xref_query(kind=overrides)`；反编译文本与
+  本角色的字节码证据冲突时以字节码为准并上报。
 
 ## Deliverable
 

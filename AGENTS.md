@@ -1,8 +1,9 @@
 # AGENTS.md
 
-`mjt` 是 JVM 字节码工具单仓：`mjt/` 是产品线（MCP 服务器），`test_helper/` 是
-共享测试层，`mbase/` 是携带的 mbase 分叉（治理规则见下文，mjbase 覆盖日退役）。
-无仓内 `libs/` 共享层：外部依赖全部经 luiox-repo 中心包仓直连。
+`mjt` 是 JVM 字节码工具单仓：`mjt/` 是产品线（MCP 服务器），`mjt-py/` 是嵌入
+Python SDK 组件（`--with_pysdk` 门控），`test_helper/` 是共享测试层。字节码基座
+是 mjbase（独立仓，兄弟目录源码级依赖，见「mjbase 基座」）。无仓内共享层：外部
+依赖经 luiox-repo 中心包仓直连（libjbc 走项目内联包定义）。
 
 ## 命令
 
@@ -13,12 +14,14 @@ xmake run <target> --gtest_brief=1
 ```
 
 目标：`mjt-mcp`（产品）、`mjt_mcp_core` / `mjt_shared`（库）、`mjt_mcp_unittest`
-（需 `--with_tests=y`）。
+（需 `--with_tests=y`）、`mjt_pysdk_unittest`（需 `--with_pysdk=y` 与
+`--with_tests=y`）。
 
 外部依赖只有 luiox-repo 中心包仓直连包（libca / libmcp / libjstr /
-libjbytecode / libjzip / libgarena / libjclassfile + xrepo 的 gtest /
-libarchive / zlib / nlohmann_json），不引入仓内副本、不做 phony 垫片；
-各包嵌套的 libca 必须用 `add_requireconfs` 钉回同一 `LUIOX_LIBCA_VERSION`。
+libjbytecode / libjzip / libgarena / libjclassfile / libjstd / libjdk_finder /
+libjblw / libjhasm + xrepo 的 gtest / libarchive / zlib / nlohmann_json；
+libjbc 走项目内联包定义，git 直连 + commit 锁），不引入仓内副本、不做 phony
+垫片；各包嵌套的 libca 必须用 `add_requireconfs` 钉回同一 `LUIOX_LIBCA_VERSION`。
 
 ## 约定
 
@@ -39,27 +42,17 @@ libarchive / zlib / nlohmann_json），不引入仓内副本、不做 phony 垫�
 它通常应该被删掉而不是留着。**新增依赖必须说明它服务于哪个在用的消费方**；
 没有消费方的模块不进仓。
 
-## mbase 分叉治理
+## mjbase 基座
 
-本仓 `mbase/`（253 文件）是 morpher 主仓 `mbase/` 的开源分叉：air/sir/info 已剜除，
-命名空间整体重写为 `mjt::base`。治理规则：
+字节码基座是 **mjbase**（独立仓），本仓以兄弟目录源码级依赖消费：
 
-- **分叉身份**：本仓 `mbase/` 是旧栈（libjbytecode 底座）的唯一活跃维护面；公开产品
-  的 mbase bug 就地在本仓修复。
-- **上游关系**：morpher 主仓的 `mbase/` 是冻结快照（mjbase 重写战役的对拍 oracle
-  基线），不接收回流；禁止往 morpher 的 mbase 打补丁。
-- **修复流向（单向）**：本仓修完后，同一修复回流到 morpher 侧的 **mjbase**（重写线），
-  提交注记 `mjt <hash> 同源`。
-- **外部 PR**：触碰 `mbase/` 时接受修复、拒绝功能性新增（旧栈不加功能）；结构性变更
-  应去 morpher 上游提案。
-- **寿命**：mjbase 迁移完成并经 luiox-repo 打包后，本目录整体删除、切换为消费 mjbase
-  包，届时闭包缩为 `mcp/skills/src`。
-- **从 morpher 同步修复**：① 取 morpher 侧修复 diff；② 内容移植到本仓 `mbase/` 对应
-  文件；③ 命名空间重写 `morpher::base` → `mjt::base`（含 namespace 声明与限定名）；
-  ④ 跳过涉及已剜除模块（air/sir/info）的改动，include 按本仓布局调整；⑤ 按构建门
-  流程重跑受影响单测。
+- **消费形态**：根 `xmake.lua` 的 `--mjbase_root` option（默认 `../mjbase`）在
+  `includes("mjt")` 之前把 `<mjbase_root>/mjbase` 纳入构建；`mjt` 与 `mjt-py`
+  都是它的消费方。配置/构建前需保证兄弟目录就位。
+- **包化方向**：mjbase 打包进 luiox-repo 后改为 `add_requires("mjbase")` 消费，
+  届时本节收缩为普通外部包说明。
 
 ## 提交
 
 - 不提交测试产物与临时文件；提交前 `git status`。
-- 提交信息用约定式前缀并带模块作用域：`feat(mcp): …`、`fix(mbase): …`。
+- 提交信息用约定式前缀并带模块作用域：`feat(mcp): …`、`fix(mjt-py): …`。
