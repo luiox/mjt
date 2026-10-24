@@ -1,8 +1,10 @@
 #include "tool/shadow_slot.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "shared/shadow_display.hpp"
 #include "tool/json.hpp"
@@ -155,6 +157,69 @@ bool resolveMethodSlots(const WorkspaceShadowTable& slots,
     name       = nameSlot.raw;
     descriptor = (nameSlot.fromHandle && descInput.empty()) ? nameSlot.descriptor : descInput;
     return true;
+}
+
+bool backfillMemberDescriptor(mjbase::workspace::IWorkspace& workspace,
+                              const std::string&             ownerRaw,
+                              const std::string&             memberName,
+                              bool                           field,
+                              std::string&                   descriptor,
+                              Json&                          error)
+{
+    //空名直通：由 workspace 给出既有 canonical 错误。
+    if (memberName.empty()) return true;
+    //owner 类不可解析（表外类直通查询、类名拼错）：无操作放行，descriptor
+    //保持为空，由下游查询给出 canonical 错误/空集。
+    auto info = workspace.classInfo(ownerRaw);
+    if (info.is_err()) return true;
+    const auto& clazz = info.unwrap();
+    //候选枚举机（同源复用）：该名字在目标池的全部去重描述符；另一池的同名
+    //命中用于零命中提示（方法/字段名互串是高频笔误）。
+    const auto collect = [&](bool inFieldPool, std::vector<std::string>& out) {
+        const auto visit = [&](const std::string& name, const std::string& desc) {
+            if (name != memberName) return;
+            if (std::find(out.begin(), out.end(), desc) == out.end()) out.push_back(desc);
+        };
+        if (inFieldPool)
+            for (const auto& item : clazz.fields) visit(item.name, item.descriptor);
+        else
+            for (const auto& item : clazz.methods) visit(item.name, item.descriptor);
+    };
+    std::vector<std::string> candidates;
+    collect(field, candidates);
+    if (candidates.size() == 1) {
+        descriptor = candidates.front();
+        return true;
+    }
+    std::vector<std::string> otherKind;
+    collect(!field, otherKind);
+    const auto kindLabel = field ? "field" : "method";
+    std::string message;
+    if (candidates.empty()) {
+        message = std::string("no ") + kindLabel + " named \"" + memberName + "\" in " +
+                  ownerRaw;
+        if (!otherKind.empty()) {
+            message += std::string("; a ") + (field ? "method" : "field") +
+                       " with this name exists (descriptor";
+            for (std::size_t index = 0; index < otherKind.size(); ++index) {
+                message += index == 0 ? " " : ", ";
+                message += otherKind[index];
+            }
+            message += ")";
+        }
+    }
+    else {
+        message = std::string("descriptor is ambiguous for ") + ownerRaw + "." + memberName +
+                  "; candidates: ";
+        for (std::size_t index = 0; index < candidates.size(); ++index) {
+            if (index > 0) message += ", ";
+            message += candidates[index];
+        }
+    }
+    //diagnostics 数组统一格式（消息字符串数组）。
+    error = detail::toolResult({{"error", message}, {"diagnostics", Json::array({message})}},
+                               true);
+    return false;
 }
 
 bool resolveClassArgument(mjbase::workspace::IWorkspace& workspace,

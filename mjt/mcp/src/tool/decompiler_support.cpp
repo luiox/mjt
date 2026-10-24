@@ -149,7 +149,8 @@ Json decompilerAvailabilityJson(const DecompilerAvailability& availability,
     return {{"id", availability.id},
             {"name", availability.name},
             {"active", availability.id == settings.backend},
-            {"environment", availability.environmentVariable},
+            {"source", availability.discoverySource},
+            {"override_env", availability.environmentVariable},
             {"decompiler_jar", availability.decompilerJar},
             {"java", availability.javaProgram},
             {"artifact_available", availability.artifactAvailable},
@@ -274,13 +275,15 @@ ca::StatusOr<DecompiledSource> decompileWorkspaceClass(IWorkspace& workspace,
     return decompileSnapshotClass(snapshot, internalName, options);
 }
 
-Json decompiledSourceJson(const DecompiledSource& result, const char* sourceScope)
+Json decompiledSourceJson(const DecompiledSource& result, const char* sourceScope, bool cached)
 {
-    return {{"internal_name", result.internalName},
-            {"backend", result.backend},
-            {"decompiler_jar", result.decompilerJar},
-            {"source_scope", sourceScope},
-            {"source", result.source}};
+    Json payload = {{"internal_name", result.internalName},
+                    {"backend", result.backend},
+                    {"decompiler_jar", result.decompilerJar},
+                    {"source_scope", sourceScope},
+                    {"source", result.source}};
+    if (cached) payload["cached"] = true;
+    return payload;
 }
 
 }   //namespace mjt::mcp::detail

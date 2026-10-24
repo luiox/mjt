@@ -78,12 +78,15 @@ bool isTerminalJobState(const std::string& state)
     return state == "succeeded" || state == "failed" || state == "cancelled";
 }
 
-Json waitForJobState(McpSessionHarness& server, const std::string& jobId,
+Json waitForJobState(McpSessionHarness& server, const std::string& projectId,
+                     const std::string& jobId,
                      const std::string& expectedState, int attempts)
 {
     Json current;
     for (int attempt = 0; attempt < attempts; ++attempt) {
-        current = call(server, "job_get", {{"job_id", jobId}});
+        current = call(server,
+                       "decompile",
+                       {{"project_id", projectId}, {"action", "poll"}, {"job_id", jobId}});
         if (current.at("result").at("isError")) return current;
         if (payload(current).at("state") == expectedState) return current;
         if (isTerminalJobState(payload(current).at("state").get<std::string>())) return current;
@@ -92,11 +95,14 @@ Json waitForJobState(McpSessionHarness& server, const std::string& jobId,
     return current;
 }
 
-Json waitForTerminalJob(McpSessionHarness& server, const std::string& jobId, int attempts)
+Json waitForTerminalJob(McpSessionHarness& server, const std::string& projectId,
+                        const std::string& jobId, int attempts)
 {
     Json current;
     for (int attempt = 0; attempt < attempts; ++attempt) {
-        current = call(server, "job_get", {{"job_id", jobId}});
+        current = call(server,
+                       "decompile",
+                       {{"project_id", projectId}, {"action", "poll"}, {"job_id", jobId}});
         if (current.at("result").at("isError")) return current;
         if (isTerminalJobState(payload(current).at("state").get<std::string>())) return current;
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -104,9 +110,14 @@ Json waitForTerminalJob(McpSessionHarness& server, const std::string& jobId, int
     return current;
 }
 
-void releaseJob(McpSessionHarness& server, const std::string& jobId)
+void releaseJob(McpSessionHarness& server, const std::string& projectId,
+                const std::string& jobId)
 {
-    const auto released = call(server, "job_release", {{"job_id", jobId}});
+    const auto released = call(server,
+                               "decompile",
+                               {{"project_id", projectId},
+                                {"action", "release"},
+                                {"job_id", jobId}});
     if (released.at("result").at("isError") || !payload(released).at("released").get<bool>())
         throw std::runtime_error("failed to release completed MCP job");
 }
@@ -154,7 +165,7 @@ void expectDirectToolError(const Json& result, const std::string& operation,
     ASSERT_TRUE(details.at("status").is_object());
     EXPECT_EQ(static_cast<int>(expectedCode), details.at("status").at("code"));
     EXPECT_FALSE(details.at("status").at("ok").get<bool>());
-    EXPECT_TRUE(details.at("workspace_id").is_string());
+    EXPECT_TRUE(details.at("project_id").is_string());
     EXPECT_TRUE(details.at("revision").is_number_unsigned());
     EXPECT_TRUE(details.at("diagnostics").is_array());
     ASSERT_FALSE(result.at("content").empty());

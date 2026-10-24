@@ -19,11 +19,12 @@ TEST(McpServerTest, PreservesParityFixtureEdgesAcrossQueriesTransactionsAndExpor
 {
     McpSessionHarness server;
 
-    const auto opened = call(server, "workspace_open", {{"path", writeParityFixture().string()}});
+    const auto opened = call(server, "project_open", {{"path", writeParityFixture().string()}});
     ASSERT_FALSE(opened.at("result").at("isError"));
-    const auto workspaceId = payload(opened).at("workspace_id").get<std::string>();
+    const auto projectId = payload(opened).at("project_id").get<std::string>();
 
-    const auto resources = call(server, "workspace_resources", {{"workspace_id", workspaceId}});
+    const auto resources =
+        call(server, "search", {{"project_id", projectId}, {"kind", "resources"}});
     ASSERT_FALSE(resources.at("result").at("isError"));
     const auto& resourceItems = payload(resources).at("items");
     const auto hasResource = [&resourceItems](const std::string& uri) {
@@ -36,8 +37,9 @@ TEST(McpServerTest, PreservesParityFixtureEdgesAcrossQueriesTransactionsAndExpor
     EXPECT_TRUE(hasResource("mcp/parity/Broken.class"));
 
     const auto brokenBytes = call(server,
-                                  "class_bytes",
-                                  {{"workspace_id", workspaceId},
+                                  "class_query",
+                                  {{"project_id", projectId},
+                                   {"kind", "bytes"},
                                    {"class", "mcp/parity/Broken.class"}});
     ASSERT_FALSE(brokenBytes.at("result").at("isError"));
     EXPECT_EQ("mcp/parity/Broken.class", payload(brokenBytes).at("resource_uri"));
@@ -45,7 +47,8 @@ TEST(McpServerTest, PreservesParityFixtureEdgesAcrossQueriesTransactionsAndExpor
     EXPECT_EQ(3, payload(brokenBytes).at("size"));
     EXPECT_EQ("yv66", payload(brokenBytes).at("content"));
 
-    const auto manifest = call(server, "resource_manifest", {{"workspace_id", workspaceId}});
+    const auto manifest =
+        call(server, "class_query", {{"project_id", projectId}, {"kind", "manifest"}});
     ASSERT_FALSE(manifest.at("result").at("isError"));
     EXPECT_NE(std::find_if(payload(manifest).at("attributes").begin(),
                            payload(manifest).at("attributes").end(),
@@ -56,8 +59,9 @@ TEST(McpServerTest, PreservesParityFixtureEdgesAcrossQueriesTransactionsAndExpor
               payload(manifest).at("attributes").end());
 
     const auto binaryChunk = call(server,
-                                  "resource_read",
-                                  {{"workspace_id", workspaceId},
+                                  "class_query",
+                                  {{"project_id", projectId},
+                                   {"kind", "resource_bytes"},
                                    {"uri", "assets/payload.bin"},
                                    {"offset", 0},
                                    {"limit", 2}});
@@ -67,8 +71,10 @@ TEST(McpServerTest, PreservesParityFixtureEdgesAcrossQueriesTransactionsAndExpor
     EXPECT_EQ("2", payload(binaryChunk).at("next_cursor"));
 
     const auto annotation = call(server,
-                                 "class_get",
-                                 {{"workspace_id", workspaceId}, {"class", "mcp/parity/Annotated"}});
+                                 "class_query",
+                                 {{"project_id", projectId},
+                                  {"kind", "class"},
+                                  {"class", "mcp/parity/Annotated"}});
     ASSERT_FALSE(annotation.at("result").at("isError"));
     const auto& annotations = payload(annotation).at("annotations");
     ASSERT_EQ(2U, annotations.size());
@@ -80,8 +86,9 @@ TEST(McpServerTest, PreservesParityFixtureEdgesAcrossQueriesTransactionsAndExpor
     EXPECT_FALSE(annotations.at(1).at("visible"));
 
     const auto indy = call(server,
-                           "method_bytecode",
-                           {{"workspace_id", workspaceId},
+                           "class_query",
+                           {{"project_id", projectId},
+                            {"kind", "bytecode"},
                             {"owner", "mcp/parity/Indy"},
                             {"name", "run"},
                             {"descriptor", "()V"}});
@@ -93,16 +100,20 @@ TEST(McpServerTest, PreservesParityFixtureEdgesAcrossQueriesTransactionsAndExpor
                            }),
               payload(indy).at("instructions").end());
 
-    const auto condy =
-        call(server, "class_jasm", {{"workspace_id", workspaceId}, {"class", "mcp/parity/Condy"}});
+    const auto condy = call(server,
+                            "class_query",
+                            {{"project_id", projectId},
+                             {"kind", "jasm"},
+                             {"class", "mcp/parity/Condy"}});
     ASSERT_FALSE(condy.at("result").at("isError"));
     EXPECT_EQ("mcp/parity/Condy", payload(condy).at("internal_name"));
     EXPECT_NE(std::string::npos,
-              payload(condy).at("source").get<std::string>().find("fixtureConstant"));
+              payload(condy).at("jasm").get<std::string>().find("fixtureConstant"));
 
     const auto frames = call(server,
-                             "method_bytecode",
-                             {{"workspace_id", workspaceId},
+                             "class_query",
+                             {{"project_id", projectId},
+                              {"kind", "bytecode"},
                               {"owner", "mcp/parity/FrameSubject"},
                               {"name", "choose"},
                               {"descriptor", "(Z)I"}});
@@ -125,8 +136,12 @@ TEST(McpServerTest, PreservesParityFixtureEdgesAcrossQueriesTransactionsAndExpor
               payload(frames).at("instructions").end());
 
     const auto reflected = call(server,
-                                "xref_class",
-                                {{"workspace_id", workspaceId}, {"class", "mcp/parity/ReflectionTarget"}});
+                                "xref_query",
+                                {{"project_id", projectId},
+                                 {"kind", "references"},
+                                 {"target", "class"},
+                                 {"direction", "to"},
+                                 {"class", "mcp/parity/ReflectionTarget"}});
     ASSERT_FALSE(reflected.at("result").at("isError"));
     EXPECT_NE(std::find_if(payload(reflected).at("items").begin(),
                            payload(reflected).at("items").end(),
@@ -137,107 +152,69 @@ TEST(McpServerTest, PreservesParityFixtureEdgesAcrossQueriesTransactionsAndExpor
               payload(reflected).at("items").end());
 
     const auto searchable = call(server,
-                                 "search_classes",
-                                 {{"workspace_id", workspaceId}, {"query", "FrameSubject"}});
+                                 "search",
+                                 {{"project_id", projectId},
+                                  {"kind", "classes"},
+                                  {"query", "FrameSubject"}});
     ASSERT_FALSE(searchable.at("result").at("isError"));
     ASSERT_EQ(1U, payload(searchable).at("items").size());
-    EXPECT_EQ("mcp/parity/FrameSubject", payload(searchable).at("items").at(0).at("owner"));
+    EXPECT_EQ("mcp/parity/FrameSubject", payload(searchable).at("items").at(0).at("class"));
     const auto brokenJasm =
         call(server,
-             "class_jasm",
-             {{"workspace_id", workspaceId}, {"class", "mcp/parity/Broken.class"}});
+             "class_query",
+             {{"project_id", projectId}, {"kind", "jasm"}, {"class", "mcp/parity/Broken.class"}});
     EXPECT_TRUE(brokenJasm.at("result").at("isError"));
 
-    const auto repairPreview = call(server,
-                                    "jar_fix_analyze",
-                                    {{"workspace_id", workspaceId},
-                                     {"remove_invalid_class_entries", true},
-                                     {"expected_revision", 0}});
-    ASSERT_FALSE(repairPreview.at("result").at("isError"));
-    EXPECT_FALSE(payload(repairPreview).at("committed"));
-    EXPECT_EQ(0, payload(repairPreview).at("revision"));
-    EXPECT_NE(std::find_if(payload(repairPreview).at("issues").begin(),
-                           payload(repairPreview).at("issues").end(),
-                           [](const Json& issue) {
-                               return issue.at("uri") == "mcp/parity/Broken.class" &&
-                                      issue.at("selected_for_removal");
-                           }),
-              payload(repairPreview).at("issues").end());
-    //ReflectionUser 是合法类（字符串反射引用 ReflectionTarget），不受损坏类移除影响；
-    //jar_fix 只移除显式选择的损坏条目（不承诺级联移除）。
-    EXPECT_EQ(std::find_if(payload(repairPreview).at("issues").begin(),
-                           payload(repairPreview).at("issues").end(),
-                           [](const Json& issue) {
-                               return issue.at("uri") == "mcp/parity/ReflectionUser.class" &&
-                                      issue.at("selected_for_removal");
-                           }),
-              payload(repairPreview).at("issues").end());
-
-    const auto repaired = call(server,
-                               "jar_fix_apply",
-                               {{"workspace_id", workspaceId},
-                                {"remove_invalid_class_entries", true},
-                                {"expected_revision", 0}});
-    ASSERT_FALSE(repaired.at("result").at("isError"));
-    EXPECT_TRUE(payload(repaired).at("committed"));
-    EXPECT_EQ(1, payload(repaired).at("revision"));
-    const auto removed = call(server,
-                              "resource_read",
-                              {{"workspace_id", workspaceId}, {"uri", "mcp/parity/Broken.class"}});
-    EXPECT_TRUE(removed.at("result").at("isError"));
-    const auto preservedReflection = call(
-        server,
-        "resource_read",
-        {{"workspace_id", workspaceId}, {"uri", "mcp/parity/ReflectionUser.class"}});
-    EXPECT_FALSE(preservedReflection.at("result").at("isError"));
-
+    //事务 + 导出：mapping 提交为台账事务（edit_apply kind=mapping），导出把
+    //编辑态物化为派生容器（project_export）；导出目标被占用按 ALREADY_EXISTS
+    //失败且不影响工程状态。jar 修复面（旧 jar_fix_*）随收敛 SDK 化，Broken
+    //条目因此随容器原样进入导出产物。
     const std::string mapping = "tiny\t2\t0\tintermediary\tnamed\n"
                                 "c\tmcp/Subject\tmcp/ExportedSubject\n";
+    const auto mapped = call(server,
+                             "edit_apply",
+                             {{"project_id", projectId},
+                              {"kind", "mapping"},
+                              {"format", "Tiny-V2"},
+                              {"mapping_text", mapping},
+                              {"policy", "all"},
+                              {"expected_revision", 0}});
+    ASSERT_FALSE(mapped.at("result").at("isError")) << mapped;
+    EXPECT_TRUE(payload(mapped).at("committed"));
+    EXPECT_EQ(1, payload(mapped).at("revision"));
+
     const auto existingOutput = test::getTempOutPath("mjt_mcp_parity_existing.jar");
     std::ofstream(existingOutput, std::ios::binary | std::ios::trunc) << "existing";
-    const auto failedWorkflow = call(server,
-                                     "analysis_workflow",
-                                     {{"workspace_id", workspaceId},
-                                      {"mapping_format", "Tiny-V2"},
-                                      {"mapping_text", mapping},
-                                      {"mapping_policy", "all"},
-                                      {"export_path", existingOutput.string()},
-                                      {"expected_revision", 1}});
-    ASSERT_TRUE(failedWorkflow.at("result").at("isError"));
-    EXPECT_EQ(1, payload(failedWorkflow).at("mutation").at("revision"));
-    EXPECT_NE(std::find_if(payload(failedWorkflow).at("stages").begin(),
-                           payload(failedWorkflow).at("stages").end(),
-                           [](const Json& stage) { return stage.at("name") == "export"; }),
-              payload(failedWorkflow).at("stages").end());
-    const auto original = call(server,
-                               "class_get",
-                               {{"workspace_id", workspaceId}, {"class", "mcp/Subject"}});
-    ASSERT_FALSE(original.at("result").at("isError"));
-    EXPECT_EQ("mcp/Subject", payload(original).at("internal_name"));
+    const auto failedExport = call(server,
+                                   "project_export",
+                                   {{"project_id", projectId},
+                                    {"path", existingOutput.string()}});
+    ASSERT_TRUE(failedExport.at("result").at("isError"));
+    const auto mappedSubject = call(server,
+                                    "class_query",
+                                    {{"project_id", projectId},
+                                     {"kind", "class"},
+                                     {"class", "mcp/ExportedSubject"}});
+    ASSERT_FALSE(mappedSubject.at("result").at("isError"));
+    EXPECT_EQ("mcp/ExportedSubject", payload(mappedSubject).at("internal_name"));
 
     const auto exportedFixture = test::getTempOutPath("mjt_mcp_parity_exported.jar");
     std::error_code exportError;
     std::filesystem::remove(exportedFixture, exportError);
     const auto exported = call(server,
-                               "analysis_workflow",
-                               {{"workspace_id", workspaceId},
-                                {"mapping_format", "Tiny-V2"},
-                                {"mapping_text", mapping},
-                                {"mapping_policy", "all"},
-                                {"export_path", exportedFixture.string()},
-                                {"expected_revision", 1}});
+                               "project_export",
+                               {{"project_id", projectId},
+                                {"path", exportedFixture.string()}});
     ASSERT_FALSE(exported.at("result").at("isError"));
-    EXPECT_TRUE(payload(exported).at("mutation").at("committed"));
-    EXPECT_EQ(2, payload(exported).at("mutation").at("revision"));
     EXPECT_TRUE(payload(exported).at("exported"));
     EXPECT_TRUE(std::filesystem::exists(exportedFixture));
 
-    const auto reopened = call(server, "workspace_open", {{"path", exportedFixture.string()}});
+    const auto reopened = call(server, "project_open", {{"path", exportedFixture.string()}});
     ASSERT_FALSE(reopened.at("result").at("isError"));
-    const auto exportedWorkspaceId = payload(reopened).at("workspace_id").get<std::string>();
+    const auto exportedProjectId = payload(reopened).at("project_id").get<std::string>();
     const auto exportedResources = call(server,
-                                        "workspace_resources",
-                                        {{"workspace_id", exportedWorkspaceId}});
+                                        "search",
+                                        {{"project_id", exportedProjectId}, {"kind", "resources"}});
     ASSERT_FALSE(exportedResources.at("result").at("isError"));
     const auto& exportedResourceItems = payload(exportedResources).at("items");
     const auto hasExportedResource = [&exportedResourceItems](const std::string& uri) {
@@ -249,23 +226,26 @@ TEST(McpServerTest, PreservesParityFixtureEdgesAcrossQueriesTransactionsAndExpor
     EXPECT_TRUE(hasExportedResource("META-INF/versions/9/mcp/parity/Versioned.class"));
     EXPECT_TRUE(hasExportedResource("mcp/parity/Annotated.class"));
     EXPECT_TRUE(hasExportedResource("mcp/parity/Condy.class"));
-    EXPECT_FALSE(hasExportedResource("mcp/parity/Broken.class"));
+    EXPECT_TRUE(hasExportedResource("mcp/parity/Broken.class"));
     const auto renamed = call(server,
-                              "class_get",
-                              {{"workspace_id", exportedWorkspaceId}, {"class", "mcp/ExportedSubject"}});
+                              "class_query",
+                              {{"project_id", exportedProjectId},
+                               {"kind", "class"},
+                               {"class", "mcp/ExportedSubject"}});
     ASSERT_FALSE(renamed.at("result").at("isError"));
     EXPECT_EQ("mcp/ExportedSubject", payload(renamed).at("internal_name"));
     const auto exportedBinary = call(server,
-                                     "resource_read",
-                                     {{"workspace_id", exportedWorkspaceId},
+                                     "class_query",
+                                     {{"project_id", exportedProjectId},
+                                      {"kind", "resource_bytes"},
                                       {"uri", "assets/payload.bin"},
                                       {"offset", 0},
                                       {"limit", 2}});
     ASSERT_FALSE(exportedBinary.at("result").at("isError"));
     EXPECT_EQ("AP4=", payload(exportedBinary).at("content"));
     const auto exportedManifest = call(server,
-                                       "resource_manifest",
-                                       {{"workspace_id", exportedWorkspaceId}});
+                                       "class_query",
+                                       {{"project_id", exportedProjectId}, {"kind", "manifest"}});
     ASSERT_FALSE(exportedManifest.at("result").at("isError"));
     EXPECT_NE(std::find_if(payload(exportedManifest).at("attributes").begin(),
                            payload(exportedManifest).at("attributes").end(),

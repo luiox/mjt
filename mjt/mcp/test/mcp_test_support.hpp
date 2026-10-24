@@ -64,11 +64,17 @@ private:
 const Json& payload(const Json& response);
 Json call(McpSessionHarness& server, const std::string& name, Json arguments, int id = 1);
 Json waitForJobState(McpSessionHarness& server,
+                     const std::string& projectId,
                      const std::string& jobId,
                      const std::string& expectedState,
                      int attempts = 300);
-Json waitForTerminalJob(McpSessionHarness& server, const std::string& jobId, int attempts = 300);
-void releaseJob(McpSessionHarness& server, const std::string& jobId);
+Json waitForTerminalJob(McpSessionHarness& server,
+                        const std::string& projectId,
+                        const std::string& jobId,
+                        int attempts = 300);
+void releaseJob(McpSessionHarness& server,
+                const std::string& projectId,
+                const std::string& jobId);
 std::vector<std::filesystem::path> workflowTemporaryArtifacts();
 void expectNoNewWorkflowTemporaryArtifacts(const std::vector<std::filesystem::path>& before);
 void expectDirectToolError(const Json& result,

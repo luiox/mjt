@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cstring>
+#include <iterator>
 #include <limits>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -34,6 +36,33 @@ struct HttpRuntime final
 };
 
 namespace {
+
+/// @brief 编译时间戳（__DATE__ = "Mmm dd yyyy"、__TIME__ = "hh:mm:ss"），
+///        随 serverInfo.version 下发：在途旧进程（exe 已换、进程未重启）
+///        可由客户端比对版本串识破。
+std::string buildStamp()
+{
+    static constexpr const char* const months[] = {"Jan", "Feb", "Mar", "Apr",
+                                                   "May", "Jun", "Jul", "Aug",
+                                                   "Sep", "Oct", "Nov", "Dec"};
+    const std::string date  = __DATE__;
+    const std::string month = date.substr(0, 3);
+    int               monthNumber = 0;
+    for (int i = 0; i < 12; ++i) {
+        if (month == months[i]) {
+            monthNumber = i + 1;
+            break;
+        }
+    }
+    std::string stamp = date.substr(7, 4);   // yyyy
+    if (monthNumber < 10) stamp += '0';
+    stamp += std::to_string(monthNumber);
+    stamp += date.substr(4, 2);              // dd（__DATE__ 日为空格填充，2 位恒定）
+    stamp += 'T';
+    stamp += __TIME__;
+    std::replace(stamp.begin(), stamp.end(), ':', '.');
+    return stamp;
+}
 
 ca::str::Utf8StringRef utf8Ref(const std::string& value) noexcept
 {
@@ -103,7 +132,7 @@ Json fromLibmcpJson(const ca::json::JsonValue& value)
 
     ::mcp::ServerOptions options;
     options.name        = "mjt-mcp";
-    options.version     = "0.1.0";
+    options.version     = "0.1.0+build." + buildStamp();
     options.title       = "mjt JVM analysis workspace";
     options.description = "Transactional JVM bytecode analysis and editing tools";
     auto session        = ::mcp::ServerSession::create(std::move(options));

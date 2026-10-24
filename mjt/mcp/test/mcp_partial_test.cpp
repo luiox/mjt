@@ -24,12 +24,13 @@ TEST(McpServerTest, TruncatedPaginationCarriesPartialSidecar)
 {
     McpSessionHarness server;
     const auto        fixture = writeFixture();
-    const auto        opened  = call(server, "workspace_open", {{"path", fixture.string()}});
+    const auto        opened  = call(server, "project_open", {{"path", fixture.string()}});
     ASSERT_FALSE(opened.at("result").at("isError"));
-    const auto workspaceId = payload(opened).at("workspace_id").get<std::string>();
+    const auto projectId = payload(opened).at("project_id").get<std::string>();
 
     //limit=1 < total：class_list（classSummaryPage 编码预算路径）必截断。
-    const auto listed = call(server, "class_list", {{"workspace_id", workspaceId}, {"limit", 1}});
+    const auto listed =
+        call(server, "class_query", {{"project_id", projectId}, {"kind", "list"}, {"limit", 1}});
     ASSERT_FALSE(listed.at("result").at("isError"));
     const auto& body = payload(listed);
     EXPECT_TRUE(body.at("partial").get<bool>());
@@ -40,9 +41,10 @@ TEST(McpServerTest, TruncatedPaginationCarriesPartialSidecar)
     EXPECT_FALSE(body.at("next_cursor").get<std::string>().empty());
     EXPECT_EQ(body.at("next_cursor").get<std::string>(), body.at("cursor").get<std::string>());
 
-    //page 路径同口径：workspace_resources limit=1 必截断（fixture 含 class 资源）。
-    const auto resources =
-        call(server, "workspace_resources", {{"workspace_id", workspaceId}, {"limit", 1}});
+    //page 路径同口径：search(kind=resources) limit=1 必截断（fixture 含 class 资源）。
+    const auto resources = call(server,
+                                "search",
+                                {{"project_id", projectId}, {"kind", "resources"}, {"limit", 1}});
     ASSERT_FALSE(resources.at("result").at("isError"));
     const auto& resourceBody = payload(resources);
     EXPECT_TRUE(resourceBody.at("partial").get<bool>());
@@ -53,8 +55,9 @@ TEST(McpServerTest, TruncatedPaginationCarriesPartialSidecar)
 
     //翻到尾页：完整页不得携带 partial 侧车键（正常路径零变化）。
     const auto last = call(server,
-                           "class_list",
-                           {{"workspace_id", workspaceId},
+                           "class_query",
+                           {{"project_id", projectId},
+                            {"kind", "list"},
                             {"limit", 100},
                             {"cursor", body.at("next_cursor").get<std::string>()}});
     ASSERT_FALSE(last.at("result").at("isError"));
@@ -69,9 +72,9 @@ TEST(McpServerTest, DecompileTimeoutCarriesPartialSidecar)
 {
     McpSessionHarness server;
     const auto        fixture = writeFixture();
-    const auto        opened  = call(server, "workspace_open", {{"path", fixture.string()}});
+    const auto        opened  = call(server, "project_open", {{"path", fixture.string()}});
     ASSERT_FALSE(opened.at("result").at("isError"));
-    const auto workspaceId = payload(opened).at("workspace_id").get<std::string>();
+    const auto projectId = payload(opened).at("project_id").get<std::string>();
 
     //超时注入（既有口径，同 mcp_workflow_test）：slow 假反编译器（test 二进制
     //充当 java 进程，sleep 1 秒）+ 25ms 超时 → DEADLINE_EXCEEDED。
@@ -80,8 +83,8 @@ TEST(McpServerTest, DecompileTimeoutCarriesPartialSidecar)
     const auto fakeJava = test::getBuildTargetPath("mjt_mcp_unittest");
 
     const auto timedOut = call(server,
-                               "class_source",
-                               {{"workspace_id", workspaceId},
+                               "decompile",
+                               {{"project_id", projectId},
                                 {"class", "mcp/Subject"},
                                 {"decompiler_jar", slowDecompiler.string()},
                                 {"java", fakeJava.string()},
@@ -97,14 +100,14 @@ TEST(McpServerTest, DecompileTimeoutCarriesPartialSidecar)
 
     //即时业务错误（class 不存在）不得携带 partial 侧车键（正常错误路径零变化）。
     const auto missing = call(server,
-                              "class_source",
-                              {{"workspace_id", workspaceId}, {"class", "mcp/Missing"}});
+                              "decompile",
+                              {{"project_id", projectId}, {"class", "mcp/Missing"}});
     ASSERT_TRUE(missing.at("result").at("isError"));
     EXPECT_FALSE(payload(missing).contains("partial"));
     EXPECT_FALSE(payload(missing).contains("reason"));
 }
 
-//N3 字节分页侧车：resource_read / class_bytes 截断路径此前只写 next_cursor，
+//字节分页侧车：resource_read / class_bytes 截断路径此前只写 next_cursor，
 //与列表分页侧车（P2-3）口径不一；现补齐五键 {partial, reason:"truncated",
 //received, total, cursor}。received=本页实际字节数，total=资源总字节数，
 //cursor=下一页字节偏移。完整页零变化。
@@ -112,14 +115,17 @@ TEST(McpServerTest, TruncatedBytePaginationCarriesPartialSidecar)
 {
     McpSessionHarness server;
     const auto        fixture = writeFixture();
-    const auto        opened  = call(server, "workspace_open", {{"path", fixture.string()}});
+    const auto        opened  = call(server, "project_open", {{"path", fixture.string()}});
     ASSERT_FALSE(opened.at("result").at("isError"));
-    const auto workspaceId = payload(opened).at("workspace_id").get<std::string>();
+    const auto projectId = payload(opened).at("project_id").get<std::string>();
 
     //resource_read：notice.txt 共 11 字节，limit=4 必截断。
     const auto resource = call(server,
-                               "resource_read",
-                               {{"workspace_id", workspaceId}, {"uri", "notice.txt"}, {"limit", 4}});
+                               "class_query",
+                               {{"project_id", projectId},
+                                {"kind", "resource_bytes"},
+                                {"uri", "notice.txt"},
+                                {"limit", 4}});
     ASSERT_FALSE(resource.at("result").at("isError"));
     const auto& resourceBody = payload(resource);
     EXPECT_TRUE(resourceBody.at("partial").get<bool>());
@@ -133,8 +139,9 @@ TEST(McpServerTest, TruncatedBytePaginationCarriesPartialSidecar)
     //翻到尾页：完整页不得携带侧车键（正常路径零变化）。
     const auto resourceTail =
         call(server,
-             "resource_read",
-             {{"workspace_id", workspaceId},
+             "class_query",
+             {{"project_id", projectId},
+              {"kind", "resource_bytes"},
               {"uri", "notice.txt"},
               {"cursor", resourceBody.at("next_cursor").get<std::string>()}});
     ASSERT_FALSE(resourceTail.at("result").at("isError"));
@@ -148,8 +155,9 @@ TEST(McpServerTest, TruncatedBytePaginationCarriesPartialSidecar)
 
     //class_bytes：limit=1 必截断；total 与既有 size 同源（资源总字节数）。
     const auto classBytes = call(server,
-                                 "class_bytes",
-                                 {{"workspace_id", workspaceId},
+                                 "class_query",
+                                 {{"project_id", projectId},
+                                  {"kind", "bytes"},
                                   {"class", "mcp/Subject"},
                                   {"limit", 1}});
     ASSERT_FALSE(classBytes.at("result").at("isError"));
@@ -167,8 +175,9 @@ TEST(McpServerTest, TruncatedBytePaginationCarriesPartialSidecar)
     //翻到尾页（大 limit 一页读完）：完整页零变化。
     const auto classTail =
         call(server,
-             "class_bytes",
-             {{"workspace_id", workspaceId},
+             "class_query",
+             {{"project_id", projectId},
+              {"kind", "bytes"},
               {"class", "mcp/Subject"},
               {"limit", 1024 * 1024},
               {"cursor", classBytesBody.at("next_cursor").get<std::string>()}});
@@ -190,9 +199,9 @@ TEST(McpServerTest, AsyncJobTimeoutCarriesPartialSidecar)
 {
     McpSessionHarness server;
     const auto        fixture = writeFixture();
-    const auto        opened  = call(server, "workspace_open", {{"path", fixture.string()}});
+    const auto        opened  = call(server, "project_open", {{"path", fixture.string()}});
     ASSERT_FALSE(opened.at("result").at("isError"));
-    const auto workspaceId = payload(opened).at("workspace_id").get<std::string>();
+    const auto projectId = payload(opened).at("project_id").get<std::string>();
 
     //超时注入与同步路径同口径：slow 假反编译器（sleep 1 秒）+ 25ms 超时。
     const auto slowDecompiler = test::getTempOutPath("fake-mcp-decompiler-slow.jar");
@@ -200,8 +209,8 @@ TEST(McpServerTest, AsyncJobTimeoutCarriesPartialSidecar)
     const auto fakeJava = test::getBuildTargetPath("mjt_mcp_unittest");
 
     const auto started = call(server,
-                              "class_source",
-                              {{"workspace_id", workspaceId},
+                              "decompile",
+                              {{"project_id", projectId},
                                {"class", "mcp/Subject"},
                                {"decompiler_jar", slowDecompiler.string()},
                                {"java", fakeJava.string()},
@@ -210,7 +219,7 @@ TEST(McpServerTest, AsyncJobTimeoutCarriesPartialSidecar)
                                {"max_source_bytes", 1024 * 1024},
                                {"async", true}});
     ASSERT_FALSE(started.at("result").at("isError"));
-    const auto timedOutJob = waitForTerminalJob(server, payload(started).at("job_id").get<std::string>());
+    const auto timedOutJob = waitForTerminalJob(server, projectId, payload(started).at("job_id").get<std::string>());
     ASSERT_FALSE(timedOutJob.at("result").at("isError"));
     ASSERT_EQ("failed", payload(timedOutJob).at("state"));
     EXPECT_TRUE(payload(timedOutJob).at("result_is_error"));
@@ -219,21 +228,21 @@ TEST(McpServerTest, AsyncJobTimeoutCarriesPartialSidecar)
     EXPECT_EQ("timeout", timedOutBody.at("reason").get<std::string>());
     EXPECT_EQ(static_cast<int>(ca::StatusCode::DEADLINE_EXCEEDED),
               timedOutBody.at("status").at("code").get<int>());
-    releaseJob(server, payload(started).at("job_id").get<std::string>());
+    releaseJob(server, projectId, payload(started).at("job_id").get<std::string>());
 
     //非超时失败（假反编译器立即 exit 9 → INTERNAL）不带侧车键：仅超时路径写入。
     const auto failDecompiler = test::getTempOutPath("fake-mcp-decompiler-fail.jar");
     std::ofstream(failDecompiler, std::ios::binary | std::ios::trunc) << "fake";
     const auto failedStart = call(server,
-                                  "class_source",
-                                  {{"workspace_id", workspaceId},
+                                  "decompile",
+                                  {{"project_id", projectId},
                                    {"class", "mcp/Subject"},
                                    {"decompiler_jar", failDecompiler.string()},
                                    {"java", fakeJava.string()},
                                    {"async", true}});
     ASSERT_FALSE(failedStart.at("result").at("isError"));
     const auto failedJob =
-        waitForTerminalJob(server, payload(failedStart).at("job_id").get<std::string>());
+        waitForTerminalJob(server, projectId, payload(failedStart).at("job_id").get<std::string>());
     ASSERT_FALSE(failedJob.at("result").at("isError"));
     ASSERT_EQ("failed", payload(failedJob).at("state"));
     const auto& failedBody = payload(failedJob).at("result");
@@ -241,7 +250,7 @@ TEST(McpServerTest, AsyncJobTimeoutCarriesPartialSidecar)
               failedBody.at("status").at("code").get<int>());
     EXPECT_FALSE(failedBody.contains("partial"));
     EXPECT_FALSE(failedBody.contains("reason"));
-    releaseJob(server, payload(failedStart).at("job_id").get<std::string>());
+    releaseJob(server, projectId, payload(failedStart).at("job_id").get<std::string>());
 }
 
 }   //namespace

@@ -847,6 +847,33 @@ DecompilerAvailability inspectDecompiler(DecompilerKind kind,
     result.javaProgram         = discoverJava(request);
     result.artifactAvailable   = !result.decompilerJar.empty() && isRegularFile(result.decompilerJar);
     result.javaAvailable       = isProgramAvailable(result.javaProgram);
+    //来源层（P9）：与 discoverDecompilerJarDetailed 的优先级逐步对齐——请求
+    //显式路径 > 后端环境变量 > MJT_DECOMPILER_HOME 命中候选名 > package 目录
+    //兜底。HOME 设了但候选都没落盘时发现会继续走 package，来源如实报
+    //package_dir。
+    if (!decompilerJar.empty()) {
+        result.discoverySource = "explicit";
+    }
+    else {
+        const auto envJar = environment(result.environmentVariable.c_str());
+        bool       envHomeHit = false;
+        if (envJar.empty()) {
+            const auto home = environment("MJT_DECOMPILER_HOME");
+            if (!home.empty()) {
+                const std::vector<std::string> candidates =
+                    kind == DecompilerKind::Cfr
+                        ? std::vector<std::string>{"cfr.jar"}
+                        : std::vector<std::string>{"vineflower.jar", "vineflower-fat.jar"};
+                for (const auto& candidate : candidates) {
+                    if (isRegularFile(fs::path(home) / candidate)) {
+                        envHomeHit = true;
+                        break;
+                    }
+                }
+            }
+        }
+        result.discoverySource = !envJar.empty() || envHomeHit ? "env" : "package_dir";
+    }
     //版本是 JAR 自报的展示字段：仅在产物确实存在时读取，尽力而为（内部回退
     //文件名、失败返空），不影响 artifactAvailable/javaAvailable 判定。
     if (result.artifactAvailable) result.version = decompilerJarVersion(result.decompilerJar);

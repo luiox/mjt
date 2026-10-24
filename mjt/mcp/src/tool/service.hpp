@@ -10,6 +10,7 @@
 
 #include "mjbase/workspace/i_workspace.hpp"
 #include "shared/jar_workspace.hpp"
+#include "tool/project_session.hpp"
 
 namespace mjt::mcp {
 
@@ -38,7 +39,8 @@ struct DecompilerSessionSettings final
 
 ///@brief 直接适配 mbase Workspace 的 MCP 工具业务服务。
 ///
-///所有工作区和异步任务由本对象拥有，并按 `workspace_id` 隔离。该类型只提供工具目录和
+///所有分析会话（工程 bundle + workspace）与异步任务由本对象拥有，并按
+///`project_id` 隔离。该类型只提供工具目录和
 ///CallToolResult，不解析 JSON-RPC，也不持有 transport/session 状态。一个 HTTP session 必须
 ///使用一个独立实例；stdio 使用单个实例。该类型不执行 mjt CLI，也不持有 ASM/Jasm 内部节点。
 ///
@@ -46,15 +48,14 @@ struct DecompilerSessionSettings final
 ///
 ///两把锁按固定顺序获取：`executionMutex_` → `mutex_`，避免死锁。
 ///
-///- `mutex_`（状态锁）：保护 `workspaces_` / `jobs_` / 计数器 / `decompilerSettings_`。
-///session 工具（job_get / job_cancel / job_release、workspace_open / workspace_close、
-///decompiler_settings_*、pass_describe、analysis_evaluate）只持这把锁，临界区很短，
-///不会被正在执行的长工具阻塞。
+///- `mutex_`（状态锁）：保护 `sessions_` / `jobs_` / 计数器 / `decompilerSettings_`。
+///session 工具（project_open / project_close、decompile 的 poll / cancel / release
+///作业面）只持这把锁，临界区很短，不会被正在执行的长工具阻塞。
 ///- `executionMutex_`（执行锁）：同一 session 内非 session 工具的执行体串行化，
-///避免并发访问同一个 IWorkspace。`call` 先取执行锁，再短持状态锁解析 workspace
-///的 `shared_ptr`，随后在**不持状态锁**的情况下运行工具体——长工具（同步反编译、
-///analysis_workflow）执行期间 session 工具与 job worker 的 commit 不被阻塞。
-///- `workspaces_` 持有 `shared_ptr<IWorkspace>`：工具执行期间 workspace_close 只是
+///避免并发访问同一个 IWorkspace。`call` 先取执行锁，再短持状态锁解析
+///ProjectSession 的 `shared_ptr`，随后在**不持状态锁**的情况下运行工具体——长工具
+///（同步反编译）执行期间 session 工具与 job worker 的 commit 不被阻塞。
+///- `sessions_` 持有 `shared_ptr<ProjectSession>`：工具执行期间 project_close 只是
 ///从表中摘除，执行中的工具靠局部 shared_ptr 保活，安全完成。
 ///- job worker 的 commit 阶段按 `executionMutex_` → `mutex_` 顺序取锁，与工具执行体
 ///串行；worker 置 terminal 状态（`finish`）后才返回，因此 job_release 在 terminal
@@ -73,35 +74,30 @@ public:
     Json call(const std::string& name, const Json& arguments);
 
 private:
-    Json callLocked(const std::string& name,
-                    const Json& arguments,
-                    mjbase::workspace::IWorkspace* current);
+    Json callLocked(const std::string& name, const Json& arguments, ProjectSession& session);
     std::optional<Json> callSessionTool(const std::string& name, const Json& arguments);
     std::optional<Json> callWorkspaceQueryTool(
         const std::string& name,
         const Json& arguments,
-        mjbase::workspace::IWorkspace* current);
+        ProjectSession& session);
     std::optional<Json> callDecompilerTool(
         const std::string& name,
         const Json& arguments,
-        mjbase::workspace::IWorkspace* current);
+        ProjectSession& session);
     std::optional<Json> callMutationTool(
         const std::string& name,
         const Json& arguments,
-        mjbase::workspace::IWorkspace* current);
+        ProjectSession& session);
 
-    std::shared_ptr<mjbase::workspace::IWorkspace> workspace(const Json& arguments,
-                                                                    Json& error);
+    std::shared_ptr<ProjectSession> session(const Json& arguments, Json& error);
     std::string nextWorkspaceId();
     std::string nextJobId();
 
-    ///@brief 状态锁：workspaces_ / jobs_ / 计数器 / decompilerSettings_。
+    ///@brief 状态锁：sessions_ / jobs_ / 计数器 / decompilerSettings_。
     std::mutex mutex_;
     ///@brief 执行锁：同一 session 非 session 工具的执行体串行化。
     std::mutex executionMutex_;
-    std::unordered_map<std::string,
-                       std::shared_ptr<mjbase::workspace::IWorkspace>>
-        workspaces_;
+    std::unordered_map<std::string, std::shared_ptr<ProjectSession>> sessions_;
     std::unordered_map<std::string, std::shared_ptr<JobState>> jobs_;
     ca::u64 nextWorkspace_ = 1;
     ca::u64 nextJob_ = 1;

@@ -27,11 +27,13 @@ using mjbase::workspace::WorkflowReferenceQuery;
 bool parseSearchOptions(const Json& arguments, SearchOptions& output, std::string& error)
 {
     const auto mode = arguments.value("match_mode", std::string{"contains"});
-    if (mode == "contains") output.matchMode = SearchMatchMode::Contains;
+    //prefix 档：mjbase 只有 contains/exact/regex，先按
+    //contains 取超集，mjt 侧再按命中行判别文本收紧（query.cpp filterPrefixHits）。
+    if (mode == "contains" || mode == "prefix") output.matchMode = SearchMatchMode::Contains;
     else if (mode == "exact") output.matchMode = SearchMatchMode::Exact;
     else if (mode == "regex") output.matchMode = SearchMatchMode::Regex;
     else {
-        error = "match_mode must be contains, exact or regex";
+        error = "match_mode must be contains, exact, prefix or regex";
         return false;
     }
     output.caseSensitive = arguments.value("case_sensitive", false);
@@ -64,6 +66,23 @@ MutationRequest mutationRequest(const Json& arguments)
     }
     request.dryRun = arguments.value("dry_run", false);
     request.label = arguments.value("label", std::string{});
+    //validation 三档：relaxed（默认，JVM 赋值协变 + 只校验受影响类）/
+    //strict（精确匹配）/ off（跳过门禁）。非法值走与 expected_revision 相同的
+    //Json type_error 通道，由 service.call 统一映射 INVALID_ARGUMENT。
+    if (arguments.contains("validation")) {
+        const auto& mode = arguments.at("validation");
+        const auto& value = mode.is_string() ? mode.get_ref<const std::string&>() : std::string{};
+        if (value == "relaxed")
+            request.validationMode = mjbase::jasm::ValidationMode::Relaxed;
+        else if (value == "strict")
+            request.validationMode = mjbase::jasm::ValidationMode::Strict;
+        else if (value == "off")
+            request.validationMode = mjbase::jasm::ValidationMode::Off;
+        else {
+            throw Json::type_error::create(
+                302, "validation must be one of relaxed, strict, off", nullptr);
+        }
+    }
     return request;
 }
 
@@ -313,7 +332,14 @@ bool parseMutation(const Json& arguments, ClassMutation& mutation, std::string& 
 {
     mutation.classUri = arguments.value("class_uri", std::string{});
     const auto kind = arguments.value("kind", std::string{});
-    static const std::array<std::pair<const char*, ClassMutationKind>, 15> kinds = {{{"set_class_access", ClassMutationKind::SetClassAccess},
+    //set_class_access → change_class_access 严格切换：旧整体替换语义
+    //会丢 ACC_SUPER 且静默吞掉不可表达的 flag，工具面不再接受旧词。
+    if (kind == "set_class_access") {
+        error = "mutation kind set_class_access was replaced by change_class_access "
+                "(incremental set/clear flag lists; unmentioned bits are preserved)";
+        return false;
+    }
+    static const std::array<std::pair<const char*, ClassMutationKind>, 15> kinds = {{{"change_class_access", ClassMutationKind::ChangeClassAccess},
                                                                                       {"set_field_access", ClassMutationKind::SetFieldAccess},
                                                                                       {"set_method_access", ClassMutationKind::SetMethodAccess},
                                                                                       {"add_field", ClassMutationKind::AddField},
@@ -334,6 +360,33 @@ bool parseMutation(const Json& arguments, ClassMutation& mutation, std::string& 
         return false;
     }
     mutation.kind = it->second;
+    //change_class_access：payload 是 set/clear flag 名单（JVM 小写助记，
+    //"deprecated" 由引擎映射为 Deprecated 属性而非访问位）；位掩码 access/
+    //access_flags 对本 kind 不适用，显式拒绝避免静默忽略。
+    if (mutation.kind == ClassMutationKind::ChangeClassAccess) {
+        if (arguments.contains("access") || arguments.contains("access_flags")) {
+            error = "change_class_access takes set/clear flag lists; "
+                    "access/access_flags are not valid for it";
+            return false;
+        }
+        const auto parseFlagList = [&](const char* key, std::vector<std::string>& out) {
+            if (!arguments.contains(key)) return true;
+            if (!arguments.at(key).is_array()) {
+                error = std::string(key) + " must be an array of flag names";
+                return false;
+            }
+            for (const auto& flag : arguments.at(key)) {
+                if (!flag.is_string() || flag.get_ref<const std::string&>().empty()) {
+                    error = std::string(key) + " items must be non-empty flag names";
+                    return false;
+                }
+                out.push_back(flag.get_ref<const std::string&>());
+            }
+            return true;
+        };
+        if (!parseFlagList("set", mutation.setFlags) || !parseFlagList("clear", mutation.clearFlags))
+            return false;
+    }
     mutation.member = {arguments.value("member_name", std::string{}),
                        arguments.value("member_descriptor", std::string{})};
     if (arguments.contains("access") && arguments.contains("access_flags")) {
@@ -343,9 +396,7 @@ bool parseMutation(const Json& arguments, ClassMutation& mutation, std::string& 
     mutation.access = arguments.value("access", 0);
     if (arguments.contains("access_flags")) {
         mjbase::workspace::AnnotationTarget accessTarget;
-        if (mutation.kind == ClassMutationKind::SetClassAccess)
-            accessTarget = mjbase::workspace::AnnotationTarget::Class;
-        else if (mutation.kind == ClassMutationKind::SetFieldAccess ||
+        if (mutation.kind == ClassMutationKind::SetFieldAccess ||
                  mutation.kind == ClassMutationKind::AddField)
             accessTarget = mjbase::workspace::AnnotationTarget::Field;
         else if (mutation.kind == ClassMutationKind::SetMethodAccess ||

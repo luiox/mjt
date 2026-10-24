@@ -85,6 +85,9 @@ struct DecompilerAvailability final
     std::string    name;
     ///@brief 该后端使用的显式环境变量。
     std::string    environmentVariable;
+    ///@brief JAR 实际来源层：`explicit`（请求显式路径）/ `env`（环境变量命中）/
+    ///        `package_dir`（exe 旁 package 目录兜底）；与发现优先级一致。
+    std::string    discoverySource;
     ///@brief discovery 解析后的 JAR 路径。
     std::string    decompilerJar;
     ///@brief discovery 解析后的 Java 程序。

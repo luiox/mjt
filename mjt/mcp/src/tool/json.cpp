@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <charconv>
 #include <utility>
 
@@ -36,6 +37,18 @@ std::string utf8(ca::str::Utf16StringRef value)
     return value.to_utf8_string().to_std_string();
 }
 
+std::string lowercased(const std::string& value)
+{
+    auto lowered = value;
+    std::transform(lowered.begin(),
+                   lowered.end(),
+                   lowered.begin(),
+                   [](unsigned char character) {
+                       return static_cast<char>(std::tolower(character));
+                   });
+    return lowered;
+}
+
 Json statusJson(const ca::Status& status)
 {
     return {{"ok", status.is_ok()},
@@ -43,12 +56,35 @@ Json statusJson(const ca::Status& status)
             {"message", status.to_string()}};
 }
 
+namespace {
+
+/// @brief 阶段稳定名与归因门：编辑门（workspace 候选聚合校验）与重建
+///        管线（jasm 汇编/反汇编/validate）分属不同 gate，客户端据此
+///        区分诊断来源（两者都随 validation 三档开关）。
+std::pair<const char*, const char*> stageNameAndGate(mjbase::jasm::DiagnosticStage stage)
+{
+    using mjbase::jasm::DiagnosticStage;
+    switch (stage) {
+    case DiagnosticStage::Assemble: return {"assemble", "rebuild"};
+    case DiagnosticStage::Disassemble: return {"disassemble", "rebuild"};
+    case DiagnosticStage::Validate: return {"validate", "rebuild"};
+    case DiagnosticStage::Resource: return {"resource", "resource"};
+    case DiagnosticStage::EditGate: return {"edit_gate", "edit"};
+    }
+    return {"unknown", "unknown"};
+}
+
+}   // namespace
+
 Json diagnosticJson(const mjbase::jasm::Diagnostic& diagnostic)
 {
+    const auto [stageName, gate] = stageNameAndGate(diagnostic.stage);
     Json result = {{"severity", diagnostic.severity == mjbase::jasm::DiagnosticSeverity::Error
                                       ? "error"
                                       : "warning"},
                    {"stage", static_cast<int>(diagnostic.stage)},
+                   {"stage_name", stageName},
+                   {"gate", gate},
                    {"message", utf8(diagnostic.message.ref())}};
     if (diagnostic.location) {
         result["location"] = {{"line", diagnostic.location->line},
@@ -121,7 +157,9 @@ Json methodJson(const MethodInfo& method)
 
 Json supportingResourceJson(const SupportingResourceInfo& support)
 {
-    return {{"id", support.id},
+    //role 透传：support 是缺省遗留值，library/runtime 由角色化登记写入。
+    return {{"role", support.role.empty() ? "support" : support.role},
+            {"id", support.id},
             {"path", support.path},
             {"fingerprint", support.fingerprint},
             {"resource_count", support.resourceCount},
@@ -153,8 +191,9 @@ Json classJson(const ClassInfo& clazz)
 
 Json classSummaryJson(const ClassSummary& clazz)
 {
+    //键统一：类级响应行的类名键一律 class（内部名），不再用 internal_name。
     return {{"resource_uri", clazz.resourceUri},
-            {"internal_name", clazz.internalName},
+            {"class", clazz.internalName},
             {"super_name", clazz.superName},
             {"access", clazz.access},
             {"version", clazz.version},
@@ -163,15 +202,329 @@ Json classSummaryJson(const ClassSummary& clazz)
             {"method_count", clazz.methodCount}};
 }
 
+const char* instructionSemanticKind(const std::string& mnemonic)
+{
+    //按指令语义分类：jbc 无 ASM 节点类型，旧 nodeType 按
+    //操作数布局命名，把所有 CP 形态指令（invokevirtual/getstatic/putfield/
+    //invokespecial/new…）全标成 ldc。此处按助记符前缀/精确名归类；摘要之外
+    //的证据（操作数、跳转目标、行号）以 jasm 全文为权威。
+    const auto isAnyOf = [&mnemonic](std::initializer_list<std::string_view> names) {
+        return std::any_of(names.begin(), names.end(), [&](std::string_view name) {
+            return mnemonic == name;
+        });
+    };
+    if (mnemonic == "invokedynamic") return "invokedynamic";
+    if (mnemonic.rfind("invoke", 0) == 0) return "invoke";
+    if (isAnyOf({"getfield", "getstatic", "putfield", "putstatic"})) return "field";
+    if (isAnyOf({"ldc", "ldc_w", "ldc2_w"})) return "ldc";
+    if (isAnyOf({"new", "anewarray", "checkcast", "instanceof"})) return "cp_ref";
+    if (mnemonic == "multianewarray") return "multianewarray";
+    if (mnemonic == "iinc") return "iinc";
+    if (isAnyOf({"tableswitch", "lookupswitch"})) return mnemonic.c_str();
+    if (mnemonic.rfind("if", 0) == 0 || isAnyOf({"goto", "goto_w", "jsr", "jsr_w", "ret"}))
+        return "jump";
+    //局部变量加载/存储族：类型前缀（i/l/f/d/a）+ load/store；带槽位的短格式
+    //（aload_0 等）先剥掉数字后缀再匹配。
+    auto baseMnemonic = mnemonic;
+    const auto underscore = mnemonic.rfind('_');
+    if (underscore != std::string::npos &&
+        std::all_of(mnemonic.begin() + static_cast<std::ptrdiff_t>(underscore) + 1,
+                    mnemonic.end(),
+                    [](unsigned char c) { return std::isdigit(c) != 0; }))
+        baseMnemonic = mnemonic.substr(0, underscore);
+    if (baseMnemonic.size() >= 5) {
+        const auto stem = baseMnemonic.substr(0, baseMnemonic.size() - 4);
+        if (baseMnemonic.compare(baseMnemonic.size() - 4, 4, "load") == 0 &&
+            stem.size() == 1 && std::string("ilfda").find(stem[0]) != std::string::npos)
+            return "var";
+        const auto storeStem = baseMnemonic.substr(0, baseMnemonic.size() - 5);
+        if (baseMnemonic.compare(baseMnemonic.size() - 5, 5, "store") == 0 &&
+            storeStem.size() == 1 && std::string("ilfda").find(storeStem[0]) != std::string::npos)
+            return "var";
+    }
+    if (baseMnemonic == "ret") return "var";
+    //数组元素加载/存储（栈上取数组与索引，无立即数操作数）。
+    static const std::array<const char*, 16> kArrayOps = {
+        "iaload", "laload", "faload", "daload", "aaload", "baload", "caload", "saload",
+        "iastore", "lastore", "fastore", "dastore", "aastore", "bastore", "castore", "sastore"};
+    for (const auto* op : kArrayOps) {
+        if (mnemonic == op) return "array";
+    }
+    if (mnemonic.rfind("iconst", 0) == 0 || mnemonic.rfind("lconst", 0) == 0 ||
+        mnemonic.rfind("fconst", 0) == 0 || mnemonic.rfind("dconst", 0) == 0 ||
+        isAnyOf({"aconst_null", "bipush", "sipush"}))
+        return "const";
+    return "insn";
+}
+
+bool parseInstructionHitValue(const std::string& value, InstructionHitParts& output)
+{
+    //mjbase 拼接口径：`<mnemonic> <node_type> <opcode>[ 操作数…]`，单空格
+    //分词；node_type 槽是历史遗留分类位（见 instructionSemanticKind），跳过。
+    output = InstructionHitParts{};
+    std::vector<std::string> tokens;
+    std::string::size_type begin = 0;
+    while (begin <= value.size()) {
+        auto end = value.find(' ', begin);
+        if (end == std::string::npos) end = value.size();
+        if (end > begin) tokens.push_back(value.substr(begin, end - begin));
+        begin = end + 1;
+    }
+    if (tokens.size() < 3) return false;
+    output.mnemonic = tokens[0];
+    if (!tokens[2].empty() &&
+        std::all_of(tokens[2].begin(), tokens[2].end(), [](unsigned char c) {
+            return std::isdigit(c) != 0;
+        })) {
+        for (std::size_t index = 3; index < tokens.size(); ++index) {
+            if (index > 3) output.operand += ' ';
+            output.operand += tokens[index];
+        }
+    }
+    else {
+        //token[2] 不是 opcode（防御）：把 token[2..] 都当操作数。
+        for (std::size_t index = 2; index < tokens.size(); ++index) {
+            if (index > 2) output.operand += ' ';
+            output.operand += tokens[index];
+        }
+    }
+    //cst 只对 CP 支持的助记符有意义：常量/引用摘要 = 操作数原文。
+    static const std::array<const char*, 17> kConstantPoolOps = {
+        "ldc", "ldc_w", "ldc2_w", "getstatic", "putstatic", "getfield", "putfield",
+        "invokevirtual", "invokespecial", "invokestatic", "invokeinterface",
+        "invokedynamic", "new", "anewarray", "checkcast", "instanceof", "multianewarray"};
+    const bool constantBacked =
+        std::any_of(kConstantPoolOps.begin(), kConstantPoolOps.end(), [&](const char* op) {
+            return output.mnemonic == op;
+        });
+    output.cst = constantBacked ? output.operand : std::string{};
+    return true;
+}
+
+std::optional<BranchKeys> branchKeysFor(const std::string& tool,
+                                        const std::string& kind,
+                                        const std::string& target,
+                                        const std::string& direction)
+{
+    //分支合法键表（单一事实源）：contract 校验层与分发层共用。键序沿用
+    //各分支的历史声明序（分页五键在前），错误文案按声明序展示。
+    const auto keys = [](std::initializer_list<const char*> values) {
+        std::vector<std::string> out;
+        for (const auto* value : values) out.push_back(value);
+        return out;
+    };
+    if (tool == "class_query") {
+        //分支定位键契约（键统一裁决：类定位键 class、成员定位键 owner+name+
+        //descriptor、资源键 uri）；bytes/resource_bytes 的 limit/cursor/offset
+        //是字节分块键，list 上是分页键。
+        BranchKeys branch;
+        if (kind == "list")
+            branch.supported = keys({"cursor", "offset", "limit", "page_size", "fields"});
+        else if (kind == "class" || kind == "bytes" || kind == "jasm") {
+            branch.selectors = keys({"class"});
+            if (kind == "bytes") branch.supported = keys({"cursor", "offset", "limit"});
+        }
+        else if (kind == "resource_bytes") {
+            branch.selectors = keys({"uri"});
+            branch.supported = keys({"cursor", "offset", "limit"});
+        }
+        else if (kind == "method" || kind == "bytecode" || kind == "method_jasm") {
+            //descriptor 可省略——省略时按宿主类名称解析回填（唯一命中
+            //即用；重载歧义/名字不存在报错），降级为可选定位键。
+            branch.selectors = keys({"owner", "name"});
+            branch.optionalSelectors = keys({"descriptor"});
+        }
+        else if (kind != "manifest") return std::nullopt;
+        return branch;
+    }
+    if (tool == "search") {
+        //shadow 分支不吃分页（响应是 matches 列表不是 page 文档），其余分支
+        //带分页五键。
+        const std::vector<std::string> common =
+            keys({"cursor", "offset", "limit", "page_size", "fields"});
+        const auto withCommon = [&](std::initializer_list<const char*> extra) {
+            std::vector<std::string> supported = common;
+            for (const auto* key : extra) supported.push_back(key);
+            return supported;
+        };
+        BranchKeys branch;
+        if (kind == "classes")
+            branch.supported = withCommon({"query", "match_mode", "case_sensitive",
+                                           "package_prefix", "role"});
+        else if (kind == "members")
+            branch.supported = withCommon({"query", "match_mode", "case_sensitive", "owner",
+                                           "package_prefix", "member_kind", "role"});
+        else if (kind == "strings")
+            branch.supported = withCommon({"query", "match_mode", "case_sensitive", "owner",
+                                           "package_prefix", "string_kind", "role"});
+        else if (kind == "numbers")
+            branch.supported = withCommon({"query", "case_sensitive", "owner",
+                                           "package_prefix", "opcode", "role"});
+        else if (kind == "instructions")
+            branch.supported = withCommon({"query", "match_mode", "case_sensitive", "owner",
+                                           "package_prefix", "opcode", "mnemonic", "operand",
+                                           "cst", "role"});
+        else if (kind == "resources")
+            branch.supported = withCommon({"query", "match_mode", "case_sensitive",
+                                           "include_classes", "role"});
+        else if (kind == "shadow")
+            branch.supported = withCommon({"name", "owner", "direction", "symbol_kind", "file"});
+        else return std::nullopt;
+        return branch;
+    }
+    if (tool == "xref_query") {
+        BranchKeys branch;
+        if (kind == "relations")
+            branch.selectors = keys({"class"});
+        else if (kind == "overrides")
+            branch.selectors = keys({"owner", "name", "descriptor"});
+        else if (kind == "references") {
+            const std::vector<std::string> common =
+                keys({"cursor", "offset", "limit", "page_size", "fields", "role", "direction"});
+            if (target == "class") {
+                branch.selectors = keys({"class"});
+                branch.supported = common;
+            }
+            else if (target == "method" || target == "field") {
+                //descriptor 可省略（名称解析回填，同 class_query 成员
+                //kind 口径）。
+                branch.selectors = keys({"owner", "name"});
+                branch.optionalSelectors = keys({"descriptor"});
+                branch.supported = common;
+                //resolved 只在 direction=from（callees 展开解析目标）生效。
+                if (target == "method" && direction == "from")
+                    branch.supported.push_back("resolved");
+            }
+            else return std::nullopt;
+        }
+        else return std::nullopt;
+        return branch;
+    }
+    return std::nullopt;
+}
+
+std::optional<Json> checkBranchKeys(const std::string& label,
+                                    const Json& arguments,
+                                    bool selectorAware,
+                                    const std::vector<std::string>& selectors,
+                                    const std::vector<std::string>& supportedKeys,
+                                    const std::vector<std::string>& optionalSelectors)
+{
+    //定位键词表（键统一裁决）：class/owner/name/descriptor/uri。分支契约外的
+    //词表键触发 requires/got 文案；词表外键触发 does not support 文案。
+    static const std::array<const char*, 5> kSelectorVocabulary = {
+        "class", "owner", "name", "descriptor", "uri"};
+    const auto contains = [](const std::vector<std::string>& values, const std::string& key) {
+        return std::find(values.begin(), values.end(), key) != values.end();
+    };
+    const auto quotedList = [](const std::vector<std::string>& values) {
+        std::string joined;
+        for (const auto& value : values) {
+            if (!joined.empty()) joined += ", ";
+            joined += value;
+        }
+        return joined;
+    };
+    const auto specText = [&]() {
+        if (selectors.empty()) return std::string("no selector keys");
+        if (selectors.size() == 1) return selectors.front();
+        std::string joined;
+        for (std::size_t index = 0; index + 1 < selectors.size(); ++index) {
+            if (!joined.empty()) joined += ", ";
+            joined += selectors[index];
+        }
+        return joined + " and " + selectors.back();
+    }();
+
+    std::vector<std::string> wrongSelectors;
+    std::vector<std::string> missingRequired;
+    if (selectorAware) {
+        for (const auto& selector : selectors) {
+            const auto found = arguments.find(selector);
+            if (found == arguments.end() || found->is_null()) missingRequired.push_back(selector);
+        }
+        for (const auto& [key, _] : arguments.items()) {
+            (void)_;
+            const bool inVocabulary = std::any_of(kSelectorVocabulary.begin(),
+                                                  kSelectorVocabulary.end(),
+                                                  [&](const char* name) { return key == name; });
+            //可选定位键不进 requires spec，也不算契约外定位键。
+            if (inVocabulary && !contains(selectors, key) &&
+                !contains(optionalSelectors, key))
+                wrongSelectors.push_back(key);
+        }
+    }
+    if (!wrongSelectors.empty() || !missingRequired.empty()) {
+        std::sort(wrongSelectors.begin(), wrongSelectors.end());
+        std::string message = label + " requires " + specText;
+        if (!wrongSelectors.empty()) message += "; got " + quotedList(wrongSelectors);
+        return toolError(message);
+    }
+
+    std::vector<std::string> unsupported;
+    for (const auto& [key, _] : arguments.items()) {
+        (void)_;
+        //kind/target 是分支选择器本身（分支名已含其值），project_id 是会话
+        //键：三者恒放行；target 的枚举合法性由翻译层在白名单检查前裁定。
+        if (key == "project_id" || key == "kind" || key == "target") continue;
+        const bool inVocabulary = std::any_of(kSelectorVocabulary.begin(),
+                                              kSelectorVocabulary.end(),
+                                              [&](const char* name) { return key == name; });
+        if (inVocabulary || contains(supportedKeys, key)) continue;
+        unsupported.push_back(key);
+    }
+    if (!unsupported.empty()) {
+        std::sort(unsupported.begin(), unsupported.end());
+        auto allowed = supportedKeys;
+        allowed.push_back("target");
+        allowed.insert(allowed.end(), selectors.begin(), selectors.end());
+        allowed.insert(allowed.end(), optionalSelectors.begin(), optionalSelectors.end());
+        std::sort(allowed.begin(), allowed.end());
+        return toolError(label + " does not support key(s) " + quotedList(unsupported) +
+                         "; supported: " + quotedList(allowed));
+    }
+    return std::nullopt;
+}
+
+std::string selectorKeyError(const std::string& key,
+                             const std::string& value,
+                             const std::vector<std::string>& expected)
+{
+    std::string joined;
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+        if (index > 0) joined += index + 1 == expected.size() ? " or " : ", ";
+        joined += expected[index];
+    }
+    if (value.empty()) return key + ": Missing key (expected " + joined + ")";
+    return key + ": Invalid value \"" + value + "\" (expected " + joined + ")";
+}
+
 Json searchHitJson(const SearchHit& hit)
 {
-    return {{"resource_uri", hit.resourceUri},
-            {"kind", hit.kind},
-            {"owner", hit.owner},
-            {"name", hit.name},
-            {"descriptor", hit.descriptor},
-            {"instruction_index", hit.instructionIndex},
-            {"value", hit.value}};
+    //键统一：类级行类名键 = class（内部名），成员级行宿主类键 = owner。
+    Json result = {{"resource_uri", hit.resourceUri}, {"kind", hit.kind}};
+    if (hit.kind == "class") result["class"] = hit.owner;
+    else result["owner"] = hit.owner;
+    result["name"] = hit.name;
+    result["descriptor"] = hit.descriptor;
+    result["instruction_index"] = hit.instructionIndex;
+    result["value"] = hit.value;
+    //strings 分面：string_literal = 串常量（ldc 加载的 constant_pool_string
+    //与非 class 资源可打印串）；utf8_classref = 常量池 UTF8 纯引用（多为类名）。
+    if (hit.kind == "constant_pool_string" || hit.kind == "resource_string")
+        result["string_kind"] = "string_literal";
+    else if (hit.kind == "constant_pool_utf8") result["string_kind"] = "utf8_classref";
+    //instructions 结构化摘要：从拼接文本 value 拆出 mnemonic/operand/cst，
+    //替代拼接文本当唯一判别信息。
+    if (hit.kind == "instruction") {
+        InstructionHitParts parts;
+        if (parseInstructionHitValue(hit.value, parts)) {
+            result["mnemonic"] = parts.mnemonic;
+            result["operand"]  = parts.operand;
+            result["cst"]      = parts.cst;
+        }
+    }
+    return result;
 }
 
 Json mutationJson(const MutationResult& mutation)
@@ -376,19 +729,77 @@ bool parseCursor(const Json& arguments, ca::usize total, ca::usize& offset)
     return true;
 }
 
-Json page(Json values, const Json& arguments)
+namespace {
+
+///分页有效页大小：page_size 优先，其次沿用 limit，缺省 kDefaultPageSize；
+///两者互斥。schema 层已限 bounds，此处是分发层兜底。
+bool effectivePageSize(const Json& arguments, ca::usize& out, std::string& error)
+{
+    const bool hasPageSize = arguments.contains("page_size");
+    const bool hasLimit    = arguments.contains("limit");
+    if (hasPageSize && hasLimit) {
+        error = "page_size and limit are mutually exclusive";
+        return false;
+    }
+    out = hasPageSize
+              ? arguments.value("page_size", detail::kDefaultPageSize)
+              : hasLimit ? arguments.value("limit", detail::kDefaultPageSize)
+                         : detail::kDefaultPageSize;
+    out = std::min(out, detail::kMaximumPageSize);
+    return true;
+}
+
+///fields 投影（items 只保留指定
+///键。键名合法性按调用方给定的该 kind 静态行键全集判定，不再依赖结果集样
+///本——空结果集也有可校验面：合法键照常返回空 rows，非法键报 unknown key
+///并列出该 kind 合法键全集（键序排序后展示）。
+bool projectFields(const Json& arguments, const std::vector<std::string>& rowKeys,
+                   Json& items, std::string& error)
+{
+    if (!arguments.contains("fields")) return true;
+    const auto& fields = arguments.at("fields");
+    std::vector<std::string> wanted;
+    for (const auto& field : fields) wanted.push_back(field.get<std::string>());
+    auto available = rowKeys;
+    std::sort(available.begin(), available.end());
+    for (const auto& name : wanted) {
+        if (std::find(available.begin(), available.end(), name) != available.end()) continue;
+        error = "fields: unknown key \"" + name + "\"; available: ";
+        for (std::size_t index = 0; index < available.size(); ++index) {
+            if (index > 0) error += ", ";
+            error += available[index];
+        }
+        return false;
+    }
+    Json projected = Json::array();
+    for (const auto& item : items) {
+        Json row = Json::object();
+        for (const auto& name : wanted) {
+            if (item.contains(name)) row[name] = item.at(name);
+        }
+        projected.push_back(std::move(row));
+    }
+    items = std::move(projected);
+    return true;
+}
+
+}   //namespace
+
+bool page(Json values, const Json& arguments, Json& out, std::string& error,
+          const std::vector<std::string>& rowKeys)
 {
     const auto total = values.size();
     ca::usize offset = arguments.value("offset", static_cast<ca::usize>(0));
     //非法/越界 cursor 一律退化到空尾页（offset=total），与原 try/catch 语义一致；
     //统一走 parseCursor 后不再有裸 stoull 抛异常的风险。
     parseCursor(arguments, total, offset);
-    ca::usize limit = arguments.value("limit", static_cast<ca::usize>(100));
-    limit = std::min(limit, kMaximumPageSize);
+    ca::usize limit = 0;
+    if (!effectivePageSize(arguments, limit, error)) return false;
     offset = std::min(offset, total);
     const auto end = std::min(total, offset + limit);
     Json items = Json::array();
     for (ca::usize index = offset; index < end; ++index) items.push_back(std::move(values[index]));
+    if (!projectFields(arguments, rowKeys, items, error)) return false;
     const auto received = items.size();
     Json result = {{"items", std::move(items)}, {"offset", offset}, {"total", total}};
     if (end < total) {
@@ -402,16 +813,23 @@ Json page(Json values, const Json& arguments)
         result["received"] = received;
         result["cursor"] = cursor;
     }
-    return result;
+    out = std::move(result);
+    return true;
 }
 
-Json classSummaryPage(const std::vector<ClassSummary>& values, const Json& arguments)
+bool classSummaryPage(const std::vector<ClassSummary>& values, const Json& arguments,
+                      Json& out, std::string& error)
 {
+    //class_summary 行键静态全集：fields 校验按此表判定，不依赖结果
+    //集（键序即 classSummaryJson 的声明序，错误文案排序后展示）。
+    static const std::vector<std::string> kClassSummaryRowKeys = {
+        "resource_uri", "class", "super_name", "access", "version",
+        "interface_count", "field_count", "method_count"};
     const auto total  = values.size();
     ca::usize  offset = arguments.value("offset", static_cast<ca::usize>(0));
     parseCursor(arguments, total, offset);
-    const auto limit =
-        std::min(arguments.value("limit", static_cast<ca::usize>(100)), kMaximumPageSize);
+    ca::usize limit = 0;
+    if (!effectivePageSize(arguments, limit, error)) return false;
     offset                  = std::min(offset, total);
     const auto requestedEnd = std::min(total, offset + limit);
 
@@ -425,6 +843,9 @@ Json classSummaryPage(const std::vector<ClassSummary>& values, const Json& argum
         encodedBytes += itemBytes;
         items.push_back(std::move(item));
     }
+    //投影校验按静态行键全集，无需为校验编码全量行（本页字节预算提前
+    //截断时可用键不变）。
+    if (!projectFields(arguments, kClassSummaryRowKeys, items, error)) return false;
 
     const auto received = items.size();
     Json result = {{"items", std::move(items)}, {"offset", offset}, {"total", total}};
@@ -438,7 +859,8 @@ Json classSummaryPage(const std::vector<ClassSummary>& values, const Json& argum
         result["received"] = received;
         result["cursor"] = cursor;
     }
-    return result;
+    out = std::move(result);
+    return true;
 }
 
 Json impactJson(const ImpactAnalysis& impact)
@@ -471,10 +893,10 @@ Json normalizeToolError(const std::string& name, const Json& arguments, Json res
     if (!result.value("isError", false) || !result.contains("structuredContent")) return result;
     auto& payload = result["structuredContent"];
     payload["operation"] = name;
-    payload["workspace_id"] = arguments.contains("workspace_id") &&
-                                        arguments.at("workspace_id").is_string()
-                                    ? arguments.at("workspace_id")
-                                    : Json("");
+    payload["project_id"] = arguments.contains("project_id") &&
+                                       arguments.at("project_id").is_string()
+                                   ? arguments.at("project_id")
+                                   : Json("");
     payload["revision"] = workspace ? workspace->revision() : 0;
     if (!payload.contains("diagnostics")) payload["diagnostics"] = Json::array();
     if (payload.contains("status") && payload.at("status").is_object() &&
