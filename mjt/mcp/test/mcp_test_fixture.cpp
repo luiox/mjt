@@ -20,7 +20,7 @@
 #include <libca/http/client.hpp>
 #include <libca/http/url.hpp>
 
-#include <jbytecode/jbytecode.hpp>
+#include <jbc/jbc.hpp>
 #include <mcp/json_rpc.hpp>
 
 #include "mcp_test_support.hpp"
@@ -68,23 +68,35 @@ std::string classSource(const std::string& value)
     return classSourceFor("mcp/Subject", value);
 }
 
+/// 类名 + 类级签名改写（RFC 0002 迁移批 B5：tree 面 → libjbc 会话面）。
+/// 只动 this_class 与 Signature 属性，方法体零触碰——帧/栈沿用装配器产物
+///（fixture 模板无分支无 handler，本就不产 StackMapTable）；写回走
+/// copy-through，未触及的属性逐字节保真，不再整类重序列化。
 std::vector<ca::u8> withClassNameAndSignature(const std::vector<ca::u8>& bytes,
                                               const std::string&         internalName,
                                               const std::string&         signature)
 {
-    ca::str::Utf8StringArena     arena;
-    jbytecode::tree::ClassNode   node;
-    jbytecode::core::ClassReader reader(arena, bytes);
-    reader.accept(&node, 0);
-    node.name      = arena.intern(ca::str::Utf8StringRef::from_data(
-        reinterpret_cast<const ca::u8*>(internalName.data()), internalName.size()));
-    node.signature = arena.intern(ca::str::Utf8StringRef::from_data(
-        reinterpret_cast<const ca::u8*>(signature.data()), signature.size()));
-    jbytecode::core::ClassWriter writer(
-        arena,
-        jbytecode::core::ClassWriter::COMPUTE_MAXS | jbytecode::core::ClassWriter::COMPUTE_FRAMES);
-    node.accept(&writer);
-    return writer.toByteArray();
+    auto opened = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(bytes));
+    if (!opened.is_ok()) throw std::runtime_error("fixture session failed");
+    // shared_ptr 按值接住（寿命接管根）：引用临时 unwrap 值会悬垂。
+    auto session = std::move(opened).unwrap();
+
+    jbc::ir::ClassUnit& unit = session->unit();
+    unit.thisClass = unit.symbols().intern(internalName);
+    if (!session->commitClassMetadata().is_ok())
+        throw std::runtime_error("fixture class rename failed: " + internalName);
+
+    // 旧 tree 写面口径：空签名 = 不落 Signature 属性（writer 按串长判空跳过）。
+    if (!signature.empty()) {
+        auto body          = std::make_unique<jbc::core::SignatureAttr>();
+        body->signatureCp  = session->internUtf8(signature);
+        const auto mounted = session->attachClassAttr("Signature", std::move(body));
+        if (!mounted.is_ok()) throw std::runtime_error("fixture signature mount failed");
+    }
+
+    auto written = jbc::core::writeClass(session->backing());
+    if (!written.is_ok()) throw std::runtime_error("fixture write failed");
+    return std::move(written).unwrap();
 }
 
 std::filesystem::path writeLargeClassListFixture(const std::string& signature)
