@@ -22,7 +22,6 @@
 #include "mjbase/spi/strict_type_resolver.hpp"
 #include "mjbase/workspace/workspace.hpp"
 
-#include "jbytecode/jbytecode.hpp"
 
 #include "pysdk_bridge.hpp"
 #include "pysdk_facade.hpp"
@@ -41,7 +40,6 @@
 
 namespace py = pybind11;
 
-using jbytecode::core::Opcodes;
 
 namespace mjt::pysdk {
 namespace {
@@ -686,14 +684,15 @@ PYBIND11_MODULE(mjt, m)
         for (int i = 0; i <= 201; ++i) op[facadeOpcodeName(i)] = i;
         m.attr("opcodes") = op;
         py::dict acc;
-        acc["PUBLIC"]    = Opcodes::ACC_PUBLIC;
-        acc["PRIVATE"]   = Opcodes::ACC_PRIVATE;
-        acc["PROTECTED"] = Opcodes::ACC_PROTECTED;
-        acc["STATIC"]    = Opcodes::ACC_STATIC;
-        acc["FINAL"]     = Opcodes::ACC_FINAL;
-        acc["ABSTRACT"]  = Opcodes::ACC_ABSTRACT;
-        acc["NATIVE"]    = Opcodes::ACC_NATIVE;
-        acc["INTERFACE"] = Opcodes::ACC_INTERFACE;
+        // JVM 访问标志位（JVMS 表 4.1-B；libjbc 不外显常量面，这里按规范值直出）。
+        acc["PUBLIC"]    = 0x0001;
+        acc["PRIVATE"]   = 0x0002;
+        acc["PROTECTED"] = 0x0004;
+        acc["STATIC"]    = 0x0008;
+        acc["FINAL"]     = 0x0010;
+        acc["ABSTRACT"]  = 0x0400;
+        acc["NATIVE"]    = 0x0100;
+        acc["INTERFACE"] = 0x0200;
         m.attr("acc")    = acc;
     }
     loadUtilModule(m);
