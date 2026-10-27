@@ -73,7 +73,7 @@ if has_config("with_pysdk") then
         -- xmake 3.x 不把静态 target 依赖传进 shared 链接：显式给全闭包，按
         -- 「消费者在前、被依赖在后」排序（MSVC 对序不敏感，此序为 GNU ld 兼容
         -- 口径；链面与 mjt-mcp binary 同款，mcp 编排专有件除外）。
-        mjt_binary_link_closure("mjbase", "libjhasm", "libjblw",
+        mjt_binary_link_closure("mjbase", "libjhasm",
                                 "libjbytecode_util", "libjbytecode_commons",
                                 "libjbytecode_analysis", "libjbytecode_tree",
                                 "libjbytecode_core", "libgarena", "libjclassfile",
@@ -103,7 +103,7 @@ if has_config("with_pysdk") then
                       "src/mjt_pysdk_unittest.cpp", "src/mjt_pysdk_facade_test.cpp")
             add_files(path.join(mjtSharedSrc, "shared", "decompiler.cpp"),
                       path.join(mjtSharedSrc, "shared", "jar_remapper.cpp"))
-            mjt_binary_link_closure("mjbase", "libjhasm", "libjblw",
+            mjt_binary_link_closure("mjbase", "libjhasm",
                                     "libjbytecode_util", "libjbytecode_commons",
                                     "libjbytecode_analysis", "libjbytecode_tree",
                                     "libjbytecode_core", "libgarena", "libjclassfile",

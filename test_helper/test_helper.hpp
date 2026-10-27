@@ -8,7 +8,9 @@
 //无需任何改动。
 //
 //mjt 私有件（不下沉）：
-//- asm-test 特例定位（libjbytecode/asm-test 目录布局胶水）
+//- asm-test 特例定位（仓内 test_resource/asm-test，上游 libjbytecode
+//  asm-test 语料的 vendor 副本；libjbytecode_asm_test 项目键可覆盖指向
+//  兄弟仓原始布局）
 //- 构建产物路径（build/artifacts 布局属产品构建知识）
 //- jdk_fixture.hpp（架构在闭源 libjdk_finder 之上，另见该文件）
 //

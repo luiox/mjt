@@ -139,11 +139,10 @@ add_requires("libjclassfile 0.0.2")
 -- luiox-repo 的发布版落后于 mjbase 需要的面，且内联定义不吃 requireconfs，
 -- 其嵌套 libca 由定义内的 add_deps 钉到上面的单源版本。
 includes("xmake/packages/libjbc.lua")
-add_requires("libjbc 0.4.15")
+add_requires("libjbc 0.4.18")
 add_requires("libjstd 0.0.1")
 add_requires("libjdk_finder 0.1.0")
-add_requires("libjblw 0.0.1")
-add_requires("libjhasm 0.0.1")
+add_requires("libjhasm 0.3.2")
 -- 嵌套 libca 全路径钉定，缺一条就多一个实例。
 add_requireconfs("libmcp.libca",                 {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
 add_requireconfs("libjstr.libca",                {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
@@ -156,16 +155,7 @@ add_requireconfs("libjclassfile.libca",          {version = LUIOX_LIBCA_VERSION,
 add_requireconfs("libjclassfile.libjstr.libca",  {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
 add_requireconfs("libjstd.libca",                {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
 add_requireconfs("libjdk_finder.libca",          {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
-add_requireconfs("libjblw.libca",                        {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
-add_requireconfs("libjblw.libjbytecode.libca",           {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
-add_requireconfs("libjblw.libjbytecode.libjstr.libca",   {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
-add_requireconfs("libjblw.libjbytecode.libgarena.libca", {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
 add_requireconfs("libjhasm.libca",                       {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
-add_requireconfs("libjhasm.libjblw.libca",               {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
-add_requireconfs("libjhasm.libjbytecode.libca",          {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
-add_requireconfs("libjhasm.libjbytecode.libjstr.libca",  {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
-add_requireconfs("libjhasm.libjbytecode.libgarena.libca",{version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
-add_requireconfs("libjhasm.libjblw.libjbytecode.libca",  {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
 -- i18n/resources 构建规则内嵌（.lang add_files 规则，包安装产物不带规则）。
 includes("xmake/libca_rules.lua")
 

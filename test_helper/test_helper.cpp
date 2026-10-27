@@ -51,7 +51,8 @@ std::filesystem::path getAsmTestResourcePath(const std::string& filename)
     if (ca::test::has_project(asm_test_key)) {
         return ca::test::project_path(asm_test_key) / filename;
     }
-    return ca::test::top_project_path() / "libs/libjbytecode/asm-test" / filename;
+    //仓内 vendor 副本（上游 asm-test 语料收编，origin 层保持上游目录结构）。
+    return ca::test::top_project_path() / "test_resource" / "asm-test" / filename;
 }
 
 bool hasAsmTestResource(const std::string& filename)
