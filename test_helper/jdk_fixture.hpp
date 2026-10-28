@@ -424,8 +424,8 @@ inline ExecResult runJavaMain(const JdkToolchain& tc, const fs::path& classpath,
 //共享 JVM 行为等价 harness：写 class(es)+Runner.java → javac → java → 抓 stdout。
 //
 //收敛此前散在多处的同一份逻辑（mbase runJvmMainClasses、mjt runJvmMain）。
-//层级放 test::jdk（只依赖 jdk_finder+filesystem，不碰
-//libjbytecode/libjzip），供全线复用。JDK 不可用返回 nullopt，调用方 GTEST_SKIP。
+//层级放 test::jdk（只依赖 jdk_finder+filesystem，不碰字节码/zip 库），
+//供全线复用。JDK 不可用返回 nullopt，调用方 GTEST_SKIP。
 //---------------------------------------------------------------------------
 
 ///把控制台捕获的 CRLF 归一化为 LF，使跨平台 stdout 比对一致。

@@ -32,11 +32,11 @@ target("libjhasm_unittest")
     set_default(false)
 
     add_deps("test_helper")
-    add_packages("libjhasm", "libjbc", "libgarena", "libjstr", "libca")
+    add_packages("libjhasm", "libjbc", "libjstr", "libca")
     -- libjhasm 0.3.2 后端换 libjbc（B4）：libjblw/libjbytecode 出链；套件的
     -- 产物回读验证直连 libjbc readClass。libjhasm/libjbc/libjdk_finder 已
     -- 包化，保留在闭包里维持 GNU ld 消费者在前。
-     mjt_binary_link_closure("libjhasm", "libjbc", "libgarena", "libjstr", "test_helper", "libjdk_finder")
+     mjt_binary_link_closure("libjhasm", "libjbc", "libjstr", "test_helper", "libjdk_finder")
     add_packages("gtest")
     add_files("jhasm/main.cpp", "jhasm/*_test.cpp")
     add_includedirs("jhasm")

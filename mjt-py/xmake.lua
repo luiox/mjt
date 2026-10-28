@@ -74,9 +74,7 @@ if has_config("with_pysdk") then
         -- 「消费者在前、被依赖在后」排序（MSVC 对序不敏感，此序为 GNU ld 兼容
         -- 口径；链面与 mjt-mcp binary 同款，mcp 编排专有件除外）。
         mjt_binary_link_closure("mjbase", "libjhasm",
-                                "libjbytecode_util", "libjbytecode_commons",
-                                "libjbytecode_analysis", "libjbytecode_tree",
-                                "libjbytecode_core", "libgarena", "libjclassfile",
+                                "libjclassfile",
                                 "libjstr", "libjbc", "libjzip")
 
         -- util 层随 pyd 同目录部署（--script / 外部 import mjt 都从 pyd 旁加载）。
@@ -104,9 +102,7 @@ if has_config("with_pysdk") then
             add_files(path.join(mjtSharedSrc, "shared", "decompiler.cpp"),
                       path.join(mjtSharedSrc, "shared", "jar_remapper.cpp"))
             mjt_binary_link_closure("mjbase", "libjhasm",
-                                    "libjbytecode_util", "libjbytecode_commons",
-                                    "libjbytecode_analysis", "libjbytecode_tree",
-                                    "libjbytecode_core", "libgarena", "libjclassfile",
+                                    "libjclassfile",
                                     "libjstr", "libjbc", "libjzip")
             set_rundir("$(projectdir)")
             add_defines('MJT_PYTHON_HOME_DEFAULT="' .. pyHome .. '"')

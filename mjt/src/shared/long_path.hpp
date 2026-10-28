@@ -57,10 +57,10 @@
 #include <io.h>
 #include <sys/stat.h>
 
-//windows.h 的 VOID 宏（#define VOID void）会打坏后续 JVM 字节码头的类型
-//常量（jbytecode::core::Type::VOID → "static constexpr int void"）。本头的
-//消费 TU（cmd_jar 等）在包含本头之后还要包含 mjbase/jbytecode 头，故在此
-//恢复裸名；本头不再包含其它 Windows 头，无回漂风险。
+//windows.h 的 VOID 宏（#define VOID void）会打坏后续 JVM 字节码头用到的
+//裸名 VOID 槽位（libjbc 指令/类型建模同形）。本头的消费 TU（cmd_jar 等）
+//在包含本头之后还要包含 mjbase 字节码头，故在此恢复裸名；本头不再包含
+//其它 Windows 头，无回漂风险。
 #ifdef VOID
 #undef VOID
 #endif
