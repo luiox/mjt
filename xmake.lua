@@ -137,7 +137,7 @@ add_requires("libjclassfile 0.0.2")
 -- luiox-repo 的发布版落后于 mjbase 需要的面，且内联定义不吃 requireconfs，
 -- 其嵌套 libca 由定义内的 add_deps 钉到上面的单源版本。
 includes("xmake/packages/libjbc.lua")
-add_requires("libjbc 0.4.19")
+add_requires("libjbc 0.4.20")
 add_requires("libjstd 0.0.1")
 add_requires("libjdk_finder 0.1.0")
 add_requires("libjhasm 0.3.2")

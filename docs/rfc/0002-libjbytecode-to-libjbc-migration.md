@@ -98,6 +98,10 @@ mjbase 本身零 libjbytecode（纯 libjbc 基座）。
     仍在消费（1969 个符号引用，dumpbin 实证），mjbase 被产品二进制链接，
     闭包兜底不可去，随 B8 8.7（relaxed_verifier 移植 jhasm::analyze）
     一并收口；luiox-repo 两包条目加弃用注记。
+  - 执行注记（B8 8.7 兑现）：mjbase PR #72 后 relaxed_verifier 直驱
+    libjbc FrameEngine，mjbase.lib jbytecode 符号归零；mjt 侧闭包兜底
+    随之全摘（PR #22/#23：root require/requireconfs、三处链接闭包，
+    libgarena 零消费一并出链；libjbytecode/libjblw 至此全线退役）。
 - **B8 mjbase 设施完善**（迁移完成后继续，同会话）：
   - 8.1 dev_plan 台账校准（A3/A4/A5 已在 libjbc 落地——stale 条目修正）；
   - 8.2 libjbc#10 move-range 原语实现（libjbc 仓：段重定位/标签随迁/边界
@@ -108,6 +112,34 @@ mjbase 本身零 libjbytecode（纯 libjbc 基座）。
   - 8.5 FR 相对状态更新（s+=D 分发形态）；
   - 8.6 UPC 逐中继细化（DUP 族吸收）；
   - 8.7 #44 long 族（位级恒等窗口规则表扩展）。
+  - 执行注记（B8 全收口，2026-10-28）：
+    - 8.1 ✅ mjbase PR #69（dev_plan 台账校准：A3/A4/A5、B1/B2 挂账解除）。
+    - 8.2 ✅ 上游 libjbc PR #12（CodeDom::moveRange 机械层 + CodeEditor
+      策略层，kHeadFollows/kHeadStays、StillUsed 裁决面、原子性；closes
+      libjbc#10）+ PR #13（0.4.19 对齐）；消费侧 mjbase PR #71
+      （GotoRearranger：前向非邻接 GOTO 目标尾段搬移消跳转，保守门五条，
+      13 单测生产管线真链验证）。
+    - 8.3 ✅ mjbase PR #73（Signature 解析树 span 手术 + TypeAnnotations/
+      ParameterAnnotations/AnnotationDefault typed 结构化读写；
+      class_renamer 开 bytecodeAndMetadata；嵌套链部件数不一致按 ASM
+      SignatureRemapper 同语义坍缩）。
+    - 8.4 ✅ 评估结论：下沉 jbc/core 纯池自由函数（非 ClassSession 成员
+      ——BSM 本体/实参是裸 CP 索引拿不到 Insn；统一基准取 reference 版
+      零拷贝 view + 严格 kind）。libjbc PR #14（cp_resolve.hpp 三原语）+
+      PR #15（0.4.20 对齐）；mjbase PR #74 消费收编（两处换装 +
+      cp_refs.hpp 转发头，alias_analysis 零改动；行为收紧 readClass 读闸
+      下不可达，remapper 污染接缝真红→绿钉死）。评估另澄清 dev_plan
+      T13 fail-open 属 AliasAnalysis 数据流缺口，与句柄解析无关。
+    - 8.5 ✅ mjbase PR #70 之一（FR 写点三态分类：绝对 K→相对形态→拒收；
+      iinc 禁用解除，状态迹模拟求相对写点定值）。
+    - 8.6 ✅ mjbase PR #70 之二（UPC 帧面逐中继细化：pop 回溯 + DUP/DUP2
+      拷贝别名折叠 + 连通分组栈平衡门；X 族/SWAP/cat2 保持 fail-closed）。
+    - 8.7 ✅ mjbase PR #72（relaxed_verifier 直驱 FrameEngine——不走纯
+      转发 jhasm::analyze，refCompatible 硬编码破协变语义；#44 long 族
+      规则 15-20 真 JVM 对拍，窗口形态不与 int 族互为转写；libjbytecode
+      全摘，残留符号 0）。
+  - 联动版本面：libjbc 0.4.18→0.4.19→0.4.20（两仓内联定义与中心仓并存，
+    版本条目保持同步写入）；mjbase ref 随 #72/#73/#74 递进（ci.yml 同步）。
 
 ## 五、风险
 
