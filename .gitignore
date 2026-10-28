@@ -58,6 +58,8 @@ report.html
 *.class
 *.tiny
 *.pyc
+#例外：test_resource 夹具语料（.class 基线随仓走）。
+!test_resource/**/*.class
 
 ### Logs and dumps ###
 *.log
