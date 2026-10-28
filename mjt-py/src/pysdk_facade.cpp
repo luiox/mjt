@@ -14,22 +14,29 @@
 
 #include "shared/decompiler.hpp"
 
+#include <jbc/analysis/domain.hpp>
+
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <set>
 #include <stdexcept>
 
 namespace mjt::pysdk {
 
-using jbytecode::tree::ClassNode;
 using mjbase::model::ClassResource;
 using mjbase::model::IResource;
 using mjbase::model::ManifestResource;
 using mjbase::model::ResourceContainer;
 using mjbase::model::ResourceHelper;
 using mjbase::model::UnknownResource;
+
+namespace ir  = jbc::ir;
+namespace jb  = jbc::core;
+namespace jan = jbc::analysis;
 
 // ── 会话 ─────────────────────────────────────────────────────────────────
 
@@ -94,17 +101,21 @@ void FacadeRegistry::close(ca::u64 handle) { sessions_.erase(handle); }
 std::optional<std::string> facadeProbeClassName(const std::vector<ca::u8>& bytes)
 {
     if (bytes.size() < 4) return std::nullopt;
-    ca::str::Utf8StringArena probe;
-    try {
-        jbytecode::core::ClassReader reader(probe, bytes.data(),
-                                            static_cast<ca::i32>(bytes.size()));
-        auto name = reader.getClassName();
-        if (name.is_empty()) return std::nullopt;
-        return name.to_std_string();
-    }
-    catch (...) {
-        return std::nullopt;
-    }
+    // 骨架解析对名（L0/L1 eager，属性全跳过——probe 不付方法体成本）。
+    // 非 const：ReadResult 持 unique_ptr（move-only），unwrap 必须 move 消费
+    // （const 对象 std::move 出的是 const&&，只会落到 const& 拷贝重载上）。
+    auto read = jb::readClass(jb::ByteView(bytes));
+    if (read.is_err()) return std::nullopt;
+    // ReadResult 持 unique_ptr（move-only），且 unwrap()&& 按值返回：链式
+    // `.file->thisName()` 的模型随行尾临时量析构，返回视图立即悬垂（实测
+    // 前缀 3 字节落进复用堆块变成指针字节）。必须先落命名局部再取视图，
+    // 字符串拷出须在模型存活期内完成。
+    auto opened = std::move(read).unwrap();
+    const auto name = opened.file->thisName();
+    if (name.empty()) return std::nullopt;
+    return std::string(name);
+    if (name.empty()) return std::nullopt;
+    return std::string(name);
 }
 
 namespace {
@@ -412,45 +423,82 @@ void facadeExportClass(FacadeSession& s, const std::string& name, const std::str
 
 // ═══════════════════════════════════════════════════════════════════════
 // 树面（B2，契约 §2.2-2.6）：lazy 解析 + 键重解析 fail-closed + 脏纪律。
+//
+// RFC 0002 B6：底座 = libjbc ClassSession（backing ClassFile + ClassUnit
+// 骨架 + 方法级 promote/lower）。指令键 = InsnId/LabelId 句柄；uid 映射在
+// MethodUi 物化期建立、编辑期增量维护（墓地在 addrOf 留底，解析即抛）。
+// 行序视图（label/line 与指令同列）沿用旧 ASM 树列表语义：pos=uid 插其前；
+// 标签锚点动态跟随「行位在插入点之前的末锚标签改锚新指令」。
 // ═══════════════════════════════════════════════════════════════════════
 
 namespace {
 
-using jbytecode::tree::AbstractInsnNode;
-using jbytecode::tree::ClassNode;
-using jbytecode::tree::FieldInsnNode;
-using jbytecode::tree::FieldNode;
-using jbytecode::tree::InsnNode;
-using jbytecode::tree::IntInsnNode;
-using jbytecode::tree::InvokeDynamicInsnNode;
-using jbytecode::tree::IincInsnNode;
-using jbytecode::tree::JumpInsnNode;
-using jbytecode::core::Label;
-using jbytecode::tree::LabelNode;
-using jbytecode::tree::LineNumberNode;
-using jbytecode::tree::LdcInsnNode;
-using jbytecode::tree::LookupSwitchInsnNode;
-using jbytecode::tree::MethodInsnNode;
-using jbytecode::tree::MethodNode;
-using jbytecode::tree::MultiANewArrayInsnNode;
-using jbytecode::tree::TableSwitchInsnNode;
-using jbytecode::tree::TypeInsnNode;
-using jbytecode::tree::VarInsnNode;
-using jbytecode::tree::TryCatchBlockNode;
+constexpr int kAccStatic = 0x0008;
 
-ca::str::Utf8StringRef internIn(FacadeSession& s, const std::string& v)
+/// 指令 kind 外显值（ASM 系编码，Python 契约按值消费）。
+int kindOf(jb::Op op)
 {
-    // 按 byte_length 入池：ldc 字符串载荷是 MUTF-8 转换产物，可含内嵌 NUL，
-    // from_cstr 的 strlen 舞步会在首个 NUL 处截断。
-    return s.arena->intern(std::string_view(v));
+    switch (op) {
+    case jb::Op::LDC:
+    case jb::Op::LDC_W:
+    case jb::Op::LDC2_W:
+        return insn_kind::kLdc;
+    case jb::Op::NEW:
+    case jb::Op::ANEWARRAY:
+    case jb::Op::CHECKCAST:
+    case jb::Op::INSTANCEOF:
+        return insn_kind::kType;
+    case jb::Op::GETSTATIC:
+    case jb::Op::PUTSTATIC:
+    case jb::Op::GETFIELD:
+    case jb::Op::PUTFIELD:
+        return insn_kind::kField;
+    case jb::Op::INVOKEVIRTUAL:
+    case jb::Op::INVOKESPECIAL:
+    case jb::Op::INVOKESTATIC:
+    case jb::Op::INVOKEINTERFACE:
+        return insn_kind::kMethod;
+    case jb::Op::INVOKEDYNAMIC:
+        return insn_kind::kIndy;
+    case jb::Op::IINC:
+        return insn_kind::kIinc;
+    case jb::Op::TABLESWITCH:
+        return insn_kind::kTableSwitch;
+    case jb::Op::LOOKUPSWITCH:
+        return insn_kind::kLookupSwitch;
+    case jb::Op::MULTIANEWARRAY:
+        return insn_kind::kMultiANewArray;
+    default:
+        break;
+    }
+    // NEWARRAY 走 ASM IntInsn 形态（atype 载荷在 operand 位）。
+    if (op == jb::Op::NEWARRAY) return insn_kind::kInt;
+    const auto sh = jb::shapeOf(op);
+    if (sh == jb::Shape::Branch2 || sh == jb::Shape::Branch4) return insn_kind::kJump;
+    if (sh == jb::Shape::Local1) return insn_kind::kVar;
+    if (sh == jb::Shape::Imm1 || sh == jb::Shape::Imm2) return insn_kind::kInt;
+    return insn_kind::kInsn;
+}
+
+bool isControlOp(jb::Op op)
+{
+    const auto sh = jb::shapeOf(op);
+    return sh == jb::Shape::Branch2 || sh == jb::Shape::Branch4 ||
+           sh == jb::Shape::TableSwitch || sh == jb::Shape::LookupSwitch;
+}
+
+/// Insn 直排便利件（kNoPc = 编辑新建，无源布局；与 pysdk_jar 合成面同款）。
+ir::Insn mkInsn(jb::Op op)
+{
+    ir::Insn in;
+    in.op    = op;
+    in.srcPc = ir::kNoPc;
+    return in;
 }
 
 /// lazy 解析：首触建缓存（契约 §3.1 单一真相：树只在缓存里一份）。
 TreeEntry& resolveTree(FacadeSession& s, const std::string& name)
 {
-    if (name.rfind("\x00ephem:", 0) == 0) {
-        throw StaleRefError("identity ops not supported on ephemeral method views");
-    }
     if (s.duplicateUris.count(name)) {
         throw StaleRefError("ambiguous duplicate class name: " + name);
     }
@@ -458,279 +506,580 @@ TreeEntry& resolveTree(FacadeSession& s, const std::string& name)
     if (it != s.trees.end()) return it->second;
     auto uriIt = s.nameToUri.find(name);
     if (uriIt == s.nameToUri.end()) throw StaleRefError("class not found: " + name);
-    const auto* r = s.container->getResource(uriIt->second);
-    const auto* cr = ca::core::tag_cast::dyn_cast<const ClassResource>(r);
+    const auto* cr = classResourceOf(s, uriIt->second);
     if (!cr) throw std::runtime_error("not a class entry: " + name);
-    const auto& bytes = cr->get();
-    auto        node  = std::make_shared<ClassNode>();
-    try {
-        jbytecode::core::ClassReader reader(*s.arena, bytes.data(),
-                                            static_cast<ca::i32>(bytes.size()));
-        reader.accept(node.get(), 0);
+    const auto& bytes   = cr->get();
+    auto        opened  = ir::makeSessionFromBytes(jb::ByteView(bytes));
+    if (opened.is_err()) {
+        throw std::runtime_error("parse failed for " + name + ": session build failed");
     }
-    catch (const std::exception& e) {
-        throw std::runtime_error("parse failed for " + name + ": " + e.what());
-    }
-    // 名符校验零分配（Utf8StringRef 逐字节等值；to_std_string 每次解析都堆分配）。
-    if (node->name.is_empty() || !(node->name == name.c_str())) {
+    auto session = std::move(opened).unwrap();
+    // 名符校验（零分配：符号池字节视图逐字节等值）。
+    auto& unit = session->unit();
+    if (unit.symbols().str(unit.thisClass) != name) {
         throw std::runtime_error("parsed class name mismatch for " + name);
     }
     TreeEntry entry;
-    entry.node  = std::move(node);
-    entry.dirty = false;
+    entry.session = std::move(session);
+    entry.dirty   = false;
     return s.trees.emplace(name, std::move(entry)).first->second;
 }
 
-MethodNode* resolveMethod(TreeEntry& te, const std::string& name, const std::string& desc)
+struct MethodRef
 {
-    // 热路径零分配（每次 facade 调用都走这里；逐字节等值语义与旧
-    // to_std_string 比较一致）。
-    for (auto* m : te.node->methods) {
-        if (m->name == name.c_str() && m->desc == desc.c_str()) return m;
-    }
-    throw StaleRefError("method not found: " + te.node->name.to_std_string() + "." + name + desc);
+    TreeEntry*   te = nullptr;
+    ir::MethodId id;
+};
+
+ir::MethodUnit& methodUnitOf(TreeEntry& te, ir::MethodId id)
+{
+    auto* mu = te.session->unit().method(id);
+    if (!mu) throw StaleRefError("method handle not alive");
+    return *mu;
 }
 
-FieldNode* resolveField(TreeEntry& te, const std::string& name, const std::string& desc)
+MethodRef resolveMethod(FacadeSession& s, const std::string& cls, const std::string& name,
+                        const std::string& desc)
 {
-    for (auto* f : te.node->fields) {
-        if (f->name == name.c_str() && f->desc == desc.c_str()) return f;
+    TreeEntry& te = resolveTree(s, cls);
+    const auto id = te.session->unit().findMethodId(name, desc);
+    if (id == ir::kNoMethodId) {
+        throw StaleRefError("method not found: " + cls + "." + name + desc);
     }
-    throw StaleRefError("field not found: " + te.node->name.to_std_string() + "." + name);
+    return MethodRef{&te, id};
+}
+
+ir::FieldId resolveField(FacadeSession& s, const std::string& cls, const std::string& name,
+                         const std::string& desc)
+{
+    TreeEntry& te = resolveTree(s, cls);
+    const auto id = te.session->unit().findFieldId(name, desc);
+    if (id == ir::kNoFieldId) {
+        throw StaleRefError("field not found: " + cls + "." + name);
+    }
+    return id;
 }
 
 bool methodExists(TreeEntry& te, const std::string& name, const std::string& desc)
 {
-    for (auto* m : te.node->methods) {
-        if (m->name == name.c_str() && m->desc == desc.c_str()) return true;
-    }
-    return false;
+    return te.session->unit().findMethodId(name, desc) != ir::kNoMethodId;
 }
 
 bool fieldExists(TreeEntry& te, const std::string& name, const std::string& desc)
 {
-    for (auto* f : te.node->fields) {
-        if (f->name == name.c_str() && f->desc == desc.c_str()) return true;
-    }
-    return false;
+    return te.session->unit().findFieldId(name, desc) != ir::kNoFieldId;
 }
 
-/// uid 状态按需物化：首次触达按链表序发号（契约 §2.4 每方法单调 uid）。
-void materialize(InsnUidState& st, MethodNode& m)
+/// LNT 属性读取（物化期的 line 投影源）：Code 嵌套属性里找 LineNumberTable。
+const jb::LineNumberTableAttr* lntOf(TreeEntry& te, const ir::MethodUnit& mu)
 {
-    if (st.materialized) return;
-    ca::u32 uid = st.nextUid;
-    for (auto* p = m.instructions.getFirst(); p; p = p->getNext()) {
-        st.byUid.emplace(uid, p);
-        st.uidOf.emplace(p, uid);
-        ++uid;
+    auto& mi = te.session->backing().methods[mu.backingIndex];
+    auto  ca = te.session->backing().decodeCode(mi);
+    if (ca.is_err()) return nullptr;
+    for (auto& slot : ca.unwrap()->attrs) {
+        if (te.session->backing().utf8(slot.nameCp) != "LineNumberTable") continue;
+        const auto decoded = te.session->backing().decodeAttr(slot);
+        if (decoded.is_err()) return nullptr;
+        return ca::core::tag_cast::dyn_cast<const jb::LineNumberTableAttr>(decoded.unwrap());
     }
-    st.nextUid      = uid;
+    return nullptr;
+}
+
+/// uid 状态按需物化（契约 §2.4 每方法单调 uid；行序 = 旧 ASM 树列表语义：
+/// 逐指令「前锚标签（槽序）+ startPc 相合的 LNT 行 + 指令」，尾部 = end 锚
+/// 标签 + 余量 LNT 行）。标签并集 = 分支/switch 目标 + 异常表三界。
+MethodUi& materialize(TreeEntry& te, ir::MethodUnit& mu)
+{
+    auto& st = te.uidStates[mu.id.slot];
+    if (st.materialized) return st;
     st.materialized = true;
-}
-
-InsnUidState& uidState(TreeEntry& te, MethodNode& m)
-{
-    auto& st = te.uidStates[&m];
-    materialize(st, m);
-    return st;
-}
-
-/// 统一方法解析（契约 §3.6）："\x00ephem:" 前缀 → 管线 ephemeral 表
-/// （te=null，uid 态挂 session.ephemeralUids）；否则树缓存路径。
-struct MethodRef2
-{
-    MethodNode* m  = nullptr;
-    TreeEntry*  te = nullptr;   ///< null = ephemeral
-};
-
-MethodRef2 resolveMethodFlex(FacadeSession& s, const std::string& cls, const std::string& name,
-                             const std::string& desc)
-{
-    if (cls.rfind("\x00ephem:", 0) == 0) {
-        auto it = s.ephemeralMethods.find(cls);
-        if (it == s.ephemeralMethods.end() || !(it->second->name == name.c_str()) ||
-            !(it->second->desc == desc.c_str())) {
-            throw StaleRefError("ephemeral method not alive: " + name + desc);
+    if (!mu.code) {
+        // 无 Code 属性（abstract/native）：空视图（计数 0，编辑面在
+        // requireCode 挡掉）。promote 前置闸：先 hasCode 分流，promote 的
+        // Err 只剩真失败。已 promote 的不重入（promote 幂等 = 重建，会作废
+        // 全部句柄）。
+        if (ir::hasCode(*te.session, mu.backingIndex)) {
+            const auto promoted = ir::promoteMethod(*te.session, mu.id);
+            if (promoted.is_err()) {
+                throw std::runtime_error(std::string("promote failed: ") +
+                                         ir::to_string(promoted.unwrap_err()));
+            }
         }
-        return MethodRef2{it->second, nullptr};
+        else {
+            return st;
+        }
     }
-    TreeEntry& te = resolveTree(s, cls);
-    return MethodRef2{resolveMethod(te, name, desc), &te};
-}
 
-InsnUidState& stateFor(FacadeSession& s, MethodRef2 r)
-{
-    auto& st = r.te ? r.te->uidStates[r.m] : s.ephemeralUids[r.m];
-    materialize(st, *r.m);
+    ir::CodeUnit& cu  = *mu.code;
+    ir::CodeDom&  dom = cu.dom;
+
+    // 标签并集去重（slot 为键；map 迭代即槽序）。
+    std::map<ca::u32, ir::LabelId> labels;
+    const auto take = [&](ir::LabelId l) {
+        if (l == ir::kNoLabel) return;
+        if (!dom.validLabel(l)) return;
+        labels.emplace(l.slot, l);
+    };
+    for (const auto id : dom.order()) {
+        const ir::Insn* in = dom.peek(id);
+        if (!in) continue;
+        take(in->target);
+        for (const auto t : in->targets) take(t);
+    }
+    for (const auto& e : cu.exc) {
+        take(e.start);
+        take(e.end);
+        take(e.handler);
+    }
+    std::map<ca::u32, std::vector<ir::LabelId>> atInsn;   // 锚指令槽 → 标签（槽序）
+    std::vector<ir::LabelId>                    atEnd;
+    for (const auto& [slot, l] : labels) {
+        const auto target = dom.resolveLabel(l);
+        if (target.is_err()) continue;
+        if (target.unwrap().isEnd()) {
+            atEnd.push_back(l);
+        }
+        else {
+            atInsn[target.unwrap().insn.slot].push_back(l);
+        }
+    }
+
+    // LNT 行按 pc 入账（multimap 保属性行序；行号投影期间消费）。
+    const auto* lnt = lntOf(te, mu);
+    if (lnt) {
+        for (ca::usize i = 0; i < lnt->rows.size(); ++i) {
+            st.pendingLines.emplace(lnt->rows[i].startPc, i);
+        }
+    }
+
+    ca::u32 uid = st.nextUid;
+    const auto allocLabel = [&](ir::LabelId l) {
+        InsnAddr addr;
+        addr.kind  = InsnAddr::Slot::Label;
+        addr.label = l;
+        st.addrOf.emplace(uid, addr);
+        st.uidOfLabelSlot.emplace(l.slot, uid);
+        st.order.push_back(uid);
+        ++uid;
+    };
+    const auto allocLine = [&](ca::u32 pc, int line) {
+        InsnAddr addr;
+        addr.kind   = InsnAddr::Slot::Line;
+        addr.linePc = pc;
+        addr.lineNo = line;
+        st.addrOf.emplace(uid, addr);
+        st.order.push_back(uid);
+        ++uid;
+    };
+    const auto allocInsn = [&](ir::InsnId id) {
+        InsnAddr addr;
+        addr.kind = InsnAddr::Slot::Insn;
+        addr.insn = id;
+        st.addrOf.emplace(uid, addr);
+        st.uidOfInsnSlot.emplace(id.slot, uid);
+        st.order.push_back(uid);
+        ++uid;
+    };
+
+    for (const auto id : dom.order()) {
+        const ir::Insn* in = dom.peek(id);
+        if (!in) continue;
+        const auto anchors = atInsn.find(id.slot);
+        if (anchors != atInsn.end()) {
+            for (const auto l : anchors->second) allocLabel(l);
+        }
+        if (lnt && in->srcPc != ir::kNoPc) {
+            for (auto it = st.pendingLines.lower_bound(in->srcPc);
+                 it != st.pendingLines.end() && it->first == in->srcPc;) {
+                allocLine(it->first, static_cast<int>(lnt->rows[it->second].line));
+                it = st.pendingLines.erase(it);
+            }
+        }
+        allocInsn(id);
+    }
+    for (const auto l : atEnd) allocLabel(l);
+    if (lnt) {
+        // 锚不进存活布局的余量行（死 pc / 末尾 pc）：行序尾部兜底投影。
+        for (const auto& [pc, row] : st.pendingLines) {
+            allocLine(pc, static_cast<int>(lnt->rows[row].line));
+        }
+        st.pendingLines.clear();
+    }
+    st.nextUid = uid;
     return st;
 }
 
-void markDirty(MethodRef2 r)
-{
-    if (r.te) r.te->dirty = true;
-}
+MethodUi& stateFor(MethodRef r) { return materialize(*r.te, methodUnitOf(*r.te, r.id)); }
 
-AbstractInsnNode* resolveInsn(InsnUidState& st, ca::u32 uid)
-{
-    if (st.dead.count(uid)) throw StaleRefError("insn removed: uid " + std::to_string(uid));
-    auto it = st.byUid.find(uid);
-    if (it == st.byUid.end()) throw StaleRefError("no such insn uid: " + std::to_string(uid));
-    return it->second;
-}
+void markDirty(MethodRef r) { r.te->dirty = true; }
 
-LabelNode* resolveLabelNode(InsnUidState& st, ca::u32 uid)
+/// uid → 身份解析（墓地在 addrOf 留底：解析即抛，不复活）。
+const InsnAddr& resolveAddr(MethodRef r, ca::u32 uid)
 {
-    auto* node = resolveInsn(st, uid);
-    if (node->getType() != AbstractInsnNode::LABEL) {
-        throw std::runtime_error("uid " + std::to_string(uid) + " is not a label node");
+    auto& st = stateFor(r);
+    auto  it = st.addrOf.find(uid);
+    if (it == st.addrOf.end()) {
+        throw StaleRefError("no such insn uid: " + std::to_string(uid));
     }
-    return static_cast<LabelNode*>(node);
+    const InsnAddr& a = it->second;
+    if (a.kind == InsnAddr::Slot::Insn) {
+        auto& dom = methodUnitOf(*r.te, r.id).code->dom;
+        if (dom.peek(a.insn) == nullptr) {
+            throw StaleRefError("insn removed: uid " + std::to_string(uid));
+        }
+    }
+    else if (a.kind == InsnAddr::Slot::Label) {
+        auto& dom = methodUnitOf(*r.te, r.id).code->dom;
+        if (!dom.validLabel(a.label)) {
+            throw StaleRefError("label removed: uid " + std::to_string(uid));
+        }
+    }
+    return a;
 }
 
-/// 发号 + 挂链 + 标脏的公共尾（B9：节点一律经 m->create 归属方法 arena）。
-template <class T, class... Args>
-ca::u32 emitNode(FacadeSession& s, MethodRef2 r, std::optional<ca::u32> pos, Args&&... args)
+/// 带 Code 体的方法视图（abstract/native 的编辑面在此挡掉）。
+ir::CodeUnit& requireCode(MethodRef r)
 {
-    auto& st   = stateFor(s, r);
-    auto* node = r.m->create<T>(std::forward<Args>(args)...);
+    auto& mu = methodUnitOf(*r.te, r.id);
+    materialize(*r.te, mu);
+    if (!mu.code) {
+        throw StaleRefError("method has no code body: " +
+                            std::string(r.te->session->unit().symbols().str(mu.name)));
+    }
+    return *mu.code;
+}
+
+/// uid → 存活指令句柄（写面用）。
+ir::InsnId liveInsn(MethodRef r, ca::u32 uid)
+{
+    const auto& a = resolveAddr(r, uid);
+    if (a.kind != InsnAddr::Slot::Insn) {
+        throw std::runtime_error("uid " + std::to_string(uid) + " is not an insn row");
+    }
+    return a.insn;
+}
+
+ir::LabelId liveLabel(MethodRef r, ca::u32 uid)
+{
+    const auto& a = resolveAddr(r, uid);
+    if (a.kind != InsnAddr::Slot::Label) {
+        throw std::runtime_error("uid " + std::to_string(uid) + " is not a label row");
+    }
+    return a.label;
+}
+
+/// 行序重建（rowOf 与 order 同步；O(n)，方法体规模下足够）。
+void rebuildRowOf(MethodUi& st)
+{
+    st.rowOf.clear();
+    for (ca::usize i = 0; i < st.order.size(); ++i) {
+        st.rowOf[st.order[i]] = i;
+    }
+}
+
+/// srcPc → 现存指令句柄（Line 行插入锚的回定位）；miss 显式抛。
+ir::InsnId findInsnBySrcPc(ir::CodeDom& dom, ca::u32 pc)
+{
+    for (const auto id : dom.order()) {
+        const ir::Insn* in = dom.peek(id);
+        if (in && in->srcPc == pc) return id;
+    }
+    throw StaleRefError("line anchor pc is no longer live: " + std::to_string(pc));
+}
+
+/// 发射公共尾：行插位 → DOM 落位 → 行/addr 簿记 → 末锚标签回锚。
+///
+/// 前向控制目标处理：libjbc checkHandles 拒绝 end 锚分支目标（要求锚在存活
+/// 指令），而旧 ASM 树的标签锚是「行位之后第一条指令」的动态事实。桥接：
+/// 发射前把 end 锚目标临时绑到尾指令放行校验，插入后按行序回锚——行位在
+/// 插入点之前的 end 锚标签改锚新指令（标签领地 = 其行位起的第一条指令），
+/// 未回锚的 pinned 目标恢复 end 锚。
+ca::u32 emitAt(MethodRef r, ir::Insn in, std::optional<ca::u32> pos)
+{
+    auto& te  = *r.te;
+    auto& st  = stateFor(r);
+    auto& cu  = requireCode(r);
+    auto& dom = cu.dom;
+
+    ca::usize  rowIndex = st.order.size();
+    ir::InsnId before   = ir::kNoInsn;
     if (pos) {
-        r.m->instructions.insert(resolveInsn(st, *pos), node);
+        const auto& a = resolveAddr(r, *pos);
+        rowIndex = st.rowOf[*pos];
+        if (a.kind == InsnAddr::Slot::Insn) {
+            before = a.insn;
+        }
+        else if (a.kind == InsnAddr::Slot::Label) {
+            // 行插在其前；end 锚标签没有实体位置 → 尾插（与旧列表语义一致：
+            // 后续发射按行序把标签改锚到新指令）。
+            const auto t = dom.resolveLabel(a.label);
+            if (t.is_err()) throw StaleRefError("label removed: uid " + std::to_string(*pos));
+            if (!t.unwrap().isEnd()) before = t.unwrap().insn;
+        }
+        else {
+            before = findInsnBySrcPc(dom, a.linePc);
+        }
     }
-    else {
-        r.m->instructions.add(node);
+
+    std::vector<ir::LabelId> pinned;
+    if (isControlOp(in.op)) {
+        const auto pinTargets = [&](ir::LabelId l) {
+            if (l == ir::kNoLabel || !dom.validLabel(l)) return;
+            const auto t = dom.resolveLabel(l);
+            if (t.is_err() || !t.unwrap().isEnd()) return;
+            const auto tail = dom.last();
+            if (tail == ir::kNoInsn) {
+                throw StaleRefError("forward branch target has no anchor insn yet");
+            }
+            if (dom.bindLabel(l, tail).is_err()) {
+                throw std::runtime_error("emit: failed to stage forward target");
+            }
+            pinned.push_back(l);
+        };
+        pinTargets(in.target);
+        for (const auto t : in.targets) pinTargets(t);
     }
+
+    const auto placed = before != ir::kNoInsn ? dom.insertBefore(before, std::move(in))
+                                              : dom.append(std::move(in));
+    if (placed.is_err()) {
+        throw std::runtime_error(std::string("emit failed: ") +
+                                 ir::to_string(placed.unwrap_err()));
+    }
+    const ir::InsnId nid = placed.unwrap();
+
     const ca::u32 uid = st.nextUid++;
-    st.byUid.emplace(uid, node);
-    st.uidOf.emplace(node, uid);
-    st.labelIndexDirty = true;   // 新节点可能携带新 Label
+    InsnAddr      addr;
+    addr.kind = InsnAddr::Slot::Insn;
+    addr.insn = nid;
+    st.addrOf.emplace(uid, addr);
+    st.uidOfInsnSlot.emplace(nid.slot, uid);
+    st.order.insert(st.order.begin() + static_cast<std::ptrdiff_t>(rowIndex), uid);
+    rebuildRowOf(st);
+
+    // 回锚一：既有 end 锚标签（行位在插入点之前）→ 改锚新指令。
+    for (auto& [luid, la] : st.addrOf) {
+        if (la.kind != InsnAddr::Slot::Label) continue;
+        if (std::find(pinned.begin(), pinned.end(), la.label) != pinned.end()) continue;
+        const auto rowIt = st.rowOf.find(luid);
+        if (rowIt == st.rowOf.end() || rowIt->second >= rowIndex) continue;
+        const auto t = dom.resolveLabel(la.label);
+        if (t.is_err() || !t.unwrap().isEnd()) continue;
+        if (dom.bindLabel(la.label, nid).is_err()) {
+            throw std::runtime_error("emit: failed to re-anchor boundary label");
+        }
+    }
+    // 回锚二：pinned 前向目标——行位在插入点之前 = 新指令即其领地首指令；
+    // 否则恢复 end 锚（发射目标仍在方法末尾边界）。
+    for (const auto l : pinned) {
+        const auto luidIt = st.uidOfLabelSlot.find(l.slot);
+        if (luidIt == st.uidOfLabelSlot.end()) continue;
+        const auto rowIt = st.rowOf.find(luidIt->second);
+        const auto bound = (rowIt != st.rowOf.end() && rowIt->second < rowIndex)
+                               ? dom.bindLabel(l, nid)
+                               : dom.bindLabel(l, ir::kNoInsn);
+        if (bound.is_err()) {
+            throw std::runtime_error("emit: failed to settle forward target");
+        }
+    }
+
     markDirty(r);
     return uid;
 }
 
-/// Label* → uid 反查（缓存读侧；内容 = byUid ∖ dead ∩ LABEL，与逐次重建恒等）。
-const std::unordered_map<Label*, ca::u32>& labelIndex(InsnUidState& st)
+/// 分支目标改指（emit_jump 后的 set_target 面）：end 锚目标的 pin/restore。
+void retarget(MethodRef r, ca::u32 uid, ca::u32 targetUid)
 {
-    if (st.labelIndexDirty) {
-        st.labelIndex.clear();
-        for (const auto& [uid, node] : st.byUid) {
-            if (st.dead.count(uid)) continue;
-            if (node->getType() == AbstractInsnNode::LABEL) {
-                st.labelIndex[static_cast<LabelNode*>(node)->label] = uid;
-            }
-        }
-        st.labelIndexDirty = false;
+    auto& cu  = requireCode(r);
+    auto& dom = cu.dom;
+    const auto& a  = resolveAddr(r, uid);
+    const auto& ta = resolveAddr(r, targetUid);
+    if (a.kind != InsnAddr::Slot::Insn || ta.kind != InsnAddr::Slot::Label) {
+        throw std::runtime_error("insn_set_target: kind mismatch");
     }
-    return st.labelIndex;
+    auto*     in = dom.get(a.insn).unwrap();
+    const auto sh = jb::shapeOf(in->op);
+    if (sh != jb::Shape::Branch2 && sh != jb::Shape::Branch4) {
+        throw std::runtime_error("insn_set_target: kind mismatch (" +
+                                 std::string(facadeInsnKindName(kindOf(in->op))) + ")");
+    }
+    const bool endAnchored = [&] {
+        const auto t = dom.resolveLabel(ta.label);
+        return t.is_ok() && t.unwrap().isEnd();
+    }();
+    if (endAnchored) {
+        const auto tail = dom.last();
+        if (tail == ir::kNoInsn) {
+            throw StaleRefError("forward branch target has no anchor insn yet");
+        }
+        if (dom.bindLabel(ta.label, tail).is_err()) {
+            throw std::runtime_error("set_target: failed to stage forward target");
+        }
+    }
+    in->target = ta.label;
+    if (endAnchored) {
+        // set_target 不插入指令：目标行位不动 → 恒恢复 end 锚。
+        if (dom.bindLabel(ta.label, ir::kNoInsn).is_err()) {
+            throw std::runtime_error("set_target: failed to restore target anchor");
+        }
+    }
+    markDirty(r);
 }
 
-InsnDetail detailOf(InsnUidState& st, MethodNode* m, ca::u32 uid)
+// ── 读 ──
+
+ClassInfo classInfoOf(TreeEntry& te)
 {
-    auto*        node = resolveInsn(st, uid);
+    auto&      unit = te.session->unit();
+    auto&      sp   = unit.symbols();
+    ClassInfo  out;
+    out.name      = std::string(sp.str(unit.thisClass));
+    out.superName = std::string(sp.str(unit.superClass));
+    // 旧树版本口径：低 16 位 = major，高 16 位 = minor（libjbc 打包相反）。
+    out.version = static_cast<int>(((unit.version & 0xFFFFu) << 16) | (unit.version >> 16));
+    out.access  = static_cast<int>(unit.access);
+    for (const auto itf : unit.interfaces) out.interfaces.push_back(std::string(sp.str(itf)));
+    return out;
+}
+
+MemberInfo methodInfoOf(TreeEntry& te, ir::MethodId id)
+{
+    auto&      mu = methodUnitOf(te, id);
+    auto&      cf = te.session->backing();
+    auto&      sp = te.session->unit().symbols();
+    MemberInfo out;
+    out.name   = std::string(sp.str(mu.name));
+    out.desc   = std::string(sp.str(mu.desc));
+    out.access = static_cast<int>(mu.access);
+    if (mu.code) {
+        out.maxStack  = mu.code->maxStack;
+        out.maxLocals = mu.code->maxLocals;
+    }
+    else {
+        auto ca = cf.decodeCode(cf.methods[mu.backingIndex]);
+        if (ca.is_ok()) {
+            out.maxStack  = ca.unwrap()->maxStack;
+            out.maxLocals = ca.unwrap()->maxLocals;
+        }
+    }
+    // Exceptions 属性 → 类名列表（CP Class 逐条解析）。
+    auto& mi = cf.methods[mu.backingIndex];
+    for (auto& slot : mi.attrs) {
+        if (cf.utf8(slot.nameCp) != "Exceptions") continue;
+        const auto decoded = cf.decodeAttr(slot);
+        if (decoded.is_err()) break;
+        const auto* exc =
+            ca::core::tag_cast::dyn_cast<const jb::ExceptionsAttr>(decoded.unwrap());
+        if (!exc) break;
+        for (const auto cpIndex : exc->exceptionCps) {
+            out.exceptions.emplace_back(cf.className(cpIndex));
+        }
+        break;
+    }
+    return out;
+}
+
+InsnDetail detailOf(MethodRef r, ca::u32 uid)
+{
+    auto&        te  = *r.te;
+    auto&        st  = stateFor(r);
+    auto&        cu  = requireCode(r);
+    ir::CodeDom& dom = cu.dom;
+    const auto&  a   = resolveAddr(r, uid);
     InsnDetail   d;
-    d.uid    = uid;
-    d.opcode = node->opcode;
-    d.kind   = node->getType();
+    d.uid = uid;
+    if (a.kind == InsnAddr::Slot::Label) {
+        d.kind   = insn_kind::kLabel;
+        d.opcode = -1;
+        return d;
+    }
+    if (a.kind == InsnAddr::Slot::Line) {
+        d.kind   = insn_kind::kLine;
+        d.opcode = -1;
+        d.line   = a.lineNo;
+        return d;
+    }
+    ir::Insn* in = dom.get(a.insn).unwrap();
+    d.opcode     = static_cast<int>(in->op);
+    d.kind       = kindOf(in->op);
+    const auto uidOfLabel = [&](ir::LabelId l) {
+        if (l == ir::kNoLabel) return ca::u32{0};
+        auto it = st.uidOfLabelSlot.find(l.slot);
+        return it != st.uidOfLabelSlot.end() ? it->second : ca::u32{0};
+    };
     switch (d.kind) {
-    case AbstractInsnNode::INT_INSN:
-        d.operand = static_cast<IntInsnNode*>(node)->operand;
+    case insn_kind::kInt:
+        d.operand = in->a;
         break;
-    case AbstractInsnNode::VAR_INSN:
-        d.var = static_cast<VarInsnNode*>(node)->var;
+    case insn_kind::kVar:
+        d.var = in->a;
         break;
-    case AbstractInsnNode::TYPE_INSN:
-        d.desc = static_cast<TypeInsnNode*>(node)->desc.to_std_string();
+    case insn_kind::kType:
+    case insn_kind::kMultiANewArray:
+        d.desc = std::string(te.session->classOf(*in));
+        if (d.kind == insn_kind::kMultiANewArray) d.dims = in->b;
         break;
-    case AbstractInsnNode::FIELD_INSN: {
-        const auto& f = *static_cast<FieldInsnNode*>(node);
-        d.owner = f.owner.to_std_string();
-        d.name  = f.name.to_std_string();
-        d.desc  = f.desc.to_std_string();
-        break;
-    }
-    case AbstractInsnNode::METHOD_INSN: {
-        const auto& mi = *static_cast<MethodInsnNode*>(node);
-        d.owner = mi.owner.to_std_string();
-        d.name  = mi.name.to_std_string();
-        d.desc  = mi.desc.to_std_string();
-        d.itf   = mi.isInterface;
-        break;
-    }
-    case AbstractInsnNode::INVOKE_DYNAMIC_INSN: {
-        const auto& id = *static_cast<InvokeDynamicInsnNode*>(node);
-        d.name = id.name.to_std_string();
-        d.desc = id.desc.to_std_string();
-        break;
-    }
-    case AbstractInsnNode::JUMP_INSN: {
-        const auto& labels = labelIndex(st);
-        auto it     = labels.find(static_cast<JumpInsnNode*>(node)->label);
-        if (it != labels.end()) d.targetUid = it->second;
-        break;
-    }
-    case AbstractInsnNode::LDC_INSN: {
-        const auto& cst = static_cast<LdcInsnNode*>(node)->cst;
-        if (auto* v = cst.as<ca::str::Utf8StringRef>()) {
-            d.cstTag = 1;
-            d.cstStr = v->to_std_string();
-        }
-        else if (auto* v = cst.as<int>()) {
-            d.cstTag = 2;
-            d.cstInt = *v;
-        }
-        else if (auto* v = cst.as<ca::i64>()) {
-            d.cstTag = 3;
-            d.cstInt = *v;
-        }
-        else if (auto* v = cst.as<float>()) {
-            d.cstTag = 4;
-            d.cstFloat = *v;
-        }
-        else if (auto* v = cst.as<double>()) {
-            d.cstTag = 5;
-            d.cstFloat = *v;
+    case insn_kind::kField:
+    case insn_kind::kMethod:
+    case insn_kind::kIndy: {
+        ir::ClassSession::MemberSem sem;
+        if (te.session->memberOf(*in, sem)) {
+            d.owner = std::string(sem.owner);
+            d.name  = std::string(sem.name);
+            d.desc  = std::string(sem.desc);
+            d.itf   = sem.kind == ir::ClassSession::MemberSem::Kind::InterfaceMethod;
         }
         break;
     }
-    case AbstractInsnNode::IINC_INSN: {
-        const auto* ii = static_cast<IincInsnNode*>(node);
-        d.var  = ii->var;
-        d.incr = ii->incr;
+    case insn_kind::kJump:
+        d.targetUid = uidOfLabel(in->target);
         break;
-    }
-    case AbstractInsnNode::TABLESWITCH_INSN: {
-        const auto* ts  = static_cast<TableSwitchInsnNode*>(node);
-        const auto& labels = labelIndex(st);
-        d.switchMin = ts->min;
-        d.switchMax = ts->max;
-        auto dIt    = labels.find(ts->dflt);
-        if (dIt != labels.end()) d.defaultUid = dIt->second;
-        for (auto* l : ts->labels) {
-            auto it = labels.find(l);
-            d.targetUids.push_back(it != labels.end() ? it->second : 0);
+    case insn_kind::kLdc: {
+        ir::ClassSession::ConstSem c;
+        if (te.session->constOf(*in, c)) {
+            switch (c.kind) {
+            case ir::ClassSession::ConstSem::Kind::String:
+                d.cstTag = 1;
+                d.cstStr = std::string(c.str);
+                break;
+            case ir::ClassSession::ConstSem::Kind::Int:
+                d.cstTag = 2;
+                d.cstInt = c.num;
+                break;
+            case ir::ClassSession::ConstSem::Kind::Long:
+                d.cstTag = 3;
+                d.cstInt = c.num;
+                break;
+            case ir::ClassSession::ConstSem::Kind::Float:
+                d.cstTag = 4;
+                if (const auto bits = static_cast<ca::u32>(c.bits); true) {
+                    std::memcpy(&d.cstFloat, &bits, sizeof(float));
+                }
+                break;
+            case ir::ClassSession::ConstSem::Kind::Double:
+                d.cstTag = 5;
+                std::memcpy(&d.cstFloat, &c.bits, sizeof(double));
+                break;
+            default:
+                break;
+            }
         }
         break;
     }
-    case AbstractInsnNode::LOOKUPSWITCH_INSN: {
-        const auto* ls  = static_cast<LookupSwitchInsnNode*>(node);
-        const auto& labels = labelIndex(st);
-        d.switchKeys = ls->keys;
-        auto dIt     = labels.find(ls->dflt);
-        if (dIt != labels.end()) d.defaultUid = dIt->second;
-        for (auto* l : ls->labels) {
-            auto it = labels.find(l);
-            d.targetUids.push_back(it != labels.end() ? it->second : 0);
-        }
+    case insn_kind::kIinc:
+        d.var  = in->a;
+        d.incr = in->b;
         break;
-    }
-    case AbstractInsnNode::MULTIANEWARRAY_INSN: {
-        const auto* ma = static_cast<MultiANewArrayInsnNode*>(node);
-        d.desc = ma->desc.to_std_string();
-        d.dims = ma->dims;
+    case insn_kind::kTableSwitch:
+        d.switchMin  = in->a;
+        d.switchMax  = in->a + static_cast<int>(in->targets.size()) - 1;
+        d.defaultUid = uidOfLabel(in->target);
+        for (const auto t : in->targets) d.targetUids.push_back(uidOfLabel(t));
         break;
-    }
-    case AbstractInsnNode::LINE:
-        d.line = static_cast<LineNumberNode*>(node)->line;
+    case insn_kind::kLookupSwitch:
+        d.switchKeys = in->keys;
+        d.defaultUid = uidOfLabel(in->target);
+        for (const auto t : in->targets) d.targetUids.push_back(uidOfLabel(t));
         break;
     default:
         break;
@@ -738,27 +1087,50 @@ InsnDetail detailOf(InsnUidState& st, MethodNode* m, ca::u32 uid)
     return d;
 }
 
+/// ldc 载荷 Any → CP 槽（str/int/i64/float/double 五族；其余显式拒收）。
+ca::u32 cpOfAny(TreeEntry& te, const ca::core::Any& value)
+{
+    auto& session = *te.session;
+    if (const auto* v = value.as<ca::str::Utf8StringRef>()) {
+        return session.internString(
+            std::string_view(reinterpret_cast<const char*>(v->data()), v->byte_length()));
+    }
+    if (value.is<int>()) return session.internInteger(*value.as<int>());
+    if (value.is<ca::i64>()) return session.internLong(*value.as<ca::i64>());
+    if (value.is<float>()) {
+        ca::u32 bits = 0;
+        std::memcpy(&bits, value.as<float>(), sizeof(float));
+        return session.internFloatBits(bits);
+    }
+    if (value.is<double>()) {
+        ca::u64 bits = 0;
+        std::memcpy(&bits, value.as<double>(), sizeof(double));
+        return session.internDoubleBits(bits);
+    }
+    throw std::runtime_error("ldc payload must be str/int/float");
+}
+
 }   // namespace
 
 const char* facadeInsnKindName(int kind)
 {
     switch (kind) {
-    case AbstractInsnNode::INSN: return "insn";
-    case AbstractInsnNode::INT_INSN: return "int";
-    case AbstractInsnNode::VAR_INSN: return "var";
-    case AbstractInsnNode::TYPE_INSN: return "type";
-    case AbstractInsnNode::FIELD_INSN: return "field";
-    case AbstractInsnNode::METHOD_INSN: return "method";
-    case AbstractInsnNode::INVOKE_DYNAMIC_INSN: return "indy";
-    case AbstractInsnNode::JUMP_INSN: return "jump";
-    case AbstractInsnNode::LABEL: return "label";
-    case AbstractInsnNode::LDC_INSN: return "ldc";
-    case AbstractInsnNode::IINC_INSN: return "iinc";
-    case AbstractInsnNode::TABLESWITCH_INSN: return "tableswitch";
-    case AbstractInsnNode::LOOKUPSWITCH_INSN: return "lookupswitch";
-    case AbstractInsnNode::MULTIANEWARRAY_INSN: return "multianewarray";
-    case AbstractInsnNode::FRAME: return "frame";
-    case AbstractInsnNode::LINE: return "line";
+    case insn_kind::kInsn: return "insn";
+    case insn_kind::kInt: return "int";
+    case insn_kind::kVar: return "var";
+    case insn_kind::kType: return "type";
+    case insn_kind::kField: return "field";
+    case insn_kind::kMethod: return "method";
+    case insn_kind::kIndy: return "indy";
+    case insn_kind::kJump: return "jump";
+    case insn_kind::kLabel: return "label";
+    case insn_kind::kLdc: return "ldc";
+    case insn_kind::kIinc: return "iinc";
+    case insn_kind::kTableSwitch: return "tableswitch";
+    case insn_kind::kLookupSwitch: return "lookupswitch";
+    case insn_kind::kMultiANewArray: return "multianewarray";
+    case insn_kind::kFrame: return "frame";
+    case insn_kind::kLine: return "line";
     default: return "unknown";
     }
 }
@@ -781,7 +1153,7 @@ const char* facadeOpcodeName(int op)
         "sastore", "pop", "pop2", "dup", "dup_x1", "dup_x2", "dup2", "dup2_x1", "dup2_x2",
         "swap", "iadd", "ladd", "fadd", "dadd", "isub", "lsub", "fsub", "dsub", "imul", "lmul",
         "fmul", "dmul", "idiv", "ldiv", "fdiv", "ddiv", "irem", "lrem", "frem", "drem", "ineg",
-        "lneg", "fneg", "dneg", "ishl", "lshl", "ishr", "lshr", "iushr", "lushr", "iand", "land",
+        "lneg", "fneg", "dneg", "ishl", "lshl", "ishr", "lshr", "iushr", "iand", "land",
         "ior", "lor", "ixor", "lxor", "iinc", "i2l", "i2f", "i2d", "l2i", "l2f", "l2d", "f2i",
         "f2l", "f2d", "d2i", "d2l", "d2f", "i2b", "i2c", "i2s", "lcmp", "fcmpl", "fcmpg",
         "dcmpl", "dcmpg", "ifeq", "ifne", "iflt", "ifge", "ifgt", "ifle", "if_icmpeq",
@@ -797,40 +1169,56 @@ const char* facadeOpcodeName(int op)
     return kNames[op];
 }
 
-// ── 读 ──
-
 ca::core::Any facadeInternedStr(FacadeSession& s, const std::string& v)
 {
-    return ca::core::Any(internIn(s, v));
+    // 按 byte_length 入池：ldc 字符串载荷是 MUTF-8 转换产物，可含内嵌 NUL，
+    // from_cstr 的 strlen 舞步会在首个 NUL 处截断。
+    return ca::core::Any(s.arena->intern(std::string_view(v)));
 }
 
-void facadeParseClass(FacadeSession& s, const std::string& name) { resolveTree(s, name); }
+// ── 读 ──
+
+void facadeParseClass(FacadeSession& s, const std::string& name)
+{
+    TreeEntry& te   = resolveTree(s, name);
+    auto&      unit = te.session->unit();
+    // 附着即全量解码（fail-closed）：全部带体方法升格，坏方法体在 parse 面
+    // 显式失败（与旧 ClassReader.accept 全量解析等位）。
+    for (auto& mu : unit.methods) {
+        if (mu.code != nullptr) continue;
+        if (!ir::hasCode(*te.session, mu.backingIndex)) continue;
+        const auto promoted = ir::promoteMethod(*te.session, mu.id);
+        if (promoted.is_err()) {
+            throw std::runtime_error(std::string("parse failed for ") + name + ": " +
+                                     ir::to_string(promoted.unwrap_err()));
+        }
+    }
+}
 
 ClassInfo facadeClassInfo(FacadeSession& s, const std::string& name)
 {
-    auto& te = resolveTree(s, name);
-    ClassInfo out;
-    out.name       = te.node->name.to_std_string();
-    out.superName  = te.node->superName.to_std_string();
-    out.access     = te.node->access;
-    out.version    = te.node->version & 0xFFFF;
-    for (const auto& i : te.node->interfaces) out.interfaces.push_back(i.to_std_string());
-    return out;
+    return classInfoOf(resolveTree(s, name));
 }
 
 std::vector<std::tuple<std::string, std::string, int>> facadeMembers(FacadeSession& s,
                                                                      const std::string& name,
                                                                      bool methods)
 {
-    auto& te = resolveTree(s, name);
+    auto& te   = resolveTree(s, name);
+    auto& unit = te.session->unit();
+    auto& sp   = unit.symbols();
     std::vector<std::tuple<std::string, std::string, int>> out;
     if (methods) {
-        for (auto* m : te.node->methods)
-            out.emplace_back(m->name.to_std_string(), m->desc.to_std_string(), m->access);
+        for (const auto& mu : unit.methods) {
+            out.emplace_back(std::string(sp.str(mu.name)), std::string(sp.str(mu.desc)),
+                             static_cast<int>(mu.access));
+        }
     }
     else {
-        for (auto* f : te.node->fields)
-            out.emplace_back(f->name.to_std_string(), f->desc.to_std_string(), f->access);
+        for (const auto& fu : unit.fields) {
+            out.emplace_back(std::string(sp.str(fu.name)), std::string(sp.str(fu.desc)),
+                             static_cast<int>(fu.access));
+        }
     }
     return out;
 }
@@ -838,27 +1226,20 @@ std::vector<std::tuple<std::string, std::string, int>> facadeMembers(FacadeSessi
 MemberInfo facadeMethodInfo(FacadeSession& s, const std::string& cls, const std::string& name,
                             const std::string& desc)
 {
-    const auto r = resolveMethodFlex(s, cls, name, desc);
-    auto* m = r.m;
-    MemberInfo out;
-    out.name      = m->name.to_std_string();
-    out.desc      = m->desc.to_std_string();
-    out.access    = m->access;
-    out.maxStack  = m->maxStack;
-    out.maxLocals = m->maxLocals;
-    for (const auto& e : m->exceptions) out.exceptions.push_back(e.to_std_string());
-    return out;
+    return methodInfoOf(resolveTree(s, cls), resolveMethod(s, cls, name, desc).id);
 }
 
 MemberInfo facadeFieldInfo(FacadeSession& s, const std::string& cls, const std::string& name,
                            const std::string& desc)
 {
-    auto&      te = resolveTree(s, cls);
-    auto*      f  = resolveField(te, name, desc);
+    auto& te   = resolveTree(s, cls);
+    const auto id = resolveField(s, cls, name, desc);
+    auto* fu   = te.session->unit().field(id);
+    auto& sp   = te.session->unit().symbols();
     MemberInfo out;
-    out.name   = f->name.to_std_string();
-    out.desc   = f->desc.to_std_string();
-    out.access = f->access;
+    out.name   = std::string(sp.str(fu->name));
+    out.desc   = std::string(sp.str(fu->desc));
+    out.access = static_cast<int>(fu->access);
     return out;
 }
 
@@ -870,7 +1251,7 @@ ClassHierarchyReport facadeClassHierarchy(FacadeSession& s, const std::string& n
     // 照旧 StaleRefError（fail-closed）。BFS + visited 集防环。
     resolveTree(s, name);   // 起点存在性校验（缺失抛 StaleRefError）
 
-    ClassHierarchyReport    out;
+    ClassHierarchyReport     out;
     std::vector<std::string> pending{name};
     std::set<std::string>    visited;
     while (!pending.empty()) {
@@ -881,19 +1262,24 @@ ClassHierarchyReport facadeClassHierarchy(FacadeSession& s, const std::string& n
         if (s.duplicateUris.count(current) != 0 || s.nameToUri.count(current) == 0) {
             continue;   // 容器外引用（JDK 类等）：闭包不含，不报错
         }
-        TreeEntry& te = resolveTree(s, current);
+        TreeEntry& te   = resolveTree(s, current);
+        auto&      unit = te.session->unit();
+        auto&      sp   = unit.symbols();
 
         HierarchyClass info;
-        info.name       = te.node->name.to_std_string();
-        info.superName  = te.node->superName.to_std_string();
-        for (const auto& i : te.node->interfaces) info.interfaces.push_back(i.to_std_string());
-        for (auto* m : te.node->methods) {
-            out.methods.emplace_back(info.name, m->name.to_std_string(),
-                                     m->desc.to_std_string(), m->access);
+        info.name      = std::string(sp.str(unit.thisClass));
+        info.superName = std::string(sp.str(unit.superClass));
+        for (const auto itf : unit.interfaces)
+            info.interfaces.push_back(std::string(sp.str(itf)));
+        for (const auto& mu : unit.methods) {
+            out.methods.emplace_back(info.name, std::string(sp.str(mu.name)),
+                                     std::string(sp.str(mu.desc)),
+                                     static_cast<int>(mu.access));
         }
-        for (auto* f : te.node->fields) {
-            out.fields.emplace_back(info.name, f->name.to_std_string(),
-                                    f->desc.to_std_string(), f->access);
+        for (const auto& fu : unit.fields) {
+            out.fields.emplace_back(info.name, std::string(sp.str(fu.name)),
+                                    std::string(sp.str(fu.desc)),
+                                    static_cast<int>(fu.access));
         }
 
         // 继续上溯：super + 接口入队（必须在 info 被 move 进 results 之前取值）。
@@ -908,31 +1294,52 @@ ClassHierarchyReport facadeClassHierarchy(FacadeSession& s, const std::string& n
 
 void facadeClassSetSuper(FacadeSession& s, const std::string& name, const std::string& super)
 {
-    auto& te             = resolveTree(s, name);
-    te.node->superName   = internIn(s, super);
-    te.dirty             = true;
+    TreeEntry& te   = resolveTree(s, name);
+    auto&      unit = te.session->unit();
+    unit.superClass = unit.symbols().intern(super);
+    if (te.session->commitClassMetadata().is_err()) {
+        throw std::runtime_error("class_set_super: commit failed for " + name);
+    }
+    te.dirty = true;
 }
 
 void facadeClassSetAccess(FacadeSession& s, const std::string& name, int access)
 {
-    auto& te         = resolveTree(s, name);
-    te.node->access  = access;
-    te.dirty         = true;
+    TreeEntry& te   = resolveTree(s, name);
+    auto&      unit = te.session->unit();
+    unit.access     = static_cast<ca::u32>(access);
+    if (te.session->commitClassMetadata().is_err()) {
+        throw std::runtime_error("class_set_access: commit failed for " + name);
+    }
+    te.dirty = true;
 }
 
 void facadeClassSetVersion(FacadeSession& s, const std::string& name, int version)
 {
-    auto& te           = resolveTree(s, name);
-    te.node->version   = version;
-    te.dirty           = true;
+    TreeEntry& te   = resolveTree(s, name);
+    auto&      unit = te.session->unit();
+    // 旧树口径：低 16 位 = major，高 16 位 = minor（libjbc 打包相反，读面同）。
+    const auto major = static_cast<ca::u32>(version) & 0xFFFFu;
+    const auto minor = (static_cast<ca::u32>(version) >> 16) & 0xFFFFu;
+    unit.version     = (major << 16) | minor;
+    if (te.session->commitClassMetadata().is_err()) {
+        throw std::runtime_error("class_set_version: commit failed for " + name);
+    }
+    te.dirty = true;
 }
 
 void facadeClassSetInterfaces(FacadeSession& s, const std::string& name,
                               const std::vector<std::string>& interfaces)
 {
-    auto& te = resolveTree(s, name);
-    te.node->interfaces.clear();
-    for (const auto& i : interfaces) te.node->interfaces.push_back(internIn(s, i));
+    TreeEntry& te   = resolveTree(s, name);
+    auto&      unit = te.session->unit();
+    unit.interfaces.clear();
+    for (const auto& itf : interfaces) {
+        unit.interfaces.push_back(unit.symbols().intern(itf));
+    }
+    if (te.session->commitClassMetadata().is_err()) {
+        throw std::runtime_error("class_set_interfaces: commit failed for " + name);
+    }
     te.dirty = true;
 }
 
@@ -950,8 +1357,11 @@ std::string facadeRenameClass(FacadeSession& s, const std::string& oldName,
     s.nameToUri.erase(uriIt);
     s.nameToUri[newName] = uri;
 
-    auto& te           = s.trees.at(oldName);
-    te.node->name      = internIn(s, newName);
+    auto& te = s.trees.at(oldName);
+    te.session->unit().thisClass = te.session->unit().symbols().intern(newName);
+    if (te.session->commitClassMetadata().is_err()) {
+        throw std::runtime_error("rename_class: commit failed for " + newName);
+    }
     te.dirty           = true;
     auto tel           = s.trees.extract(oldName);   // uid 状态随条目整体迁移
     tel.key()          = newName;
@@ -977,12 +1387,16 @@ std::string facadeRenameClass(FacadeSession& s, const std::string& oldName,
 std::string facadeRenameMethod(FacadeSession& s, const std::string& cls, const std::string& name,
                                const std::string& desc, const std::string& newName)
 {
-    auto& te = resolveTree(s, cls);
-    auto* m  = resolveMethod(te, name, desc);
+    TreeEntry& te = resolveTree(s, cls);
+    MethodRef  r  = resolveMethod(s, cls, name, desc);
     if (newName != name && methodExists(te, newName, desc)) {
         throw StaleRefError("method already exists: " + newName + desc);
     }
-    m->name  = internIn(s, newName);
+    auto& mu     = methodUnitOf(te, r.id);
+    mu.name      = te.session->unit().symbols().intern(newName);
+    if (te.session->commitMethodMetadata(r.id).is_err()) {
+        throw std::runtime_error("rename_method: commit failed for " + cls + "." + newName);
+    }
     te.dirty = true;
     return newName;
 }
@@ -990,16 +1404,16 @@ std::string facadeRenameMethod(FacadeSession& s, const std::string& cls, const s
 std::string facadeRenameField(FacadeSession& s, const std::string& cls, const std::string& name,
                               const std::string& desc, const std::string& newName)
 {
-    auto& te = resolveTree(s, cls);
-    auto* f  = resolveField(te, name, desc);
-    if (newName != name) {
-        for (auto* other : te.node->fields) {
-            if (other != f && other->name.to_std_string() == newName) {
-                throw StaleRefError("field already exists: " + newName);
-            }
-        }
+    TreeEntry& te = resolveTree(s, cls);
+    const auto id = resolveField(s, cls, name, desc);
+    if (newName != name && fieldExists(te, newName, desc)) {
+        throw StaleRefError("field already exists: " + newName);
     }
-    f->name  = internIn(s, newName);
+    auto* fu     = te.session->unit().field(id);
+    fu->name     = te.session->unit().symbols().intern(newName);
+    if (te.session->commitFieldMetadata(id).is_err()) {
+        throw std::runtime_error("rename_field: commit failed for " + cls + "." + newName);
+    }
     te.dirty = true;
     return newName;
 }
@@ -1007,72 +1421,103 @@ std::string facadeRenameField(FacadeSession& s, const std::string& cls, const st
 void facadeMethodSetDesc(FacadeSession& s, const std::string& cls, const std::string& name,
                          const std::string& desc, const std::string& newDesc)
 {
-    auto& te = resolveTree(s, cls);
-    auto* m  = resolveMethod(te, name, desc);
-    if (newDesc != desc && methodExists(te, name, newDesc)) {
-        throw StaleRefError("method already exists: " + name + newDesc);
+    TreeEntry& te = resolveTree(s, cls);
+    MethodRef  r  = resolveMethod(s, cls, name, desc);
+    auto&      mu = methodUnitOf(te, r.id);
+    mu.desc      = te.session->unit().symbols().intern(newDesc);
+    if (te.session->commitMethodMetadata(r.id).is_err()) {
+        throw std::runtime_error("method_set_desc: commit failed for " + cls + "." + name);
     }
-    m->desc  = internIn(s, newDesc);
     te.dirty = true;
 }
 
 void facadeMethodSetAccess(FacadeSession& s, const std::string& cls, const std::string& name,
                            const std::string& desc, int access)
 {
-    auto& te = resolveTree(s, cls);
-    resolveMethod(te, name, desc)->access = access;
-    te.dirty                              = true;
+    TreeEntry& te = resolveTree(s, cls);
+    MethodRef  r  = resolveMethod(s, cls, name, desc);
+    methodUnitOf(te, r.id).access = static_cast<ca::u32>(access);
+    if (te.session->commitMethodMetadata(r.id).is_err()) {
+        throw std::runtime_error("method_set_access: commit failed for " + cls + "." + name);
+    }
+    te.dirty = true;
 }
 
 void facadeMethodSetMaxStack(FacadeSession& s, const std::string& cls, const std::string& name,
                              const std::string& desc, int v)
 {
-    auto& te = resolveTree(s, cls);
-    resolveMethod(te, name, desc)->maxStack = v;
-    te.dirty                                = true;
+    MethodRef r = resolveMethod(s, cls, name, desc);
+    requireCode(r).maxStack = static_cast<ca::u16>(v);
+    markDirty(r);
 }
 
 void facadeMethodSetMaxLocals(FacadeSession& s, const std::string& cls, const std::string& name,
                               const std::string& desc, int v)
 {
-    auto& te = resolveTree(s, cls);
-    resolveMethod(te, name, desc)->maxLocals = v;
-    te.dirty                                 = true;
+    MethodRef r = resolveMethod(s, cls, name, desc);
+    requireCode(r).maxLocals = static_cast<ca::u16>(v);
+    markDirty(r);
 }
 
 void facadeMethodSetExceptions(FacadeSession& s, const std::string& cls, const std::string& name,
                                const std::string& desc,
                                const std::vector<std::string>& exceptions)
 {
-    auto& te = resolveTree(s, cls);
-    auto* m  = resolveMethod(te, name, desc);
-    m->exceptions.clear();
-    for (const auto& e : exceptions) m->exceptions.push_back(internIn(s, e));
+    TreeEntry& te = resolveTree(s, cls);
+    MethodRef  r  = resolveMethod(s, cls, name, desc);
+    auto&      mi = te.session->backing().methods[methodUnitOf(te, r.id).backingIndex];
+    // 挂载语义「只挂不改」：替换 = 先摘旧槽再挂新体。
+    for (auto it = mi.attrs.begin(); it != mi.attrs.end(); ++it) {
+        if (te.session->backing().utf8(it->nameCp) == "Exceptions") {
+            mi.attrs.erase(it);
+            break;
+        }
+    }
+    if (!exceptions.empty()) {
+        auto body = std::make_unique<jb::ExceptionsAttr>();
+        for (const auto& e : exceptions) {
+            body->exceptionCps.push_back(te.session->internClass(e));
+        }
+        const auto mounted = te.session->attachAttr(r.id, "Exceptions", std::move(body));
+        if (mounted.is_err()) {
+            throw std::runtime_error("method_set_exceptions: mount failed for " + cls +
+                                     "." + name);
+        }
+    }
     te.dirty = true;
 }
 
 void facadeFieldSetAccess(FacadeSession& s, const std::string& cls, const std::string& name,
                           const std::string& desc, int access)
 {
-    auto& te = resolveTree(s, cls);
-    resolveField(te, name, desc)->access = access;
-    te.dirty                             = true;
+    TreeEntry& te = resolveTree(s, cls);
+    const auto id = resolveField(s, cls, name, desc);
+    te.session->unit().field(id)->access = static_cast<ca::u32>(access);
+    if (te.session->commitFieldMetadata(id).is_err()) {
+        throw std::runtime_error("field_set_access: commit failed for " + cls + "." + name);
+    }
+    te.dirty = true;
 }
 
 std::string facadeAddMethod(FacadeSession& s, const std::string& cls, const std::string& name,
                             const std::string& desc, int access, int maxStack, int maxLocals)
 {
-    auto& te = resolveTree(s, cls);
+    TreeEntry& te = resolveTree(s, cls);
     if (methodExists(te, name, desc)) {
         throw StaleRefError("method already exists: " + name + desc);
     }
-    // MethodNode 本体堆对象（ClassNode 析构统一 delete，nodes.hpp:637-638 契约）。
-    static const std::vector<ca::str::Utf8StringRef> kNoExceptions;
-    auto* m = new MethodNode(access, internIn(s, name), internIn(s, desc),
-                             ca::str::Utf8StringRef{}, kNoExceptions);
-    m->maxStack  = maxStack;
-    m->maxLocals = maxLocals;
-    te.node->methods.push_back(m);
+    ir::MethodSeed seed;
+    seed.name      = name;
+    seed.desc      = desc;
+    seed.access    = static_cast<ca::u32>(access);
+    seed.withCode  = true;
+    seed.maxStack  = static_cast<ca::u16>(maxStack);
+    seed.maxLocals = static_cast<ca::u16>(maxLocals);
+    const auto added = te.session->addMethod(seed);
+    if (added.is_err()) {
+        throw std::runtime_error(std::string("add_method failed: ") +
+                                 ir::to_string(added.unwrap_err()));
+    }
     te.dirty = true;
     return name;
 }
@@ -1080,11 +1525,17 @@ std::string facadeAddMethod(FacadeSession& s, const std::string& cls, const std:
 std::string facadeAddField(FacadeSession& s, const std::string& cls, const std::string& name,
                            const std::string& desc, int access)
 {
-    auto& te = resolveTree(s, cls);
-    if (fieldExists(te, name, desc)) throw StaleRefError("field already exists: " + name);
-    auto* f = new FieldNode(access, internIn(s, name), internIn(s, desc),
-                            ca::str::Utf8StringRef{}, ca::core::Any());
-    te.node->fields.push_back(f);
+    TreeEntry& te = resolveTree(s, cls);
+    if (fieldExists(te, name, desc)) {
+        throw StaleRefError("field already exists: " + name);
+    }
+    ir::FieldSeed seed;
+    seed.name   = name;
+    seed.desc   = desc;
+    seed.access = static_cast<ca::u32>(access);
+    if (te.session->addField(seed).is_err()) {
+        throw std::runtime_error("add_field failed");
+    }
     te.dirty = true;
     return name;
 }
@@ -1092,23 +1543,28 @@ std::string facadeAddField(FacadeSession& s, const std::string& cls, const std::
 void facadeRemoveMethod(FacadeSession& s, const std::string& cls, const std::string& name,
                         const std::string& desc)
 {
-    auto& te = resolveTree(s, cls);
-    auto* m  = resolveMethod(te, name, desc);
-    te.node->methods.erase(std::remove(te.node->methods.begin(), te.node->methods.end(), m),
-                           te.node->methods.end());
-    te.uidStates.erase(m);   // 墓地随方法销毁，uid 不再可解析
-    delete m;                // MethodNode 堆对象（ClassNode dtor 只删余下成员）
+    TreeEntry& te = resolveTree(s, cls);
+    MethodRef  r  = resolveMethod(s, cls, name, desc);
+    // 身份簿记与 uid 态同步退场（slot 复用由 libjbc 发号器管，uid 态按 slot
+    // 键清除，新成员从 uid 1 重发号）。
+    const auto removed = te.session->removeMethod(r.id);
+    if (removed.is_err()) {
+        throw std::runtime_error(std::string("remove_method failed: ") +
+                                 ir::to_string(removed.unwrap_err()));
+    }
+    te.uidStates.erase(r.id.slot);
     te.dirty = true;
 }
 
 void facadeRemoveField(FacadeSession& s, const std::string& cls, const std::string& name,
                        const std::string& desc)
 {
-    auto& te = resolveTree(s, cls);
-    auto* f  = resolveField(te, name, desc);
-    te.node->fields.erase(std::remove(te.node->fields.begin(), te.node->fields.end(), f),
-                          te.node->fields.end());
-    delete f;
+    TreeEntry& te = resolveTree(s, cls);
+    const auto id = resolveField(s, cls, name, desc);
+    const auto removed = te.session->removeField(id);
+    if (removed.is_err()) {
+        throw std::runtime_error("remove_field failed");
+    }
     te.dirty = true;
 }
 
@@ -1117,22 +1573,32 @@ void facadeRemoveField(FacadeSession& s, const std::string& cls, const std::stri
 ca::u32 facadeInsnCount(FacadeSession& s, const std::string& cls, const std::string& name,
                         const std::string& desc)
 {
-    const auto r = resolveMethodFlex(s, cls, name, desc);
-    auto* m = r.m;
-    return static_cast<ca::u32>(m->instructions.size());
+    return static_cast<ca::u32>(stateFor(resolveMethod(s, cls, name, desc)).order.size());
 }
 
 std::vector<InsnBrief> facadeInsns(FacadeSession& s, const std::string& cls,
                                    const std::string& name, const std::string& desc)
 {
-    const auto r = resolveMethodFlex(s, cls, name, desc);
-    auto* m = r.m;
-    auto& st = stateFor(s, r);
+    MethodRef  r  = resolveMethod(s, cls, name, desc);
+    auto&      st = stateFor(r);
+    ir::CodeDom* dom = r.te->session->unit().method(r.id)->code
+                           ? &r.te->session->unit().method(r.id)->code->dom
+                           : nullptr;
     std::vector<InsnBrief> out;
-    for (auto* p = m->instructions.getFirst(); p; p = p->getNext()) {
-        auto it = st.uidOf.find(p);
-        if (it == st.uidOf.end()) continue;
-        out.push_back(InsnBrief{it->second, p->opcode, p->getType()});
+    out.reserve(st.order.size());
+    for (const auto uid : st.order) {
+        const auto& a = st.addrOf.at(uid);
+        if (a.kind == InsnAddr::Slot::Label) {
+            out.push_back({uid, -1, insn_kind::kLabel});
+        }
+        else if (a.kind == InsnAddr::Slot::Line) {
+            out.push_back({uid, -1, insn_kind::kLine});
+        }
+        else {
+            const ir::Insn* in = dom ? dom->peek(a.insn) : nullptr;
+            out.push_back({uid, in ? static_cast<int>(in->op) : -1,
+                           in ? kindOf(in->op) : insn_kind::kInsn});
+        }
     }
     return out;
 }
@@ -1140,145 +1606,116 @@ std::vector<InsnBrief> facadeInsns(FacadeSession& s, const std::string& cls,
 InsnDetail facadeInsnDetail(FacadeSession& s, const std::string& cls, const std::string& name,
                             const std::string& desc, ca::u32 uid)
 {
-    const auto r = resolveMethodFlex(s, cls, name, desc);
-    return detailOf(stateFor(s, r), r.m, uid);
+    return detailOf(resolveMethod(s, cls, name, desc), uid);
 }
 
 ca::u32 facadeInsnIndex(FacadeSession& s, const std::string& cls, const std::string& name,
                         const std::string& desc, ca::u32 uid)
 {
-    const auto r = resolveMethodFlex(s, cls, name, desc);
-    auto* m = r.m;
-    auto& st = stateFor(s, r);
-    return static_cast<ca::u32>(m->instructions.indexOf(resolveInsn(st, uid)));
+    MethodRef r = resolveMethod(s, cls, name, desc);
+    resolveAddr(r, uid);   // 墓地解析即抛（fail-closed 不复活）
+    auto& st = stateFor(r);
+    auto  it = st.rowOf.find(uid);
+    if (it == st.rowOf.end()) {
+        throw StaleRefError("no such insn uid: " + std::to_string(uid));
+    }
+    return static_cast<ca::u32>(it->second);
 }
-
-namespace {
-
-std::optional<ca::u32> uidOfNode(const InsnUidState& st, AbstractInsnNode* node)
-{
-    auto it = st.uidOf.find(node);
-    if (it == st.uidOf.end()) return std::nullopt;
-    return it->second;
-}
-
-}   // namespace
 
 std::optional<ca::u32> facadeFirstInsn(FacadeSession& s, const std::string& cls,
                                        const std::string& name, const std::string& desc)
 {
-    const auto r = resolveMethodFlex(s, cls, name, desc);
-    auto* m = r.m;
-    auto& st = stateFor(s, r);
-    return uidOfNode(st, m->instructions.getFirst());
+    auto& st = stateFor(resolveMethod(s, cls, name, desc));
+    if (st.order.empty()) return std::nullopt;
+    return st.order.front();
 }
 
 std::optional<ca::u32> facadeLastInsn(FacadeSession& s, const std::string& cls,
                                       const std::string& name, const std::string& desc)
 {
-    const auto r = resolveMethodFlex(s, cls, name, desc);
-    auto* m = r.m;
-    auto& st = stateFor(s, r);
-    return uidOfNode(st, m->instructions.getLast());
+    auto& st = stateFor(resolveMethod(s, cls, name, desc));
+    if (st.order.empty()) return std::nullopt;
+    return st.order.back();
 }
 
 std::optional<ca::u32> facadeNextInsn(FacadeSession& s, const std::string& cls,
                                       const std::string& name, const std::string& desc,
                                       ca::u32 uid)
 {
-    const auto r = resolveMethodFlex(s, cls, name, desc);
-    auto* m = r.m;
-    auto& st = stateFor(s, r);
-    return uidOfNode(st, resolveInsn(st, uid)->getNext());
+    MethodRef r = resolveMethod(s, cls, name, desc);
+    resolveAddr(r, uid);
+    auto& st = stateFor(r);
+    auto  it = st.rowOf.find(uid);
+    if (it == st.rowOf.end() || it->second + 1 >= st.order.size()) return std::nullopt;
+    return st.order[it->second + 1];
 }
 
 std::optional<ca::u32> facadePrevInsn(FacadeSession& s, const std::string& cls,
                                       const std::string& name, const std::string& desc,
                                       ca::u32 uid)
 {
-    const auto r = resolveMethodFlex(s, cls, name, desc);
-    auto* m = r.m;
-    auto& st = stateFor(s, r);
-    return uidOfNode(st, resolveInsn(st, uid)->getPrevious());
+    MethodRef r = resolveMethod(s, cls, name, desc);
+    resolveAddr(r, uid);
+    auto& st = stateFor(r);
+    auto  it = st.rowOf.find(uid);
+    if (it == st.rowOf.end() || it->second == 0) return std::nullopt;
+    return st.order[it->second - 1];
 }
+
+// ── 指令写面 ──
 
 void facadeInsnSetOpcode(FacadeSession& s, const std::string& cls, const std::string& name,
                          const std::string& desc, ca::u32 uid, int op)
 {
-    const auto r = resolveMethodFlex(s, cls, name, desc);
-    auto* m = r.m;
-    auto& st = stateFor(s, r);
-    resolveInsn(st, uid)->opcode = op;
+    MethodRef  r   = resolveMethod(s, cls, name, desc);
+    auto&      dom = requireCode(r).dom;
+    ir::InsnId id  = liveInsn(r, uid);
+    // 形状换挡由调用方自证（libjbc get 契约：改 op 前调用方保证操作数匹配）；
+    // 控制流 op 换入时目标句柄若悬空会在 lower 期 fail-closed。
+    dom.get(id).unwrap()->op = static_cast<jb::Op>(op);
     markDirty(r);
 }
 
 void facadeInsnSetVar(FacadeSession& s, const std::string& cls, const std::string& name,
                       const std::string& desc, ca::u32 uid, int var)
 {
-    const auto r = resolveMethodFlex(s, cls, name, desc);
-    auto* m = r.m;
-    auto& st = stateFor(s, r);
-    auto* node = resolveInsn(st, uid);
-    if (node->getType() == AbstractInsnNode::VAR_INSN) {
-        static_cast<VarInsnNode*>(node)->var = var;
-    }
-    else if (node->getType() == AbstractInsnNode::IINC_INSN) {
-        static_cast<IincInsnNode*>(node)->var = var;
-    }
-    else {
-        throw std::runtime_error("insn_set_var: kind mismatch (" +
-                                 std::string(facadeInsnKindName(node->getType())) + ")");
-    }
+    MethodRef  r   = resolveMethod(s, cls, name, desc);
+    ir::InsnId id  = liveInsn(r, uid);
+    requireCode(r).dom.get(id).unwrap()->a = var;
     markDirty(r);
 }
 
 void facadeInsnSetIncr(FacadeSession& s, const std::string& cls, const std::string& name,
                        const std::string& desc, ca::u32 uid, int incr)
 {
-    const auto r = resolveMethodFlex(s, cls, name, desc);
-    auto* m = r.m;
-    auto& st = stateFor(s, r);
-    auto* node = resolveInsn(st, uid);
-    if (node->getType() != AbstractInsnNode::IINC_INSN) {
-        throw std::runtime_error("insn_set_incr: kind mismatch (" +
-                                 std::string(facadeInsnKindName(node->getType())) + ")");
-    }
-    static_cast<IincInsnNode*>(node)->incr = incr;
+    MethodRef  r   = resolveMethod(s, cls, name, desc);
+    ir::InsnId id  = liveInsn(r, uid);
+    requireCode(r).dom.get(id).unwrap()->b = incr;
     markDirty(r);
 }
 
 void facadeInsnSetOperand(FacadeSession& s, const std::string& cls, const std::string& name,
                           const std::string& desc, ca::u32 uid, int operand)
 {
-    const auto r = resolveMethodFlex(s, cls, name, desc);
-    auto* m = r.m;
-    auto& st = stateFor(s, r);
-    auto* node = resolveInsn(st, uid);
-    if (node->getType() != AbstractInsnNode::INT_INSN) {
-        throw std::runtime_error("insn_set_operand: kind mismatch (" +
-                                 std::string(facadeInsnKindName(node->getType())) + ")");
-    }
-    static_cast<IntInsnNode*>(node)->operand = operand;
+    MethodRef  r   = resolveMethod(s, cls, name, desc);
+    ir::InsnId id  = liveInsn(r, uid);
+    requireCode(r).dom.get(id).unwrap()->a = operand;
     markDirty(r);
 }
 
 void facadeInsnSetDesc(FacadeSession& s, const std::string& cls, const std::string& name,
                        const std::string& desc, ca::u32 uid, const std::string& typeDesc)
 {
-    const auto r = resolveMethodFlex(s, cls, name, desc);
-    auto* m = r.m;
-    auto& st = stateFor(s, r);
-    auto* node = resolveInsn(st, uid);
-    if (node->getType() == AbstractInsnNode::TYPE_INSN) {
-        static_cast<TypeInsnNode*>(node)->desc = internIn(s, typeDesc);
-    }
-    else if (node->getType() == AbstractInsnNode::MULTIANEWARRAY_INSN) {
-        static_cast<MultiANewArrayInsnNode*>(node)->desc = internIn(s, typeDesc);
-    }
-    else {
+    TreeEntry& te  = resolveTree(s, cls);
+    MethodRef  r   = resolveMethod(s, cls, name, desc);
+    ir::InsnId id  = liveInsn(r, uid);
+    auto*      in  = requireCode(r).dom.get(id).unwrap();
+    const auto k   = kindOf(in->op);
+    if (k != insn_kind::kType && k != insn_kind::kMultiANewArray) {
         throw std::runtime_error("insn_set_desc: kind mismatch (" +
-                                 std::string(facadeInsnKindName(node->getType())) + ")");
+                                 std::string(facadeInsnKindName(k)) + ")");
     }
+    in->cp = te.session->internClass(typeDesc);
     markDirty(r);
 }
 
@@ -1286,18 +1723,14 @@ void facadeInsnSetFieldRef(FacadeSession& s, const std::string& cls, const std::
                            const std::string& desc, ca::u32 uid, const std::string& owner,
                            const std::string& refName, const std::string& refDesc)
 {
-    const auto r = resolveMethodFlex(s, cls, name, desc);
-    auto* m = r.m;
-    auto& st = stateFor(s, r);
-    auto* node = resolveInsn(st, uid);
-    if (node->getType() != AbstractInsnNode::FIELD_INSN) {
-        throw std::runtime_error("insn_set_field_ref: kind mismatch (" +
-                                 std::string(facadeInsnKindName(node->getType())) + ")");
+    TreeEntry& te  = resolveTree(s, cls);
+    MethodRef  r   = resolveMethod(s, cls, name, desc);
+    ir::InsnId id  = liveInsn(r, uid);
+    auto*      in  = requireCode(r).dom.get(id).unwrap();
+    if (!te.session->setMember(*in, ir::ClassSession::MemberSem::Kind::Field, owner, refName,
+                               refDesc)) {
+        throw std::runtime_error("insn_set_field_ref: kind mismatch");
     }
-    auto& f     = *static_cast<FieldInsnNode*>(node);
-    f.owner     = internIn(s, owner);
-    f.name      = internIn(s, refName);
-    f.desc      = internIn(s, refDesc);
     markDirty(r);
 }
 
@@ -1305,84 +1738,72 @@ void facadeInsnSetMethodRef(FacadeSession& s, const std::string& cls, const std:
                             const std::string& desc, ca::u32 uid, const std::string& owner,
                             const std::string& refName, const std::string& refDesc, bool itf)
 {
-    const auto r = resolveMethodFlex(s, cls, name, desc);
-    auto* m = r.m;
-    auto& st = stateFor(s, r);
-    auto* node = resolveInsn(st, uid);
-    if (node->getType() != AbstractInsnNode::METHOD_INSN) {
-        throw std::runtime_error("insn_set_method_ref: kind mismatch (" +
-                                 std::string(facadeInsnKindName(node->getType())) + ")");
+    TreeEntry& te  = resolveTree(s, cls);
+    MethodRef  r   = resolveMethod(s, cls, name, desc);
+    ir::InsnId id  = liveInsn(r, uid);
+    auto*      in  = requireCode(r).dom.get(id).unwrap();
+    const auto kind = itf ? ir::ClassSession::MemberSem::Kind::InterfaceMethod
+                          : ir::ClassSession::MemberSem::Kind::Method;
+    if (!te.session->setMember(*in, kind, owner, refName, refDesc)) {
+        throw std::runtime_error("insn_set_method_ref: kind mismatch");
     }
-    auto& mi  = *static_cast<MethodInsnNode*>(node);
-    mi.owner  = internIn(s, owner);
-    mi.name   = internIn(s, refName);
-    mi.desc   = internIn(s, refDesc);
-    mi.isInterface = itf;
     markDirty(r);
 }
 
 void facadeInsnSetCst(FacadeSession& s, const std::string& cls, const std::string& name,
                       const std::string& desc, ca::u32 uid, ca::core::Any value)
 {
-    const auto r = resolveMethodFlex(s, cls, name, desc);
-    auto* m = r.m;
-    auto& st = stateFor(s, r);
-    auto* node = resolveInsn(st, uid);
-    if (node->getType() != AbstractInsnNode::LDC_INSN) {
+    TreeEntry& te  = resolveTree(s, cls);
+    MethodRef  r   = resolveMethod(s, cls, name, desc);
+    ir::InsnId id  = liveInsn(r, uid);
+    auto*      in  = requireCode(r).dom.get(id).unwrap();
+    if (kindOf(in->op) != insn_kind::kLdc) {
         throw std::runtime_error("insn_set_cst: kind mismatch (" +
-                                 std::string(facadeInsnKindName(node->getType())) + ")");
+                                 std::string(facadeInsnKindName(kindOf(in->op))) + ")");
     }
-    static_cast<LdcInsnNode*>(node)->cst = std::move(value);
+    in->cp = cpOfAny(te, value);
     markDirty(r);
 }
 
 void facadeInsnSetTarget(FacadeSession& s, const std::string& cls, const std::string& name,
                          const std::string& desc, ca::u32 uid, ca::u32 targetUid)
 {
-    const auto r = resolveMethodFlex(s, cls, name, desc);
-    auto* m = r.m;
-    auto& st = stateFor(s, r);
-    auto* node = resolveInsn(st, uid);
-    if (node->getType() != AbstractInsnNode::JUMP_INSN) {
-        throw std::runtime_error("insn_set_target: kind mismatch (" +
-                                 std::string(facadeInsnKindName(node->getType())) + ")");
-    }
-    auto* target = resolveLabelNode(st, targetUid);
-    static_cast<JumpInsnNode*>(node)->label = target->label;
-    markDirty(r);
+    retarget(resolveMethod(s, cls, name, desc), uid, targetUid);
 }
+
+// ── 发射族 ──
 
 ca::u32 facadeEmitInsn(FacadeSession& s, const std::string& cls, const std::string& name,
                        const std::string& desc, int op, std::optional<ca::u32> pos)
 {
-    const auto r = resolveMethodFlex(s, cls, name, desc);
-    auto* m = r.m;
-    return emitNode<InsnNode>(s, r, pos, op);
+    return emitAt(resolveMethod(s, cls, name, desc), mkInsn(static_cast<jb::Op>(op)), pos);
 }
 
 ca::u32 facadeEmitVar(FacadeSession& s, const std::string& cls, const std::string& name,
                       const std::string& desc, int op, int var, std::optional<ca::u32> pos)
 {
-    const auto r = resolveMethodFlex(s, cls, name, desc);
-    auto* m = r.m;
-    return emitNode<VarInsnNode>(s, r, pos, op, var);
+    auto in = mkInsn(static_cast<jb::Op>(op));
+    in.a    = var;
+    return emitAt(resolveMethod(s, cls, name, desc), std::move(in), pos);
 }
 
 ca::u32 facadeEmitIinc(FacadeSession& s, const std::string& cls, const std::string& name,
                        const std::string& desc, int var, int incr, std::optional<ca::u32> pos)
 {
-    const auto r = resolveMethodFlex(s, cls, name, desc);
-    auto* m = r.m;
-    return emitNode<IincInsnNode>(s, r, pos, var, incr);
+    auto in = mkInsn(jb::Op::IINC);
+    in.a    = var;
+    in.b    = incr;
+    return emitAt(resolveMethod(s, cls, name, desc), std::move(in), pos);
 }
 
 ca::u32 facadeEmitType(FacadeSession& s, const std::string& cls, const std::string& name,
                        const std::string& desc, int op, const std::string& typeDesc,
                        std::optional<ca::u32> pos)
 {
-    const auto r = resolveMethodFlex(s, cls, name, desc);
-    auto* m = r.m;
-    return emitNode<TypeInsnNode>(s, r, pos, op, internIn(s, typeDesc));
+    TreeEntry& te = resolveTree(s, cls);
+    auto in      = mkInsn(static_cast<jb::Op>(op));
+    in.cp        = te.session->internClass(typeDesc);
+    return emitAt(resolveMethod(s, cls, name, desc), std::move(in), pos);
 }
 
 ca::u32 facadeEmitField(FacadeSession& s, const std::string& cls, const std::string& name,
@@ -1390,10 +1811,10 @@ ca::u32 facadeEmitField(FacadeSession& s, const std::string& cls, const std::str
                         const std::string& refName, const std::string& refDesc,
                         std::optional<ca::u32> pos)
 {
-    const auto r = resolveMethodFlex(s, cls, name, desc);
-    auto* m = r.m;
-    return emitNode<FieldInsnNode>(s, r, pos, op, internIn(s, owner), internIn(s, refName),
-                                   internIn(s, refDesc));
+    TreeEntry& te = resolveTree(s, cls);
+    auto in      = mkInsn(static_cast<jb::Op>(op));
+    in.cp        = te.session->internFieldRef(owner, refName, refDesc);
+    return emitAt(resolveMethod(s, cls, name, desc), std::move(in), pos);
 }
 
 ca::u32 facadeEmitMethodCall(FacadeSession& s, const std::string& cls, const std::string& name,
@@ -1401,66 +1822,50 @@ ca::u32 facadeEmitMethodCall(FacadeSession& s, const std::string& cls, const std
                              const std::string& refName, const std::string& refDesc, bool itf,
                              std::optional<ca::u32> pos)
 {
-    const auto r = resolveMethodFlex(s, cls, name, desc);
-    auto* m = r.m;
-    return emitNode<MethodInsnNode>(s, r, pos, op, internIn(s, owner), internIn(s, refName),
-                                    internIn(s, refDesc), itf);
+    TreeEntry& te = resolveTree(s, cls);
+    auto in      = mkInsn(static_cast<jb::Op>(op));
+    in.cp        = itf ? te.session->internInterfaceMethodRef(owner, refName, refDesc)
+                       : te.session->internMethodRef(owner, refName, refDesc);
+    return emitAt(resolveMethod(s, cls, name, desc), std::move(in), pos);
 }
 
 ca::u32 facadeEmitLdc(FacadeSession& s, const std::string& cls, const std::string& name,
                       const std::string& desc, ca::core::Any value, std::optional<ca::u32> pos)
 {
-    const auto r = resolveMethodFlex(s, cls, name, desc);
-    auto* m = r.m;
-    return emitNode<LdcInsnNode>(s, r, pos, std::move(value));
+    TreeEntry& te = resolveTree(s, cls);
+    auto in      = mkInsn(jb::Op::LDC);
+    in.cp        = cpOfAny(te, value);
+    return emitAt(resolveMethod(s, cls, name, desc), std::move(in), pos);
 }
 
 ca::u32 facadeEmitJump(FacadeSession& s, const std::string& cls, const std::string& name,
                        const std::string& desc, int op, ca::u32 targetUid,
                        std::optional<ca::u32> pos)
 {
-    const auto r = resolveMethodFlex(s, cls, name, desc);
-    auto* m = r.m;
-    auto& st = stateFor(s, r);
-    auto* target = resolveLabelNode(st, targetUid);
-    return emitNode<JumpInsnNode>(s, r, pos, op, target->label);
+    MethodRef r = resolveMethod(s, cls, name, desc);
+    auto in      = mkInsn(static_cast<jb::Op>(op));
+    in.target    = liveLabel(r, targetUid);
+    return emitAt(r, std::move(in), pos);
 }
-
-namespace {
-
-/// switch 目标解析：default + targets 全数校验为既有 label 节点
-/// （返回序：[default, target0, target1, ...]）。
-std::vector<Label*> resolveSwitchTargets(InsnUidState& st, ca::u32 defaultUid,
-                                         const std::vector<ca::u32>& targetUids)
-{
-    std::vector<Label*> out;
-    out.reserve(targetUids.size() + 1);
-    out.push_back(resolveLabelNode(st, defaultUid)->label);
-    for (const auto uid : targetUids) out.push_back(resolveLabelNode(st, uid)->label);
-    return out;
-}
-
-}   // namespace
 
 ca::u32 facadeEmitTableSwitch(FacadeSession& s, const std::string& cls, const std::string& name,
                               const std::string& desc, int min, int max, ca::u32 defaultUid,
                               const std::vector<ca::u32>& targetUids, std::optional<ca::u32> pos)
 {
-    const auto r = resolveMethodFlex(s, cls, name, desc);
-    auto* m = r.m;
-    auto& st = stateFor(s, r);
-    // 结构性校验（fail-closed）：表项数与值域宽度必须一致，否则写出的类
-    // 跳转表错位（真机验证必炸）。
-    if (static_cast<ca::i64>(max) - static_cast<ca::i64>(min) + 1 !=
-        static_cast<ca::i64>(targetUids.size())) {
-        throw std::runtime_error(
-            "emit_switch table: targets count (" + std::to_string(targetUids.size()) +
-            ") != max-min+1 (" + std::to_string(static_cast<ca::i64>(max) - min + 1) + ")");
+    // 结构性校验 fail-closed（JVMS tableswitch：low..high 逐个对应 targets）。
+    if (min > max) {
+        throw std::runtime_error("emit_tableswitch: min > max");
     }
-    auto labels = resolveSwitchTargets(st, defaultUid, targetUids);
-    auto* dflt  = labels.front();
-    labels.erase(labels.begin());
-    return emitNode<TableSwitchInsnNode>(s, r, pos, min, max, dflt, labels);
+    if (targetUids.size() != static_cast<ca::usize>(max - min + 1)) {
+        throw std::runtime_error("emit_tableswitch: targets size must equal max-min+1");
+    }
+    MethodRef r = resolveMethod(s, cls, name, desc);
+    auto in      = mkInsn(jb::Op::TABLESWITCH);
+    in.a         = min;
+    in.b         = max;
+    in.target    = liveLabel(r, defaultUid);
+    for (const auto t : targetUids) in.targets.push_back(liveLabel(r, t));
+    return emitAt(r, std::move(in), pos);
 }
 
 ca::u32 facadeEmitLookupSwitch(FacadeSession& s, const std::string& cls, const std::string& name,
@@ -1468,50 +1873,119 @@ ca::u32 facadeEmitLookupSwitch(FacadeSession& s, const std::string& cls, const s
                                ca::u32 defaultUid, const std::vector<ca::u32>& targetUids,
                                std::optional<ca::u32> pos)
 {
-    const auto r = resolveMethodFlex(s, cls, name, desc);
-    auto* m = r.m;
-    auto& st = stateFor(s, r);
-    // 结构性校验（fail-closed）：key/target 成对 + JVM 要求 key 严格升序
-    // （乱序写出的类真机 lookupswitch 二分查找结果未定义）。
+    // JVM 查找表序：keys 严格升序（乱序写出的类真机验证必炸——fail-closed）。
     if (keys.size() != targetUids.size()) {
-        throw std::runtime_error("emit_switch lookup: keys count (" + std::to_string(keys.size()) +
-                                 ") != targets count (" + std::to_string(targetUids.size()) + ")");
+        throw std::runtime_error("emit_lookupswitch: keys and targets size mismatch");
     }
-    for (std::size_t i = 1; i < keys.size(); ++i) {
+    for (ca::usize i = 1; i < keys.size(); ++i) {
         if (keys[i - 1] >= keys[i]) {
-            throw std::runtime_error("emit_switch lookup: keys not strictly ascending at " +
-                                     std::to_string(i));
+            throw std::runtime_error("emit_lookupswitch: keys must be strictly ascending");
         }
     }
-    auto labels = resolveSwitchTargets(st, defaultUid, targetUids);
-    auto* dflt  = labels.front();
-    labels.erase(labels.begin());
-    return emitNode<LookupSwitchInsnNode>(s, r, pos, dflt, keys, labels);
+    MethodRef r = resolveMethod(s, cls, name, desc);
+    auto in      = mkInsn(jb::Op::LOOKUPSWITCH);
+    in.target    = liveLabel(r, defaultUid);
+    in.keys      = keys;
+    for (const auto t : targetUids) in.targets.push_back(liveLabel(r, t));
+    return emitAt(r, std::move(in), pos);
 }
 
 ca::u32 facadeEmitLabel(FacadeSession& s, const std::string& cls, const std::string& name,
                         const std::string& desc, std::optional<ca::u32> pos)
 {
-    const auto r = resolveMethodFlex(s, cls, name, desc);
-    auto* m = r.m;
-    // B8 归属制：Label 归方法 arena（v2 堆 new Label 由 LabelNode 空析构泄漏，此处置正）。
-    auto* label = m->arena().create<Label>();
-    label->setOwner(&m->arena());
-    return emitNode<LabelNode>(s, r, pos, label);
+    MethodRef  r   = resolveMethod(s, cls, name, desc);
+    auto&      st  = stateFor(r);
+    auto&      dom = requireCode(r).dom;
+    ca::usize rowIndex = st.order.size();
+    if (pos) {
+        resolveAddr(r, *pos);   // 墓地解析即抛（fail-closed 不复活）
+        rowIndex = st.rowOf[*pos];
+    }
+    // Boundary 角色，锚在前置边界/方法末尾；锚定随后续发射按行序规则动态跟随。
+    const auto made = dom.createLabel(ir::kNoInsn);
+    if (made.is_err()) {
+        throw std::runtime_error("emit_label: createLabel failed");
+    }
+    const ir::LabelId lid = made.unwrap();
+    const ca::u32 uid = st.nextUid++;
+    InsnAddr addr;
+    addr.kind  = InsnAddr::Slot::Label;
+    addr.label = lid;
+    st.addrOf.emplace(uid, addr);
+    st.uidOfLabelSlot.emplace(lid.slot, uid);
+    st.order.insert(st.order.begin() + static_cast<std::ptrdiff_t>(rowIndex), uid);
+    rebuildRowOf(st);
+    markDirty(r);
+    return uid;
 }
 
 void facadeRemoveInsn(FacadeSession& s, const std::string& cls, const std::string& name,
                       const std::string& desc, ca::u32 uid)
 {
-    const auto r = resolveMethodFlex(s, cls, name, desc);
-    auto* m = r.m;
-    auto& st = stateFor(s, r);
-    auto* node = resolveInsn(st, uid);
-    // 摘链不销毁（insn_list.hpp:419 arena 节点语义）：节点内存随树回收，
-    // uid 保留映射进墓地——后续解析 fail-closed（契约 §3.3）。
-    m->instructions.remove(node);
-    st.dead.insert(uid);
-    st.labelIndexDirty = true;   // 墓地扩员：label 反查集随之收缩
+    TreeEntry& te = resolveTree(s, cls);
+    MethodRef  r  = resolveMethod(s, cls, name, desc);
+    auto&      st = stateFor(r);
+    // 先解析（墓地二次删除在此抛），再摘链。
+    const InsnAddr addr = resolveAddr(r, uid);
+    if (addr.kind == InsnAddr::Slot::Insn) {
+        auto& dom = requireCode(r).dom;
+        // 仍被 branch/switch 字段或存活 Boundary 标签锚定 → StillUsed，
+        // fail-closed 抛（比旧树的悬垂链表更严，坏罐在编辑面挡掉）。
+        const auto erased = dom.erase(addr.insn);
+        if (erased.is_err()) {
+            throw StaleRefError("insn remove refused: uid " + std::to_string(uid) + " (" +
+                                ir::to_string(erased.unwrap_err()) + ")");
+        }
+        st.uidOfInsnSlot.erase(addr.insn.slot);
+    }
+    else if (addr.kind == InsnAddr::Slot::Label) {
+        auto& dom = requireCode(r).dom;
+        const auto destroyed = dom.destroyLabel(addr.label);
+        if (destroyed.is_err()) {
+            throw StaleRefError("label remove refused: uid " + std::to_string(uid) + " (" +
+                                ir::to_string(destroyed.unwrap_err()) + ")");
+        }
+        st.uidOfLabelSlot.erase(addr.label.slot);
+    }
+    else {
+        // Line 行是 LNT 投影：删行 = 直改 LNT 属性（物化投影随属性走）。
+        auto& mu = methodUnitOf(te, r.id);
+        auto& cf = te.session->backing();
+        auto  ca = cf.decodeCode(cf.methods[mu.backingIndex]);
+        if (ca.is_err()) throw std::runtime_error("line remove: code attr unavailable");
+        jb::AttrSlot* slotPtr = nullptr;
+        for (auto& slot : ca.unwrap()->attrs) {
+            if (cf.utf8(slot.nameCp) == "LineNumberTable") {
+                slotPtr = &slot;
+                break;
+            }
+        }
+        if (!slotPtr) throw std::runtime_error("line remove: no LineNumberTable");
+        const auto decoded = cf.decodeAttr(*slotPtr);
+        if (decoded.is_err()) throw std::runtime_error("line remove: decode failed");
+        auto* lnt = ca::core::tag_cast::dyn_cast<jb::LineNumberTableAttr>(decoded.unwrap());
+        if (!lnt) throw std::runtime_error("line remove: attr kind mismatch");
+        // tag_cast::dyn_cast 只出 const 指针；可变写入按库规约 isa 守护 + cast。
+        auto* rawBody    = slotPtr->mutate();
+        auto* mutableLnt = ca::core::tag_cast::isa<jb::LineNumberTableAttr>(rawBody)
+                               ? ca::core::tag_cast::cast<jb::LineNumberTableAttr>(rawBody)
+                               : nullptr;
+        if (!mutableLnt) throw std::runtime_error("line remove: mutate failed");
+        bool removed = false;
+        for (auto it = mutableLnt->rows.begin(); it != mutableLnt->rows.end(); ++it) {
+            if (it->startPc == addr.linePc && static_cast<int>(it->line) == addr.lineNo) {
+                mutableLnt->rows.erase(it);
+                removed = true;
+                break;
+            }
+        }
+        if (!removed) throw StaleRefError("line row not found: uid " + std::to_string(uid));
+    }
+    auto rowIt = st.rowOf.find(uid);
+    if (rowIt != st.rowOf.end()) {
+        st.order.erase(st.order.begin() + static_cast<std::ptrdiff_t>(rowIt->second));
+        rebuildRowOf(st);
+    }
     markDirty(r);
 }
 
@@ -1520,16 +1994,19 @@ void facadeRemoveInsn(FacadeSession& s, const std::string& cls, const std::strin
 std::vector<std::tuple<ca::u32, ca::u32, ca::u32, std::string>> facadeTryCatches(
     FacadeSession& s, const std::string& cls, const std::string& name, const std::string& desc)
 {
-    const auto r = resolveMethodFlex(s, cls, name, desc);
-    auto* m = r.m;
-    const auto& labels = labelIndex(stateFor(s, r));
+    MethodRef r = resolveMethod(s, cls, name, desc);
+    auto&     cu = requireCode(r);
+    auto&     st = stateFor(r);
+    auto&     cf = r.te->session->backing();
     std::vector<std::tuple<ca::u32, ca::u32, ca::u32, std::string>> out;
-    for (const auto* tc : m->tryCatchBlocks) {
-        auto su = labels.find(tc->start);
-        auto eu = labels.find(tc->end);
-        auto hu = labels.find(tc->handler);
-        out.emplace_back(su != labels.end() ? su->second : 0, eu != labels.end() ? eu->second : 0,
-                         hu != labels.end() ? hu->second : 0, tc->type.to_std_string());
+    const auto uidOfLabel = [&](ir::LabelId l) {
+        if (l == ir::kNoLabel) return ca::u32{0};
+        auto it = st.uidOfLabelSlot.find(l.slot);
+        return it != st.uidOfLabelSlot.end() ? it->second : ca::u32{0};
+    };
+    for (const auto& e : cu.exc) {
+        out.emplace_back(uidOfLabel(e.start), uidOfLabel(e.end), uidOfLabel(e.handler),
+                         e.catchCp == 0 ? std::string() : std::string(cf.className(e.catchCp)));
     }
     return out;
 }
@@ -1538,52 +2015,31 @@ void facadeAddTryCatch(FacadeSession& s, const std::string& cls, const std::stri
                        const std::string& desc, ca::u32 startUid, ca::u32 endUid,
                        ca::u32 handlerUid, const std::string& catchType)
 {
-    const auto r = resolveMethodFlex(s, cls, name, desc);
-    auto* m = r.m;
-    auto& st = stateFor(s, r);
-    auto* ls = resolveLabelNode(st, startUid);
-    auto* le = resolveLabelNode(st, endUid);
-    auto* lh = resolveLabelNode(st, handlerUid);
-    // TryCatchBlockNode 经方法 nodeArena_ 分配（pysdk 双重释放定案）。
-    m->tryCatchBlocks.push_back(
-        m->create<TryCatchBlockNode>(ls->label, le->label, lh->label, internIn(s, catchType)));
+    TreeEntry& te = resolveTree(s, cls);
+    MethodRef  r  = resolveMethod(s, cls, name, desc);
+    auto&      cu = requireCode(r);
+    // 三 uid 均须为 label 节点（旧契约同款校验）。
+    const auto startId   = liveLabel(r, startUid);
+    const auto endId     = liveLabel(r, endUid);
+    const auto handlerId = liveLabel(r, handlerUid);
+    cu.exc.push_back({startId, endId, handlerId,
+                      catchType.empty() ? ca::u32{0} : te.session->internClass(catchType)});
     markDirty(r);
 }
 
 void facadeRemoveTryCatch(FacadeSession& s, const std::string& cls, const std::string& name,
                           const std::string& desc, ca::usize rowIndex)
 {
-    const auto r = resolveMethodFlex(s, cls, name, desc);
-    auto* m = r.m;
-    if (rowIndex >= m->tryCatchBlocks.size()) {
-        throw StaleRefError("try-catch row out of range: " + std::to_string(rowIndex));
+    MethodRef r = resolveMethod(s, cls, name, desc);
+    auto&     cu = requireCode(r);
+    if (rowIndex >= cu.exc.size()) {
+        throw StaleRefError("try/catch row out of range: " + std::to_string(rowIndex));
     }
-    m->tryCatchBlocks.erase(m->tryCatchBlocks.begin() +
-                            static_cast<std::ptrdiff_t>(rowIndex));
+    cu.exc.erase(cu.exc.begin() + static_cast<std::ptrdiff_t>(rowIndex));
     markDirty(r);
 }
 
 // ── 写回/落盘 ──
-
-void facadeWriteBack(FacadeSession& s, const std::string& name, bool computeFrames)
-{
-    TreeEntry& te = resolveTree(s, name);
-    jbytecode::core::ClassWriter writer(
-        *s.arena, computeFrames ? jbytecode::core::ClassWriter::COMPUTE_FRAMES : 0);
-    te.node->accept(&writer);
-    auto bytes = writer.toByteArray();
-    if (bytes.empty()) throw std::runtime_error("write_back: empty serialization for " + name);
-    auto uriIt = s.nameToUri.find(name);
-    if (uriIt == s.nameToUri.end()) throw StaleRefError("class not found: " + name);
-    auto* r = s.container->getResource(uriIt->second);
-    if (!ca::core::tag_cast::isa<ClassResource>(r)) {
-        throw std::runtime_error("not a class entry: " + name);
-    }
-    auto* cr = ca::core::tag_cast::cast<ClassResource>(r);
-    cr->set(std::move(bytes));
-    te.dirty = false;
-    facadeSyncEntries(s);   // 挂账的类改名条目搬移随写回落账（G2）
-}
 
 std::vector<std::string> facadeSyncEntries(FacadeSession& s)
 {
@@ -1605,6 +2061,124 @@ std::vector<std::string> facadeSyncEntries(FacadeSession& s)
     return moved;
 }
 
+namespace {
+
+/// 帧重算 + SMT 再生（compute_frames=true 档）：
+///   lower（布局重定位）→ Strict 帧计算 → maxes 采用 → SMT 构建 → 嵌套槽
+///   换体（Modified 强制重编码；缺槽 makeNew、不需要则摘槽）→ 再 lower
+///   （maxes/SMT 落盘；布局未变，重定位通路不再触发，换上的 SMT 原样编码）。
+void recomputeFrames(TreeEntry& te, const std::string& name, ir::MethodUnit& mu)
+{
+    auto& session = *te.session;
+    auto& cf      = session.backing();
+    auto& cu      = *mu.code;
+
+    jan::MethodSig sig;
+    sig.isStatic  = (mu.access & kAccStatic) != 0;
+    sig.desc      = session.unit().symbols().str(mu.desc);
+    sig.name      = session.unit().symbols().str(mu.name);
+    sig.thisClass = session.unit().symbols().str(session.unit().thisClass);
+
+    jan::ShapeResolver   resolver;
+    jan::FrameEngine     engine(cf.cp, resolver, jan::FramePolicy::Strict);
+    std::vector<jan::FrameAt> frames;
+    const auto           summary = engine.compute(cu, sig, frames);
+    if (!summary.ok) {
+        throw std::runtime_error("write_back: frame computation failed for " + name + "." +
+                                 std::string(sig.name) + " (" +
+                                 jan::to_string(summary.fail) + ")");
+    }
+    if (!jan::applyComputedMaxes(cu, summary, sig)) {
+        throw std::runtime_error("write_back: computed maxes out of u16 range for " + name +
+                                 "." + std::string(sig.name));
+    }
+    auto built = jan::buildStackMapTable(session, cu, frames);
+    if (built.is_err()) {
+        // v<50 无 SMT 定义：跳过（调用方契约：老版本类不产帧）。
+        if (built.unwrap_err() == jan::SmtBuildError::ClassTooOld) return;
+        throw std::runtime_error("write_back: stack map table build failed for " + name +
+                                 "." + std::string(sig.name) + " (" +
+                                 jan::to_string(built.unwrap_err()) + ")");
+    }
+    auto res = std::move(built).unwrap();
+
+    auto  ca        = cf.decodeCode(cf.methods[mu.backingIndex]);
+    if (ca.is_err()) {
+        throw std::runtime_error("write_back: code attr decode failed for " + name);
+    }
+    auto* codeAttr = ca.unwrap();
+    auto  slotIt   = codeAttr->attrs.end();
+    for (auto it = codeAttr->attrs.begin(); it != codeAttr->attrs.end(); ++it) {
+        if (cf.utf8(it->nameCp) == "StackMapTable") {
+            slotIt = it;
+            break;
+        }
+    }
+    if (res.needed) {
+        if (slotIt != codeAttr->attrs.end()) {
+            // 换体 + 置脏：既有重编码通路拾取新帧（body swap 是槽级手术的
+            // 认可形态；mutate 通路只服务解码后的就地小改）。
+            slotIt->body  = std::move(res.attr);
+            slotIt->state = jb::AttrSlot::State::Modified;
+        }
+        else {
+            codeAttr->attrs.push_back(
+                jb::AttrSlot::makeNew(session.internUtf8("StackMapTable"), std::move(res.attr)));
+        }
+    }
+    else if (slotIt != codeAttr->attrs.end()) {
+        // 无控制流目标：空表也不写（SmtBuildResult.needed 契约）。
+        codeAttr->attrs.erase(slotIt);
+    }
+}
+
+}   // namespace
+
+void facadeWriteBack(FacadeSession& s, const std::string& name, bool computeFrames)
+{
+    TreeEntry& te   = resolveTree(s, name);
+    auto&      unit = te.session->unit();
+    // 第一遍 lower：编辑布局落盘（嵌套 LVT/LNT/SMT 按 pcmap fail-closed 重定位；
+    // 未编辑方法 copy-through 零成本）。
+    for (auto& mu : unit.methods) {
+        if (!mu.code) continue;
+        const auto lowered = ir::lowerMethod(*te.session, mu.id);
+        if (lowered.is_err()) {
+            throw std::runtime_error("write_back: lower failed for " + name + "." +
+                                     std::string(unit.symbols().str(mu.name)) + " (" +
+                                     ir::to_string(lowered.unwrap_err()) + ")");
+        }
+    }
+    if (computeFrames) {
+        for (auto& mu : unit.methods) {
+            if (!mu.code) continue;
+            recomputeFrames(te, name, mu);
+            const auto lowered = ir::lowerMethod(*te.session, mu.id);
+            if (lowered.is_err()) {
+                throw std::runtime_error("write_back: final lower failed for " + name + "." +
+                                         std::string(unit.symbols().str(mu.name)) + " (" +
+                                         ir::to_string(lowered.unwrap_err()) + ")");
+            }
+        }
+    }
+    const auto written = jb::writeClass(te.session->backing());
+    if (written.is_err()) {
+        throw std::runtime_error("write_back: serialization failed for " + name);
+    }
+    auto bytes = std::move(written).unwrap();
+    if (bytes.empty()) throw std::runtime_error("write_back: empty serialization for " + name);
+    auto uriIt = s.nameToUri.find(name);
+    if (uriIt == s.nameToUri.end()) throw StaleRefError("class not found: " + name);
+    auto* r = s.container->getResource(uriIt->second);
+    if (!ca::core::tag_cast::isa<ClassResource>(r)) {
+        throw std::runtime_error("not a class entry: " + name);
+    }
+    auto* cr = ca::core::tag_cast::cast<ClassResource>(r);
+    cr->set(std::move(bytes));
+    te.dirty = false;
+    facadeSyncEntries(s);   // 挂账的类改名条目搬移随写回落账（G2）
+}
+
 std::vector<std::string> facadeFlush(FacadeSession& s, bool computeFrames)
 {
     std::vector<std::string> out;
@@ -1622,24 +2196,6 @@ void facadeSave(FacadeSession& s, const std::string& path, bool computeFrames)
     facadeFlush(s, computeFrames);
     facadeSyncEntries(s);
     stagedExportJar(*s.container, path);
-}
-
-// ── ephemeral 方法（契约 §3.6） ──────────────────────────────────────────
-
-std::string facadeAdoptEphemeralMethod(FacadeSession& s, jbytecode::tree::MethodNode& m,
-                                       const std::string& name, const std::string& desc)
-{
-    const std::string key = "\x00ephem:" + std::to_string(s.ephemeralNext++);
-    s.ephemeralMethods[key] = &m;
-    return key;
-}
-
-void facadeReleaseEphemeralMethod(FacadeSession& s, const std::string& ephemKey)
-{
-    auto it = s.ephemeralMethods.find(ephemKey);
-    if (it == s.ephemeralMethods.end()) return;
-    s.ephemeralUids.erase(it->second);
-    s.ephemeralMethods.erase(it);
 }
 
 // ── rename token 面（契约 §2.7） ─────────────────────────────────────────
@@ -1717,9 +2273,7 @@ void facadeTokenCommit(FacadeSession& s, bool reflectionStrings, bool annotation
     auto& t = *s.renameToken;
     // 先 flush 全部脏树：remapper 从容器字节重写并随后 clearTrees，未落盘的
     // 树编辑会被静默丢弃（实测：41 个折叠调用点整批蒸发）。取 computeFrames=
-    // false：remap 本身保帧，且 facade 写回的 COMPUTE_FRAMES 对「尾插死代码」
-    // 形状会产出损坏方法体（iconst_1 蒸发、长出 frame/label/athrow，实测）；
-    // 需要重算帧的脚本应显式 flush(h, true)/save(compute_frames=true)。
+    // false：remap 本身保帧；需要重算帧的脚本应显式 flush(h, true)。
     facadeFlush(s, /*computeFrames=*/false);
     mjbase::asm_remapper::RemapPolicy policy;
     policy.bytecode          = true;
@@ -1828,14 +2382,29 @@ ContainerVerifyReport facadeVerifyContainer(FacadeSession& s)
             ++rep.nonClass;
             return;
         }
-        // 解析闸：malformed 单独计（entry 路径进 detail）。arena 存活须覆盖
-        // 节点字符串的全部读取（name 在 try 外读）——不得缩进 try 块内。
-        auto node = std::make_unique<ClassNode>();
-        ca::str::Utf8StringArena localArena;
+        // 解析闸：malformed 单独计（entry 路径进 detail）。
+        std::shared_ptr<ir::ClassSession> session;
         try {
-            jbytecode::core::ClassReader reader(localArena, cr->get().data(),
-                                                static_cast<ca::i32>(cr->get().size()));
-            reader.accept(node.get(), 0);
+            auto opened = ir::makeSessionFromBytes(jb::ByteView(cr->get()));
+            if (opened.is_err()) {
+                ++rep.malformed;
+                rep.malformedDetails.push_back({uri, "session build failed"});
+                return;
+            }
+            session = std::move(opened).unwrap();
+            auto&   unit = session->unit();
+            // 指令级引用抽取需要方法体：逐个升格（坏方法体计入 malformed）。
+            for (auto& mu : unit.methods) {
+                if (mu.code != nullptr) continue;
+                if (!ir::hasCode(*session, mu.backingIndex)) continue;
+                const auto promoted = ir::promoteMethod(*session, mu.id);
+                if (promoted.is_err()) {
+                    ++rep.malformed;
+                    rep.malformedDetails.push_back(
+                        {uri, "promote failed: " + std::string(ir::to_string(promoted.unwrap_err()))});
+                    return;
+                }
+            }
         }
         catch (const std::exception& e) {
             ++rep.malformed;
@@ -1844,7 +2413,9 @@ ContainerVerifyReport facadeVerifyContainer(FacadeSession& s)
         }
 
         // entry 路径 ↔ this_class 比对（oracle entry-probe 同款口径）。
-        const std::string declaredName = node->name.to_std_string();
+        auto&  unit         = session->unit();
+        auto&  sp           = unit.symbols();
+        const std::string declaredName(sp.str(unit.thisClass));
         declared.insert(declaredName);
         std::string expected = uri;
         if (expected.size() > 6 && expected.compare(expected.size() - 6, 6, ".class") == 0)
@@ -1859,28 +2430,25 @@ ContainerVerifyReport facadeVerifyContainer(FacadeSession& s)
 
         // 引用抽取：super/interfaces/字段与方法描述符/指令 owner 与 type desc。
         auto& refs = refsByUri[uri];
-        if (!node->superName.is_empty()) refs.insert(node->superName.to_std_string());
-        for (const auto& it : node->interfaces) refs.insert(it.to_std_string());
-        for (const auto* f : node->fields) collectTypesFromDesc(f->desc.to_std_string(), refs);
-        for (const auto* m : node->methods) {
-            collectTypesFromDesc(m->desc.to_std_string(), refs);
-            for (auto* n = m->instructions.getFirst(); n; n = n->getNext()) {
-                switch (n->getType()) {
-                case jbytecode::tree::AbstractInsnNode::TYPE_INSN:
-                    refs.insert(static_cast<jbytecode::tree::TypeInsnNode*>(n)
-                                    ->desc.to_std_string());
-                    break;
-                case jbytecode::tree::AbstractInsnNode::FIELD_INSN:
-                    refs.insert(static_cast<jbytecode::tree::FieldInsnNode*>(n)
-                                    ->owner.to_std_string());
-                    break;
-                case jbytecode::tree::AbstractInsnNode::METHOD_INSN:
-                    refs.insert(static_cast<jbytecode::tree::MethodInsnNode*>(n)
-                                    ->owner.to_std_string());
-                    break;
-                default:
-                    break;
+        if (!sp.str(unit.superClass).empty()) refs.insert(std::string(sp.str(unit.superClass)));
+        for (const auto itf : unit.interfaces) refs.insert(std::string(sp.str(itf)));
+        for (const auto& fu : unit.fields) {
+            collectTypesFromDesc(std::string(sp.str(fu.desc)), refs);
+        }
+        for (auto& mu : unit.methods) {
+            collectTypesFromDesc(std::string(sp.str(mu.desc)), refs);
+            if (!mu.code) continue;
+            auto& dom = mu.code->dom;
+            for (const auto id : dom.order()) {
+                const ir::Insn* in = dom.peek(id);
+                if (!in) continue;
+                ir::ClassSession::MemberSem sem;
+                if (session->memberOf(*in, sem) &&
+                    sem.kind != ir::ClassSession::MemberSem::Kind::InvokeDynamic) {
+                    refs.insert(std::string(sem.owner));
                 }
+                const auto cls = session->classOf(*in);
+                if (!cls.empty()) refs.insert(std::string(cls));
             }
         }
     });
@@ -1907,43 +2475,64 @@ SanitizeLvtReport facadeSanitizeLvt(FacadeSession& s)
         catch (const std::exception&) {
             continue;   // malformed 条目跳过（G1 场景：坏类不阻塞其余类清洗）
         }
-        TreeEntry& te = *tePtr;
+        TreeEntry& te   = *tePtr;
+        auto&      cf   = te.session->backing();
+        auto&      unit = te.session->unit();
         ++rep.classes;
-        for (auto* m : te.node->methods) {
-            auto& st     = uidState(te, *m);           // 物化（墓地感知的 label 集）
-            const auto& labels = labelIndex(st);
-            std::map<const jbytecode::core::Label*, ca::usize> pos;   // label → 链表位次
-            ca::usize p = 0;
-            for (auto* n = m->instructions.getFirst(); n; n = n->getNext()) {
-                if (n->getType() == jbytecode::tree::AbstractInsnNode::LABEL)
-                    pos[static_cast<jbytecode::tree::LabelNode*>(n)->label] = p++;
+        for (auto& mu : unit.methods) {
+            // 物化（按需升格）先于存活 pc 采集：未触达方法也要清其 LVT。
+            stateFor(MethodRef{&te, mu.id});
+            if (!mu.code) continue;
+            auto& dom = mu.code->dom;
+            // 存活旧布局 pc 集（合成指令 kNoPc 不入集：LVT 行锚不了它们）。
+            std::set<ca::u32> livePcs;
+            for (const auto id : dom.order()) {
+                const ir::Insn* in = dom.peek(id);
+                if (in && in->srcPc != ir::kNoPc) livePcs.insert(in->srcPc);
             }
-            std::set<std::tuple<int, const jbytecode::core::Label*, const jbytecode::core::Label*,
-                                std::string, std::string>>
-                seen;
-            std::vector<jbytecode::tree::LocalVariableNode*> keep;
-            for (auto* lv : m->localVariables) {
-                const bool linked =
-                    lv->start != nullptr && lv->end != nullptr &&
-                    labels.count(lv->start) != 0 && labels.count(lv->end) != 0;
-                const bool ordered = linked && pos.at(lv->start) < pos.at(lv->end);
-                const auto key     = std::make_tuple(lv->index, lv->start, lv->end,
-                                                     lv->name.to_std_string(),
-                                                     lv->descriptor.to_std_string());
-                if (!linked || !ordered) {
-                    ++rep.dropped;
-                    continue;
+            auto  ca = cf.decodeCode(cf.methods[mu.backingIndex]);
+            if (ca.is_err()) continue;
+            jb::CodeAttr* codeAttr = ca.unwrap();
+            for (auto& slot : codeAttr->attrs) {
+                if (cf.utf8(slot.nameCp) != "LocalVariableTable") continue;
+                const auto decoded = cf.decodeAttr(slot);
+                if (decoded.is_err()) continue;
+                auto* lvt =
+                    ca::core::tag_cast::dyn_cast<jb::LocalVariableTableAttr>(decoded.unwrap());
+                if (!lvt) continue;
+                // G1 清洗：start 锚脱链（pc 不在存活集）或 end 锚既不存活也
+                // 非方法末尾的行剔除；(slot,start,end,name,desc) 去重。
+                const auto  codeLen    = static_cast<ca::u32>(codeAttr->code.size());
+                std::map<std::tuple<ca::u32, ca::u32, ca::u32, std::string, std::string>, bool>
+                    seen;
+                std::vector<jb::LocalVariableTableAttr::Row> keep;
+                for (const auto& row : lvt->rows) {
+                    const ca::u32 endPc = row.startPc + row.length;
+                    const bool linked = livePcs.count(row.startPc) != 0 &&
+                                        (livePcs.count(endPc) != 0 || endPc == codeLen);
+                    if (!linked) {
+                        ++rep.dropped;
+                        continue;
+                    }
+                    const auto key = std::make_tuple(
+                        row.slot, row.startPc, endPc, std::string(cf.utf8(row.nameCp)),
+                        std::string(cf.utf8(row.descCp)));
+                    if (!seen.emplace(key, true).second) {
+                        ++rep.deduped;
+                        continue;
+                    }
+                    keep.push_back(row);
                 }
-                if (!seen.insert(key).second) {
-                    ++rep.deduped;
-                    continue;
+                if (keep.size() != lvt->rows.size()) {
+                    auto* rawLvtBody = slot.mutate();
+                    auto* mutableLvt =
+                        ca::core::tag_cast::isa<jb::LocalVariableTableAttr>(rawLvtBody)
+                            ? ca::core::tag_cast::cast<jb::LocalVariableTableAttr>(rawLvtBody)
+                            : nullptr;
+                    if (!mutableLvt) continue;
+                    mutableLvt->rows = std::move(keep);
+                    te.dirty = true;
                 }
-                keep.push_back(lv);
-            }
-            if (keep.size() != m->localVariables.size()) {
-                m->localVariables = std::move(keep);
-                markDirty(resolveMethodFlex(s, name, m->name.to_std_string(),
-                                            m->desc.to_std_string()));
             }
         }
     }
@@ -2121,14 +2710,12 @@ std::vector<ca::u8> resourceBytes(const IResource& resource)
     return {};
 }
 
-}   // namespace
-
 /// 容器深拷贝（workspace cloneContainer 同款三分支；URI 视图指向资源自持
 /// 文本，先物化再写入新容器）。
-std::unique_ptr<ResourceContainer> facadeCloneContainer(const FacadeSession& s)
+std::unique_ptr<ResourceContainer> cloneContainer(const ResourceContainer& container)
 {
     auto out = std::make_unique<ResourceContainer>();
-    s.container->visitResources([&](std::string_view uri, const IResource& resource) {
+    container.visitResources([&](std::string_view uri, const IResource& resource) {
         const std::string key(uri);
         if (const auto* cls = ca::core::tag_cast::dyn_cast<const ClassResource>(&resource)) {
             out->addResource(key, std::make_unique<ClassResource>(key, cls->get()));
@@ -2146,8 +2733,8 @@ std::unique_ptr<ResourceContainer> facadeCloneContainer(const FacadeSession& s)
 }
 
 /// diffContainers 同口径：全 uri 并集升序，逐条目单次公共前后缀收缩。
-std::vector<JarByteDiff> facadeDiffContainers(const ResourceContainer& before,
-                                              const ResourceContainer& after)
+std::vector<JarByteDiff> diffContainers(const ResourceContainer& before,
+                                        const ResourceContainer& after)
 {
     std::set<std::string> uris;
     before.visitResources([&](std::string_view uri, const IResource&) { uris.insert(std::string(uri)); });
@@ -2184,6 +2771,19 @@ std::vector<JarByteDiff> facadeDiffContainers(const ResourceContainer& before,
     return diffs;
 }
 
+}   // namespace
+
+std::unique_ptr<ResourceContainer> facadeCloneContainer(const FacadeSession& s)
+{
+    return cloneContainer(*s.container);
+}
+
+std::vector<JarByteDiff> facadeDiffContainers(const ResourceContainer& before,
+                                              const ResourceContainer& after)
+{
+    return diffContainers(before, after);
+}
+
 JarDiffReport facadeJarDiff(FacadeSession& s, const std::string& referencePath)
 {
     if (referencePath.empty()) throw std::runtime_error("reference path is empty");
@@ -2196,7 +2796,7 @@ JarDiffReport facadeJarDiff(FacadeSession& s, const std::string& referencePath)
     }
     JarDiffReport report;
     report.referencePath = referencePath;
-    report.diffs         = facadeDiffContainers(*s.container, reference);
+    report.diffs         = diffContainers(*s.container, reference);
     for (const auto& diff : report.diffs) {
         if (s.container->getResource(diff.uri) == nullptr) {
             ++report.referenceOnly;
