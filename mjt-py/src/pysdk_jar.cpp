@@ -1,64 +1,172 @@
 #include "pysdk_jar.hpp"
 
+#include "jbc/jbc.hpp"
+
 #include "mjbase/jar/manifest.hpp"
 #include "mjbase/model/resource_container.hpp"
 #include "mjbase/model/resource_helper.hpp"
 #include "mjbase/model/resource_model.hpp"
 
-#include "jbytecode/jbytecode.hpp"
-
 #include <cstring>
 #include <filesystem>
+#include <stdexcept>
 
 namespace mjt::pysdk {
 
-using jbytecode::tree::ClassNode;
 using mjbase::model::ClassResource;
 
 // ── 合成演示 jar（unittest + 新样本演示共用；仅写 %TEMP%/测试目录） ─────────
+//
+// RFC 0002 迁移批 B6：合成面从 jbytecode tree 换 libjbc 会话（A5 种子建类 +
+// CodeDom 直排 + lowerMethod 落盘）。指令 CP 操作数经会话语义 intern（去重
+// 落位）；标签/异常表用 owner-scoped LabelId；写回 lowerMethod + writeClass。
 
 namespace {
 
 using ca::str::Utf8StringRef;
-using jbytecode::core::Label;
-using jbytecode::core::Opcodes;
-using namespace jbytecode::tree;
+namespace ir = jbc::ir;
+namespace core = jbc::core;
+
+/// Insn 直排便利件：kNoPc = 合成指令（无源布局），CP 槽由调用方 intern 后填。
+ir::Insn insnOf(core::Op op)
+{
+    ir::Insn in;
+    in.op    = op;
+    in.srcPc = ir::kNoPc;
+    return in;
+}
+/// 局部变量访问的专用码基座（_0 形态）；非局部变量族原样返回。
+constexpr core::Op dedicatedLoadStoreBase(core::Op op)
+{
+    switch (op) {
+        case core::Op::ILOAD:  return core::Op::ILOAD_0;
+        case core::Op::LLOAD:  return core::Op::LLOAD_0;
+        case core::Op::FLOAD:  return core::Op::FLOAD_0;
+        case core::Op::DLOAD:  return core::Op::DLOAD_0;
+        case core::Op::ALOAD:  return core::Op::ALOAD_0;
+        case core::Op::ISTORE: return core::Op::ISTORE_0;
+        case core::Op::LSTORE: return core::Op::LSTORE_0;
+        case core::Op::FSTORE: return core::Op::FSTORE_0;
+        case core::Op::DSTORE: return core::Op::DSTORE_0;
+        case core::Op::ASTORE: return core::Op::ASTORE_0;
+        default:               return op;
+    }
+}
+
+ir::Insn varInsnOf(core::Op op, int var)
+{
+    // 局部变量折叠：index ≤ 3 落 JVM 专用码（iload_0 族）——javac 口径，也是
+    // 旧树管线写出口径。libjbc writeClass 忠实序列化不折叠，合成语料在此
+    // 折叠以保证 jasm 文本往返恒等（render(assemble(render(x))) 稳定）。
+    const core::Op base = dedicatedLoadStoreBase(op);
+    core::Op chosen     = op;
+    if (base != op && var >= 0 && var <= 3) {
+        chosen = static_cast<core::Op>(static_cast<int>(base) + var);
+    }
+    auto in = insnOf(chosen);
+    in.a    = var;
+    return in;
+}
+ir::Insn cpInsnOf(core::Op op, ca::u32 cp)
+{
+    auto in   = insnOf(op);
+    in.cp     = cp;
+    return in;
+}
+
+/// 会话建类的公共尾：commit 类级元数据 + lower 全部带体方法 + 写字节。
+std::vector<ca::u8> finishClass(ir::ClassSession& s)
+{
+    auto& unit = s.unit();
+    // unit 上的后置类级修改（access/interfaces/super）不经 commit 不进
+    // backing——MethodUnit::code 同族的会话契约：unit 视图 ≠ backing。
+    if (s.commitClassMetadata().is_err())
+        throw std::runtime_error("demo jar: commitClassMetadata failed");
+    for (ca::usize i = 0; i < unit.methods.size(); ++i) {
+        if (unit.methods[i].code == nullptr) continue;
+        const auto lowered = ir::lowerMethod(s, unit.methods[i].id);
+        if (lowered.is_err())
+            throw std::runtime_error(std::string("demo jar: lowerMethod failed: ") +
+                                     ir::to_string(lowered.unwrap_err()));
+    }
+    auto written = core::writeClass(s.backing());
+    if (!written.is_ok())
+        throw std::runtime_error(std::string("demo jar: writeClass failed: ") +
+                                 core::to_string(written.unwrap_err()));
+    return std::move(written).unwrap();
+}
 
 struct SynthClass
 {
-    std::unique_ptr<ClassNode> node;
-    ca::str::Utf8StringArena   arena;   // 类字符串归属（节点视图寿命=本对象）
+    std::shared_ptr<ir::ClassSession> session;
 
     explicit SynthClass(const char* name)
-        : node(std::make_unique<ClassNode>())
     {
-        node->version   = (0 << 16) | 52;   // major 52 (Java 8)
-        node->access    = Opcodes::ACC_PUBLIC | Opcodes::ACC_SUPER;
-        node->name      = arena.intern(Utf8StringRef::from_cstr(name));
-        node->superName = arena.intern(Utf8StringRef::from_cstr("java/lang/Object"));
+        ir::NewClassSeed seed;
+        seed.access    = 0x0021;   // ACC_PUBLIC | ACC_SUPER
+        seed.thisName  = name;
+        seed.superName = "java/lang/Object";
+        auto made      = ir::makeSession(seed);
+        if (!made.is_ok()) throw std::runtime_error("demo jar: seed session failed");
+        session = std::move(made).unwrap();
     }
 
-    MethodNode& addMethod(const char* name, const char* desc, int access, int maxStack,
-                          int maxLocals)
+    /// 带体方法（空 Code 体 + maxes；指令由调用方经 dom() 直排）。
+    ir::MethodId addMethod(const char* name, const char* desc, int access, int maxStack,
+                           int maxLocals)
     {
-        static const std::vector<Utf8StringRef> kNoExceptions;
-        // MethodNode 本体是堆对象（ClassNode 析构统一 delete，nodes.hpp 契约）；
-        // 类级 create<T> 仅用于注解/innerClasses 等类内容物。
-        auto* m = new MethodNode(access, arena.intern(Utf8StringRef::from_cstr(name)),
-                                 arena.intern(Utf8StringRef::from_cstr(desc)),
-                                 Utf8StringRef{}, kNoExceptions);
-        m->maxStack  = maxStack;
-        m->maxLocals = maxLocals;
-        node->methods.push_back(m);
-        return *m;
+        ir::MethodSeed seed;
+        seed.name      = name;
+        seed.desc      = desc;
+        seed.access    = static_cast<ca::u32>(access);
+        seed.withCode  = true;
+        seed.maxStack  = static_cast<ca::u16>(maxStack);
+        seed.maxLocals = static_cast<ca::u16>(maxLocals);
+        auto added     = session->addMethod(seed);
+        if (added.is_err())
+            throw std::runtime_error(std::string("demo jar: addMethod failed: ") +
+                                     ir::to_string(added.unwrap_err()));
+        const auto id = added.unwrap();
+        // withCode 只落空 Code 属性：IR CodeUnit 在 promoteMethod 后才非空
+        // （MethodUnit::code 契约）。fresh 槽位恰好 promote 一次，无重入失效面。
+        const auto promoted = ir::promoteMethod(*session, id);
+        if (promoted.is_err())
+            throw std::runtime_error(std::string("demo jar: promoteMethod failed: ") +
+                                     ir::to_string(promoted.unwrap_err()));
+        return id;
     }
 
-    std::vector<ca::u8> bytes()
+    /// 无体方法（接口抽象形态）。
+    ir::MethodId addAbstractMethod(const char* name, const char* desc, int access)
     {
-        jbytecode::core::ClassWriter writer(arena, 0);
-        node->accept(&writer);
-        return writer.toByteArray();
+        ir::MethodSeed seed;
+        seed.name     = name;
+        seed.desc     = desc;
+        seed.access   = static_cast<ca::u32>(access);
+        seed.withCode = false;
+        auto added    = session->addMethod(seed);
+        if (added.is_err())
+            throw std::runtime_error(std::string("demo jar: addAbstractMethod failed: ") +
+                                     ir::to_string(added.unwrap_err()));
+        return added.unwrap();
     }
+
+    /// 已带体方法的 promote 视图（appendIdentityHandlerMethod 的直排面）。
+    ir::CodeUnit& body(ir::MethodId id) { return *session->unit().method(id)->code; }
+
+    ca::u32 internClass(const char* n) { return session->internClass(n); }
+    ca::u32 internFieldRef(const char* o, const char* n, const char* d)
+    {
+        return session->internFieldRef(o, n, d);
+    }
+    ca::u32 internMethodRef(const char* o, const char* n, const char* d, bool itf)
+    {
+        return itf ? session->internInterfaceMethodRef(o, n, d)
+                   : session->internMethodRef(o, n, d);
+    }
+    ca::u32 internString(const char* v) { return session->internString(v); }
+
+    std::vector<ca::u8> bytes() { return finishClass(*session); }
 };
 
 /// 恒等 rethrow handler（静态恒等包装形态）：
@@ -67,39 +175,60 @@ struct SynthClass
 ///   Lh: astore 1; aload 1;
 ///       invokestatic wrap; athrow
 ///   Lend: return
-static void appendIdentityHandlerMethod(SynthClass&  cls,
-                                        const char*  name,
-                                        const char*  desc,
-                                        const char*  wrapOwner,
-                                        const char*  wrapName,
-                                        const char*  wrapDesc)
+void appendIdentityHandlerMethod(SynthClass&  cls,
+                                 const char*  name,
+                                 const char*  desc,
+                                 const char*  wrapOwner,
+                                 const char*  wrapName,
+                                 const char*  wrapDesc)
 {
-    auto& m = cls.addMethod(name, desc, Opcodes::ACC_PUBLIC, 2, 2);
-    auto* l0 = m.create<LabelNode>(new Label());
-    auto* l1 = m.create<LabelNode>(new Label());
-    auto* lh = m.create<LabelNode>(new Label());
-    auto* le = m.create<LabelNode>(new Label());
+    const auto id   = cls.addMethod(name, desc, 0x0001 /*ACC_PUBLIC*/, 2, 2);
+    auto&      dom  = cls.body(id).dom;
 
-    m.instructions.add(l0);
-    m.instructions.add(m.create<InsnNode>(Opcodes::ICONST_0));
-    m.instructions.add(m.create<InsnNode>(Opcodes::POP));
-    m.instructions.add(l1);
-    m.instructions.add(m.create<JumpInsnNode>(Opcodes::GOTO, le->label));
-    m.instructions.add(lh);
-    m.instructions.add(m.create<VarInsnNode>(Opcodes::ASTORE, 1));
-    m.instructions.add(m.create<VarInsnNode>(Opcodes::ALOAD, 1));
-    m.instructions.add(m.create<MethodInsnNode>(Opcodes::INVOKESTATIC,
-                                                cls.arena.intern(Utf8StringRef::from_cstr(wrapOwner)),
-                                                cls.arena.intern(Utf8StringRef::from_cstr(wrapName)),
-                                                cls.arena.intern(Utf8StringRef::from_cstr(wrapDesc)),
-                                                false));
-    m.instructions.add(m.create<InsnNode>(Opcodes::ATHROW));
-    m.instructions.add(le);
-    m.instructions.add(m.create<InsnNode>(Opcodes::RETURN));
+    // 前向分支（goto Lend → 方法尾 return）：源顺序直排时目标指令尚未
+    // 落位，append 期「控制目标须已锚定」防呆机制性不可满足——整体方法体
+    // 直排进入受控延后绑定构建态（design.md §34.3），全部落位后收尾补验。
+    dom.beginDeferredTargets();
 
-    m.tryCatchBlocks.push_back(m.create<TryCatchBlockNode>(
-        l0->label, l1->label, lh->label,
-        cls.arena.intern(Utf8StringRef::from_cstr("java/io/IOException"))));
+    auto put = [&dom](ir::Insn in) -> ir::InsnId {
+        auto made = dom.append(std::move(in));
+        if (made.is_err())
+            throw std::runtime_error(std::string("demo jar: append failed: ") +
+                                     ir::to_string(made.unwrap_err()));
+        return made.unwrap();
+    };
+    const auto iconst = put(insnOf(core::Op::ICONST_0));
+    const auto pop    = put(insnOf(core::Op::POP));
+    const auto ggoto  = put(insnOf(core::Op::GOTO));
+    const auto astore = put(varInsnOf(core::Op::ASTORE, 1));
+    const auto aload  = put(varInsnOf(core::Op::ALOAD, 1));
+    const auto invoke = put(cpInsnOf(core::Op::INVOKESTATIC,
+                                     cls.internMethodRef(wrapOwner, wrapName, wrapDesc, false)));
+    const auto athrow = put(insnOf(core::Op::ATHROW));
+    const auto ret    = put(insnOf(core::Op::RETURN));
+
+    auto endBinding = [&](ir::LabelId& out, ir::InsnId anchor) {
+        auto made = dom.createLabel(anchor);
+        if (made.is_err())
+            throw std::runtime_error(std::string("demo jar: createLabel failed: ") +
+                                     ir::to_string(made.unwrap_err()));
+        out = made.unwrap();
+    };
+    ir::LabelId l0, l1, lh, le;
+    endBinding(l0, iconst);
+    endBinding(l1, ggoto);
+    endBinding(lh, astore);
+    endBinding(le, ret);   // Lend 锚在 return 前沿（旧树序里 le 在 return 之前）
+
+    dom.get(ggoto).unwrap()->target = le;
+
+    auto endState = dom.endDeferredTargets();
+    if (endState.is_err())
+        throw std::runtime_error(std::string("demo jar: dangling branch target: ") +
+                                 ir::to_string(endState.unwrap_err()));
+
+    auto& cu   = cls.body(id);
+    cu.exc.push_back({l0, l1, lh, cls.internClass("java/io/IOException")});
 }
 
 }   // namespace
@@ -108,99 +237,100 @@ void writeSyntheticDemoJar(const std::string& outJarPath)
 {
     // me/demo/Api：接口（class_hierarchy 闭包查询的容器内接口样本）。
     SynthClass api("me/demo/Api");
-    api.node->access = Opcodes::ACC_PUBLIC | Opcodes::ACC_INTERFACE | Opcodes::ACC_ABSTRACT;
-    api.node->superName = api.arena.intern(Utf8StringRef::from_cstr("java/lang/Object"));
+    api.session->unit().access = 0x0001 | 0x0200 | 0x0400;   // PUBLIC | INTERFACE | ABSTRACT
     {
-        // 抽象方法：接口不写方法体（ClassWriter 对 ACC_INTERFACE 抽象方法直出无 code）。
-        auto* m = new MethodNode(Opcodes::ACC_PUBLIC | Opcodes::ACC_ABSTRACT,
-                                 api.arena.intern(Utf8StringRef::from_cstr("id")),
-                                 api.arena.intern(
-                                     Utf8StringRef::from_cstr("(Ljava/lang/Object;)Ljava/lang/Object;")),
-                                 Utf8StringRef{}, std::vector<Utf8StringRef>{});
-        api.node->methods.push_back(m);
+        // 抽象方法：接口不写方法体。
+        api.addAbstractMethod("id", "(Ljava/lang/Object;)Ljava/lang/Object;",
+                              0x0001 | 0x0400);
     }
 
     // me/demo/Util：普通工具类。
     SynthClass util("me/demo/Util");
     {
-        auto& m = util.addMethod("add", "(II)I", Opcodes::ACC_PUBLIC | Opcodes::ACC_STATIC, 2, 2);
-        m.instructions.add(m.create<VarInsnNode>(Opcodes::ILOAD, 0));
-        m.instructions.add(m.create<VarInsnNode>(Opcodes::ILOAD, 1));
-        m.instructions.add(m.create<InsnNode>(Opcodes::IADD));
-        m.instructions.add(m.create<InsnNode>(Opcodes::IRETURN));
+        const auto id  = util.addMethod("add", "(II)I", 0x0001 | 0x0008, 2, 2);
+        auto&      dom = util.body(id).dom;
+        dom.append(varInsnOf(core::Op::ILOAD, 0));
+        dom.append(varInsnOf(core::Op::ILOAD, 1));
+        dom.append(insnOf(core::Op::IADD));
+        dom.append(insnOf(core::Op::IRETURN));
     }
-    auto& utilWrap =
-        util.addMethod("wrap", "(Ljava/io/IOException;)Ljava/io/IOException;",
-                       Opcodes::ACC_PUBLIC | Opcodes::ACC_STATIC, 1, 1);
-    utilWrap.instructions.add(utilWrap.create<VarInsnNode>(Opcodes::ALOAD, 0));
-    utilWrap.instructions.add(utilWrap.create<InsnNode>(Opcodes::ARETURN));
+    {
+        const auto id  = util.addMethod("wrap", "(Ljava/io/IOException;)Ljava/io/IOException;",
+                                        0x0001 | 0x0008, 1, 1);
+        auto&      dom = util.body(id).dom;
+        dom.append(varInsnOf(core::Op::ALOAD, 0));
+        dom.append(insnOf(core::Op::ARETURN));
+    }
 
     // me/demo/Crypto：解密器形态站点（invokestatic (II)Ljava/lang/String;）+ 自身 handler。
     SynthClass crypto("me/demo/Crypto");
     {
-        auto& site = crypto.addMethod("decode", "(II)Ljava/lang/String;",
-                                      Opcodes::ACC_PUBLIC | Opcodes::ACC_STATIC, 2, 2);
-        site.instructions.add(site.create<InsnNode>(Opcodes::ICONST_1));
-        site.instructions.add(site.create<IntInsnNode>(Opcodes::BIPUSH, 7));
-        site.instructions.add(site.create<MethodInsnNode>(
-            Opcodes::INVOKESTATIC,
-            crypto.arena.intern(Utf8StringRef::from_cstr("me/demo/Crypto")),
-            crypto.arena.intern(Utf8StringRef::from_cstr("dec")),
-            crypto.arena.intern(Utf8StringRef::from_cstr("(II)Ljava/lang/String;")), false));
-        site.instructions.add(site.create<InsnNode>(Opcodes::ARETURN));
+        const auto id  = crypto.addMethod("decode", "(II)Ljava/lang/String;",
+                                          0x0001 | 0x0008, 2, 2);
+        auto&      dom = crypto.body(id).dom;
+        dom.append(insnOf(core::Op::ICONST_1));
+        auto bipush = insnOf(core::Op::BIPUSH);
+        bipush.a    = 7;
+        dom.append(bipush);
+        dom.append(cpInsnOf(core::Op::INVOKESTATIC,
+                            crypto.internMethodRef("me/demo/Crypto", "dec",
+                                                   "(II)Ljava/lang/String;", false)));
+        dom.append(insnOf(core::Op::ARETURN));
     }
     {
-        auto& dec = crypto.addMethod("dec", "(II)Ljava/lang/String;",
-                                     Opcodes::ACC_PUBLIC | Opcodes::ACC_STATIC, 1, 2);
-        dec.instructions.add(
-            dec.create<LdcInsnNode>(ca::core::Any(Utf8StringRef::from_cstr("HIDDEN"))));
-        dec.instructions.add(dec.create<InsnNode>(Opcodes::ARETURN));
+        const auto id  = crypto.addMethod("dec", "(II)Ljava/lang/String;",
+                                          0x0001 | 0x0008, 1, 2);
+        auto&      dom = crypto.body(id).dom;
+        dom.append(cpInsnOf(core::Op::LDC, crypto.internString("HIDDEN")));
+        dom.append(insnOf(core::Op::ARETURN));
     }
     appendIdentityHandlerMethod(crypto, "guarded", "()V", "me/demo/Crypto", "wrap",
                                 "(Ljava/io/IOException;)Ljava/io/IOException;");
     {
         // wrap（crypto 侧同名恒等包装，保证样例自洽）。
-        auto& wrap =
-            crypto.addMethod("wrap", "(Ljava/io/IOException;)Ljava/io/IOException;",
-                             Opcodes::ACC_PUBLIC | Opcodes::ACC_STATIC, 1, 1);
-        wrap.instructions.add(wrap.create<VarInsnNode>(Opcodes::ALOAD, 0));
-        wrap.instructions.add(wrap.create<InsnNode>(Opcodes::ARETURN));
+        const auto id  = crypto.addMethod("wrap", "(Ljava/io/IOException;)Ljava/io/IOException;",
+                                          0x0001 | 0x0008, 1, 1);
+        auto&      dom = crypto.body(id).dom;
+        dom.append(varInsnOf(core::Op::ALOAD, 0));
+        dom.append(insnOf(core::Op::ARETURN));
     }
 
     // me/demo/App：入口 + 恒等 handler + 对 Crypto/Util 的引用。
     SynthClass app("me/demo/App");
     {
-        auto& init = app.addMethod("<init>", "()V", Opcodes::ACC_PUBLIC, 1, 1);
-        init.instructions.add(init.create<VarInsnNode>(Opcodes::ALOAD, 0));
-        init.instructions.add(init.create<MethodInsnNode>(
-            Opcodes::INVOKESPECIAL,
-            app.arena.intern(Utf8StringRef::from_cstr("java/lang/Object")),
-            app.arena.intern(Utf8StringRef::from_cstr("<init>")),
-            app.arena.intern(Utf8StringRef::from_cstr("()V")), false));
-        init.instructions.add(init.create<InsnNode>(Opcodes::RETURN));
+        const auto id  = app.addMethod("<init>", "()V", 0x0001, 1, 1);
+        auto&      dom = app.body(id).dom;
+        dom.append(varInsnOf(core::Op::ALOAD, 0));
+        dom.append(cpInsnOf(core::Op::INVOKESPECIAL,
+                            app.internMethodRef("java/lang/Object", "<init>", "()V", false)));
+        dom.append(insnOf(core::Op::RETURN));
     }
     {
-        auto& main = app.addMethod(
-            "main", "([Ljava/lang/String;)V", Opcodes::ACC_PUBLIC | Opcodes::ACC_STATIC, 2, 1);
-        main.instructions.add(main.create<FieldInsnNode>(
-            Opcodes::GETSTATIC,
-            app.arena.intern(Utf8StringRef::from_cstr("java/lang/System")),
-            app.arena.intern(Utf8StringRef::from_cstr("out")),
-            app.arena.intern(Utf8StringRef::from_cstr("Ljava/io/PrintStream;"))));
-        main.instructions.add(
-            main.create<LdcInsnNode>(ca::core::Any(Utf8StringRef::from_cstr("demo-payload"))));
-        main.instructions.add(main.create<MethodInsnNode>(
-            Opcodes::INVOKEVIRTUAL,
-            app.arena.intern(Utf8StringRef::from_cstr("java/io/PrintStream")),
-            app.arena.intern(Utf8StringRef::from_cstr("println")),
-            app.arena.intern(Utf8StringRef::from_cstr("(Ljava/lang/String;)V")), false));
-        main.instructions.add(main.create<MethodInsnNode>(
-            Opcodes::INVOKESTATIC,
-            app.arena.intern(Utf8StringRef::from_cstr("me/demo/Crypto")),
-            app.arena.intern(Utf8StringRef::from_cstr("decode")),
-            app.arena.intern(Utf8StringRef::from_cstr("(II)Ljava/lang/String;")), false));
-        main.instructions.add(main.create<InsnNode>(Opcodes::POP));
-        main.instructions.add(main.create<InsnNode>(Opcodes::RETURN));
+        const auto id  = app.addMethod("main", "([Ljava/lang/String;)V",
+                                       0x0001 | 0x0008, 2, 2);
+        auto&      dom = app.body(id).dom;
+        dom.append(cpInsnOf(core::Op::GETSTATIC,
+                            app.internFieldRef("java/lang/System", "out",
+                                               "Ljava/io/PrintStream;")));
+        dom.append(cpInsnOf(core::Op::LDC, app.internString("demo-payload")));
+        dom.append(cpInsnOf(core::Op::INVOKEVIRTUAL,
+                            app.internMethodRef("java/io/PrintStream", "println",
+                                                "(Ljava/lang/String;)V", false)));
+        // decode(II) 需要真参：旧树版夹具空栈调用（线性块无合并点，旧
+        // COMPUTE_FRAMES 不校验栈深侥幸过），FrameEngine 真验证 fail-closed。
+        // 实参取局部变量形态（iconst_1; istore_1; iconst_2; iload_1）而非
+        // 双常量直压——util.decryptor_sites 启发式把「紧邻调用点 ≥2 条连续
+        // 常量 int」判为解密站点，常量直压会让 main 成为第二个站点，自测
+        // 的普查口径（站点唯一 = Crypto.decode）随之破。
+        dom.append(insnOf(core::Op::ICONST_1));
+        dom.append(varInsnOf(core::Op::ISTORE, 1));
+        dom.append(insnOf(core::Op::ICONST_2));
+        dom.append(varInsnOf(core::Op::ILOAD, 1));
+        dom.append(cpInsnOf(core::Op::INVOKESTATIC,
+                            app.internMethodRef("me/demo/Crypto", "decode",
+                                                "(II)Ljava/lang/String;", false)));
+        dom.append(insnOf(core::Op::POP));
+        dom.append(insnOf(core::Op::RETURN));
     }
     appendIdentityHandlerMethod(app, "guarded", "()V", "me/demo/Util", "wrap",
                                 "(Ljava/io/IOException;)Ljava/io/IOException;");
@@ -210,32 +340,29 @@ void writeSyntheticDemoJar(const std::string& outJarPath)
     // `invokevirtual [Lme/demo/Color;.clone()` 克隆数组：类改名时该数组型 owner
     // 必须随元素类名同步改写，否则 receiver 与 owner 失配、真机一调 values() 即炸。
     SynthClass color("me/demo/Color");
-    color.node->interfaces.push_back(
-        color.arena.intern(Utf8StringRef::from_cstr("me/demo/Api")));
+    color.session->unit().interfaces.push_back(color.session->unit().symbols().intern("me/demo/Api"));
     {
-        auto* values = new FieldNode(Opcodes::ACC_PRIVATE | Opcodes::ACC_STATIC | Opcodes::ACC_FINAL,
-                                     color.arena.intern(Utf8StringRef::from_cstr("$VALUES")),
-                                     color.arena.intern(Utf8StringRef::from_cstr("[Lme/demo/Color;")),
-                                     Utf8StringRef{}, ca::core::Any());
-        color.node->fields.push_back(values);
+        ir::FieldSeed seed;
+        seed.name   = "$VALUES";
+        seed.desc   = "[Lme/demo/Color;";
+        seed.access = 0x0002 | 0x0008 | 0x0010;   // PRIVATE | STATIC | FINAL
+        const auto fieldAdded = color.session->addField(seed);
+        if (fieldAdded.is_err())
+            throw std::runtime_error(std::string("demo jar: addField failed: ") +
+                                     ir::to_string(fieldAdded.unwrap_err()));
     }
     {
-        auto& vals = color.addMethod("values", "()[Lme/demo/Color;",
-                                     Opcodes::ACC_PUBLIC | Opcodes::ACC_STATIC, 1, 0);
-        vals.instructions.add(vals.create<FieldInsnNode>(
-            Opcodes::GETSTATIC,
-            color.arena.intern(Utf8StringRef::from_cstr("me/demo/Color")),
-            color.arena.intern(Utf8StringRef::from_cstr("$VALUES")),
-            color.arena.intern(Utf8StringRef::from_cstr("[Lme/demo/Color;"))));
-        vals.instructions.add(vals.create<MethodInsnNode>(
-            Opcodes::INVOKEVIRTUAL,
-            color.arena.intern(Utf8StringRef::from_cstr("[Lme/demo/Color;")),
-            color.arena.intern(Utf8StringRef::from_cstr("clone")),
-            color.arena.intern(Utf8StringRef::from_cstr("()Ljava/lang/Object;")), false));
-        vals.instructions.add(vals.create<TypeInsnNode>(
-            Opcodes::CHECKCAST,
-            color.arena.intern(Utf8StringRef::from_cstr("[Lme/demo/Color;"))));
-        vals.instructions.add(vals.create<InsnNode>(Opcodes::ARETURN));
+        const auto id  = color.addMethod("values", "()[Lme/demo/Color;",
+                                         0x0001 | 0x0008, 1, 0);
+        auto&      dom = color.body(id).dom;
+        dom.append(cpInsnOf(core::Op::GETSTATIC,
+                            color.internFieldRef("me/demo/Color", "$VALUES",
+                                                 "[Lme/demo/Color;")));
+        dom.append(cpInsnOf(core::Op::INVOKEVIRTUAL,
+                            color.internMethodRef("[Lme/demo/Color;", "clone",
+                                                  "()Ljava/lang/Object;", false)));
+        dom.append(cpInsnOf(core::Op::CHECKCAST, color.internClass("[Lme/demo/Color;")));
+        dom.append(insnOf(core::Op::ARETURN));
     }
 
     mjbase::model::ResourceContainer container;
@@ -257,8 +384,9 @@ void writeSyntheticManifestJar(const std::string& outJarPath)
 {
     SynthClass app("me/demo/App");
     {
-        auto& m = app.addMethod("run", "()V", Opcodes::ACC_PUBLIC | Opcodes::ACC_STATIC, 0, 0);
-        m.instructions.add(m.create<InsnNode>(Opcodes::RETURN));
+        const auto id  = app.addMethod("run", "()V", 0x0001 | 0x0008, 0, 0);
+        auto&      dom = app.body(id).dom;
+        dom.append(insnOf(core::Op::RETURN));
     }
 
     // 可解析的最小 MANIFEST：CRLF 续行结构 + class 形态主属性（供 token 改名

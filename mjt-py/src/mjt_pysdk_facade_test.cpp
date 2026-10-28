@@ -261,7 +261,7 @@ TEST(FacadeTree, ParseNavigateAndMembers)
     const auto methods = facadeMembers(s, "me/demo/App", true);
     ASSERT_EQ(methods.size(), std::size_t{3});
     const auto mi = facadeMethodInfo(s, "me/demo/App", "main", "([Ljava/lang/String;)V");
-    EXPECT_TRUE((mi.access & jbytecode::core::Opcodes::ACC_STATIC) != 0);
+    EXPECT_TRUE((mi.access & 0x0008 /*ACC_STATIC*/) != 0);
     EXPECT_THROW(facadeMethodInfo(s, "me/demo/App", "nope", "()V"), StaleRefError);
     EXPECT_THROW(facadeParseClass(s, "no/such/Class"), StaleRefError);
     FacadeRegistry::instance().close(h);
@@ -459,7 +459,7 @@ TEST(FacadeTree, EmitTableSwitchFullChain)
     // 读侧展开：min/max/default/targets 全数可读（契约 §2.4 switch 字段）。
     const auto d = facadeInsnDetail(s, "me/demo/Util", "pick", "(I)I", sw);
     EXPECT_EQ(d.opcode, 0xAA);
-    EXPECT_EQ(d.kind, jbytecode::tree::AbstractInsnNode::TABLESWITCH_INSN);
+    EXPECT_EQ(d.kind, insn_kind::kTableSwitch);
     EXPECT_EQ(std::string(facadeInsnKindName(d.kind)), "tableswitch");
     EXPECT_EQ(d.switchMin, 0);
     EXPECT_EQ(d.switchMax, 3);
@@ -528,7 +528,7 @@ TEST(FacadeTree, EmitLookupSwitchFullChain)
 
     const auto d = facadeInsnDetail(s, "me/demo/Util", "pick2", "(I)I", sw);
     EXPECT_EQ(d.opcode, 0xAB);
-    EXPECT_EQ(d.kind, jbytecode::tree::AbstractInsnNode::LOOKUPSWITCH_INSN);
+    EXPECT_EQ(d.kind, insn_kind::kLookupSwitch);
     EXPECT_EQ(std::string(facadeInsnKindName(d.kind)), "lookupswitch");
     EXPECT_EQ(d.switchKeys, (std::vector<int>{10, 20}));
     EXPECT_EQ(d.defaultUid, cd);
@@ -771,7 +771,8 @@ TEST(FacadeContainer, VerifyContainerCountsMismatchMalformedDeps)
 
 TEST(FacadeTree, SanitizeLvtDropsUnlinkedAndRoundtrips)
 {
-    namespace jt = jbytecode::tree;
+    namespace ir  = jbc::ir;
+    namespace jb  = jbc::core;
     const auto h = openDemo("mjt_facade_lvt.jar");
     auto& s      = FacadeRegistry::instance().get(h);
     // 干净基线：demo jar 无 LVT 条目。
@@ -781,36 +782,56 @@ TEST(FacadeTree, SanitizeLvtDropsUnlinkedAndRoundtrips)
         EXPECT_EQ(rep.deduped, 0u);
         EXPECT_EQ(rep.classes, 5u);
     }
-    // 合成带 LVT 的类：L_start; iconst_1; istore_0; iload_0; ireturn; L_end
-    // + LVT slot0 [L_start, L_end)。
-    ca::str::Utf8StringArena arena;
-    auto       node = std::make_unique<jt::ClassNode>();
-    node->access    = 0x0021;   // PUBLIC|SUPER
-    node->version   = 52;
-    node->name      = arena.intern(ca::str::Utf8StringRef::from_cstr("me/demo/LvtDemo"));
-    node->superName = arena.intern(ca::str::Utf8StringRef::from_cstr("java/lang/Object"));
-    auto* m         = new jt::MethodNode(
-        0x0009, arena.intern(ca::str::Utf8StringRef::from_cstr("lv")),
-        arena.intern(ca::str::Utf8StringRef::from_cstr("()V")), ca::str::Utf8StringRef{}, {});
-    m->maxStack  = 1;
-    m->maxLocals = 1;
-    auto* label  = m->arena().create<jbytecode::core::Label>();
-    label->setOwner(&m->arena());
-    m->instructions.add(m->create<jt::LabelNode>(label));
-    m->instructions.add(m->create<jt::InsnNode>(0x04));    // iconst_1
-    m->instructions.add(m->create<jt::VarInsnNode>(0x3C, 0)); // istore_0
-    m->instructions.add(m->create<jt::VarInsnNode>(0x1A, 0)); // iload_0
-    m->instructions.add(m->create<jt::InsnNode>(0xAC));    // ireturn
-    m->instructions.add(m->create<jt::LabelNode>(m->arena().create<jbytecode::core::Label>()));
-    auto* lv = m->create<jt::LocalVariableNode>(
-        arena.intern(ca::str::Utf8StringRef::from_cstr("v")),
-        arena.intern(ca::str::Utf8StringRef::from_cstr("I")), ca::str::Utf8StringRef{}, label,
-        static_cast<jt::LabelNode*>(m->instructions.getLast())->label, 0);
-    m->localVariables.push_back(lv);
-    node->methods.push_back(m);
-    jbytecode::core::ClassWriter writer(arena, 0);
-    node->accept(&writer);
-    const auto bytes = writer.toByteArray();
+    // 合成带 LVT 的类：nop(pc0); iconst_1; istore_0; iload_0; ireturn
+    // + LVT slot0 [pc0, codeLen)。首行锚 = nop（G1 场景里被删的锚指令）。
+    ir::NewClassSeed seed;
+    seed.access    = 0x0021;   // PUBLIC|SUPER
+    seed.thisName  = "me/demo/LvtDemo";
+    seed.superName = "java/lang/Object";
+    auto made      = ir::makeSession(seed);
+    ASSERT_TRUE(made.is_ok());
+    auto session = std::move(made).unwrap();
+    ir::MethodSeed mseed;
+    mseed.name      = "lv";
+    mseed.desc      = "()V";
+    mseed.access    = 0x0009;   // PUBLIC|STATIC
+    mseed.withCode  = true;
+    mseed.maxStack  = 1;
+    mseed.maxLocals = 1;
+    auto added      = session->addMethod(mseed);
+    ASSERT_TRUE(added.is_ok());
+    // withCode 只落空 Code 属性：promote 后 IR CodeUnit 才非空（MethodUnit::code 契约）。
+    ASSERT_TRUE(ir::promoteMethod(*session, added.unwrap()).is_ok());
+    auto* cu  = session->unit().method(added.unwrap())->code.get();
+    auto  mk  = [&](jb::Op op) {
+        ir::Insn in;
+        in.op    = op;
+        in.srcPc = ir::kNoPc;
+        return in;
+    };
+    cu->dom.append(mk(jb::Op::NOP));
+    cu->dom.append(mk(jb::Op::ICONST_1));
+    cu->dom.append(mk(jb::Op::ISTORE_0));
+    cu->dom.append(mk(jb::Op::ILOAD_0));
+    cu->dom.append(mk(jb::Op::IRETURN));
+    ASSERT_TRUE(ir::lowerMethod(*session, added.unwrap()).is_ok());
+    // LVT 嵌套槽直挂（Code 内属性：libjbc 槽级手术形态）。
+    auto& mi = session->backing().methods[session->unit().method(added.unwrap())->backingIndex];
+    auto  ca = session->backing().decodeCode(mi);
+    ASSERT_TRUE(ca.is_ok());
+    auto lvtBody = std::make_unique<jb::LocalVariableTableAttr>();
+    jb::LocalVariableTableAttr::Row row;
+    row.startPc = 0;
+    row.length  = static_cast<ca::u32>(ca.unwrap()->code.size());
+    row.nameCp  = session->internUtf8("v");
+    row.descCp  = session->internUtf8("I");
+    row.slot    = 0;
+    lvtBody->rows.push_back(row);
+    ca.unwrap()->attrs.push_back(
+        jb::AttrSlot::makeNew(session->internUtf8("LocalVariableTable"), std::move(lvtBody)));
+    const auto written = jb::writeClass(session->backing());
+    ASSERT_TRUE(written.is_ok());
+    const auto bytes = std::move(written).unwrap();
     ASSERT_FALSE(bytes.empty());
     const auto lvtPath = tmpPath("mjt_facade_lvt.class");
     writeFileBytes(lvtPath, bytes);
@@ -820,8 +841,8 @@ TEST(FacadeTree, SanitizeLvtDropsUnlinkedAndRoundtrips)
         EXPECT_EQ(rep.classes, 6u);
         EXPECT_EQ(rep.dropped, 0u);
     }
-    // G1 形态：LVT start 标签所在指令被删 → 标签脱链 → 清洗剔除该条目，
-    // 之后 COMPUTE_FRAMES 写出可过（未清洗前 writer 会生成坏 start_pc）。
+    // G1 形态：LVT start 锚所在指令被删 → start_pc 脱链 → 清洗剔除该条目，
+    // 之后 COMPUTE_FRAMES 写出可过（未清洗前 lower 的 LVT 重定位会失败）。
     const auto firstUid = facadeFirstInsn(s, "me/demo/LvtDemo", "lv", "()V");
     ASSERT_TRUE(firstUid);
     facadeRemoveInsn(s, "me/demo/LvtDemo", "lv", "()V", *firstUid);

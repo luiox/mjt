@@ -3,11 +3,17 @@
 // pysdk_facade.hpp — mjt-py SDK v3 facade（契约：doc_ai/mjt-py-sdk-spec.md v3）。
 //
 // Ref=键：Python 侧只持 (handle, name/desc/uid) 纯值；每次调用本层按键重解析，
-// 失效一律 StaleRefError（fail-closed，不静默、不复活）。树缓存 / name↔URI 索引 /
-// 指令 uid 映射 / 脏纪律全部本层自管——Python 零所有权、零对象图、零引擎指针。
+// 失效一律 StaleRefError（fail-closed，不静默、不复活）。会话缓存 / name↔URI
+// 索引 / 指令 uid 映射 / 脏纪律全部本层自管——Python 零所有权、零对象图、零
+// 引擎指针。
 //
 // 首语义（#962）：容器内同名类按 JVM first-wins 保留首条目，落选者记入
 // duplicateUris_；唯一 winner（或被晋升者）可经类名寻址。
+//
+// RFC 0002 迁移批 B6：树缓存底座从 jbytecode tree 换 libjbc 会话
+// （ClassSession/CodeUnit/CodeDom）。uid 纪律不变：每方法单调发号、跨结构
+// 编辑稳定、remove 后进墓地解析即抛。指令 kind 常量沿用 ASM 系外显值
+// （Python 面按值消费，见 insn_kind）。
 
 #include <cstdint>
 #include <map>
@@ -19,7 +25,11 @@
 #include <utility>
 #include <vector>
 
-#include "jbytecode/jbytecode.hpp"
+#include <jbc/jbc.hpp>
+#include <jbc/analysis/frame.hpp>
+#include <jbc/analysis/smt_build.hpp>
+
+#include "libca/core/any.hpp"
 #include "libca/str/utf8_string_arena.hpp"
 #include "mjbase/asm/remapper/member_remap_plan.hpp"
 #include "mjbase/mapping/intermediate_mapping.hpp"
@@ -27,13 +37,6 @@
 #include "mjbase/renamer/shadow_alias.hpp"
 
 #include "pysdk_jar.hpp"
-
-namespace jbytecode::tree {
-class ClassNode;
-class MethodNode;
-class FieldNode;
-class AbstractInsnNode;
-}   // namespace jbytecode::tree
 
 namespace mjt::pysdk {
 
@@ -44,28 +47,62 @@ public:
     using std::runtime_error::runtime_error;
 };
 
-/// 指令 uid 状态（按需物化；随树生灭——uid 映射绝不越过树寿命）。
-struct InsnUidState
+/// 指令 kind 外显常量（ASM 系编码，值进 Python 契约；facadeInsnKindName 同表）。
+namespace insn_kind {
+inline constexpr int kInsn            = 0;
+inline constexpr int kInt             = 1;
+inline constexpr int kVar             = 2;
+inline constexpr int kType            = 3;
+inline constexpr int kField           = 4;
+inline constexpr int kMethod          = 5;
+inline constexpr int kIndy            = 6;
+inline constexpr int kJump            = 7;
+inline constexpr int kLabel           = 8;
+inline constexpr int kLdc             = 9;
+inline constexpr int kIinc            = 10;
+inline constexpr int kTableSwitch     = 11;
+inline constexpr int kLookupSwitch    = 12;
+inline constexpr int kMultiANewArray  = 13;
+inline constexpr int kFrame           = 14;
+inline constexpr int kLine            = 15;
+}   // namespace insn_kind
+
+/// uid → libjbc 身份的三类编址（按方法挂在 MethodUi）。
+struct InsnAddr
+{
+    enum class Slot : ca::u8 { Insn, Label, Line };
+
+    Slot             kind = Slot::Insn;
+    jbc::ir::InsnId  insn;        ///< kind == Insn
+    jbc::ir::LabelId label;       ///< kind == Label（Boundary 角色，emit_label 产物/导入异常表）
+    ca::u32          linePc = 0;  ///< kind == Line：LNT 行旧布局 pc（只读投影）
+    int              lineNo = 0;
+};
+
+/// 方法级 uid 状态（按需物化；随会话条目生灭）。
+struct MethodUi
 {
     bool    materialized = false;
     ca::u32 nextUid      = 1;
-    std::unordered_map<ca::u32, jbytecode::tree::AbstractInsnNode*>    byUid;
-    std::unordered_map<jbytecode::tree::AbstractInsnNode*, ca::u32>    uidOf;
-    std::unordered_set<ca::u32> dead;   ///< 墓地：remove 后保留映射，解析即抛
-    /// Label* → uid 反查缓存（lazy；emit/remove 置脏后按 byUid∖dead 重建）。
-    /// 与逐次重建 labelUids 结果恒等——只是免掉跳转/switch 读侧每次 O(n)
-    /// 重建（定点优化，语义不变）。
-    std::unordered_map<jbytecode::core::Label*, ca::u32> labelIndex;
-    bool labelIndexDirty = true;
+
+    std::unordered_map<ca::u32, InsnAddr> addrOf;   ///< uid → 身份（墓地保留映射）
+    /// 混合序视图（label/line 与指令同列，物化期定序、编辑期增量维护）；
+    /// 墓地不进序——remove 后 uid 解析即抛，序号立即回落。
+    std::vector<ca::u32>                  order;
+    std::unordered_map<ca::u32, ca::usize> rowOf;  ///< uid → order 下标（活序内）
+    std::unordered_map<ca::u32, ca::u32>  uidOfInsnSlot;  ///< InsnId.slot → uid
+    std::unordered_map<ca::u32, ca::u32>  uidOfLabelSlot; ///< LabelId.slot → uid
+    /// LNT 行消费账（物化期把 startPc → 已投影行号扣掉，重复 pc 不重投影）。
+    std::multimap<ca::u32, ca::usize>     pendingLines;
 };
 
-/// 类树缓存条目。脏纪律：树改动置位；write_back 清位；外部改字节 → 整条目作废。
-/// MVP 不驱逐（会话内常驻，lazy 解析已收敛 open 成本）；脏树永不参与驱逐。
+/// 类会话缓存条目。脏纪律：改动置位；write_back 清位；外部改字节 → 整条目作废。
+/// MVP 不驱逐（会话内常驻，lazy 解析已收敛 open 成本）；脏会话永不参与驱逐。
 struct TreeEntry
 {
-    std::shared_ptr<jbytecode::tree::ClassNode> node;
-    bool dirty = false;
-    std::unordered_map<jbytecode::tree::MethodNode*, InsnUidState> uidStates;
+    std::shared_ptr<jbc::ir::ClassSession> session;
+    bool                                   dirty = false;
+    std::map<ca::u32, MethodUi>            uidStates;   ///< MethodId.slot → uid 态
 };
 
 /// 容器会话：v3 SDK 的一切 C++ 侧状态归此，Python 只见句柄与键。
@@ -84,16 +121,10 @@ public:
     /// first-wins 落选者（internal name → 落选 URI，保序；winner 移除时按序晋升）。
     std::multimap<std::string, std::string> duplicateUris;
 
-    /// 树缓存（lazy：首次树操作时解析；uid 映射随条目生灭）。
+    /// 会话缓存（lazy：首次树操作时解析；uid 映射随条目生灭）。
     std::map<std::string, TreeEntry> trees;
 
-    /// 管线 tail ephemeral 方法（"\x00ephem:<n>" → 管线内部 MethodNode）；
-    /// 仅 pass run() 调用期内登记有效（契约 §3.6 唯一对象形例外）。
-    std::unordered_map<std::string, jbytecode::tree::MethodNode*> ephemeralMethods;
-    std::unordered_map<jbytecode::tree::MethodNode*, InsnUidState> ephemeralUids;
-    ca::u64 ephemeralNext = 1;
-
-    /// 最近一次 run_pass 产物（L5 报告等位物；值拷贝视图）。
+    /// 管线 tail 产物位（L5 报告等位物；值拷贝视图）。
     std::shared_ptr<PyRunStats> lastStats;
     std::string                 lastPipeline;
 
@@ -114,7 +145,7 @@ public:
     /// shadow_generate/shadow_load 填充，shadow_dump/shadow_entries 消费。
     std::shared_ptr<mjbase::renamer::ShadowAliasTable> shadowTable;
 
-    /// 全树缓存作废（管线直驱容器字节 / rename 提交后调用；lazy 下零成本）。
+    /// 全会话缓存作废（管线直驱容器字节 / rename 提交后调用；lazy 下零成本）。
     void clearTrees() { trees.clear(); }
 
     /// 重建 name↔URI 索引（导入后调用；头解析对名，first-wins 记落选者）。
@@ -192,7 +223,7 @@ void facadeExportClass(FacadeSession& s, const std::string& name, const std::str
 /// class 字节头解析对名（不建树；失败 → nullopt）。
 std::optional<std::string> facadeProbeClassName(const std::vector<ca::u8>& bytes);
 
-/// 指令 kind 名（AbstractInsnNode::TYPE_* → 助记串）。
+/// 指令 kind 名（insn_kind 常量 → 助记串）。
 const char* facadeInsnKindName(int kind);
 
 /// 字符串 ldc 载荷收进会话 arena → Any（绑定层临时 std::string 的悬垂视图
@@ -201,6 +232,10 @@ ca::core::Any facadeInternedStr(FacadeSession& s, const std::string& v);
 
 /// 标准 JVM opcode 助记名（索引=opcode 值，规范序 0..201；越界返回 "?"）。
 const char* facadeOpcodeName(int op);
+
+/// 指令呈现助记名：专用局部变量码（iload_0 族）归一为基名，其余同
+/// facadeOpcodeName（detail 出口单口径）。
+const char* facadeInsnMnemonic(int op);
 
 // ── 树面（B2，契约 §2.2-2.6）─────────────────────────────────────────────
 // 键口径：cref=(句柄, internal name)、mref/fref=(句柄, cls, name, desc)——
@@ -272,7 +307,8 @@ void        facadeMethodSetExceptions(FacadeSession& s, const std::string& cls,
 void        facadeFieldSetAccess(FacadeSession& s, const std::string& cls, const std::string& name,
                                  const std::string& desc, int access);
 
-/// 新增成员（MethodNode 堆 new，nodes.hpp:637-638 契约）；键冲突 → StaleRefError。
+/// 新增成员（libjbc addMethod/addField 挂入；CP 与身份簿记会话自管）；键冲突
+/// → StaleRefError。
 std::string facadeAddMethod(FacadeSession& s, const std::string& cls, const std::string& name,
                             const std::string& desc, int access, int maxStack, int maxLocals);
 std::string facadeAddField(FacadeSession& s, const std::string& cls, const std::string& name,
@@ -302,7 +338,7 @@ struct InsnDetail
     std::string cstStr;
     ca::i64     cstInt = 0;
     double      cstFloat = 0;
-    /// 跳转/switch 目标（label → 其 LabelNode 的 uid）。
+    /// 跳转/switch 目标（label → 其 uid）。
     ca::u32              targetUid = 0, defaultUid = 0;
     int                  switchMin = 0, switchMax = 0;
     std::vector<ca::u32> targetUids;
@@ -387,10 +423,10 @@ ca::u32 facadeEmitLookupSwitch(FacadeSession& s, const std::string& cls, const s
                                const std::string& desc, const std::vector<int>& keys,
                                ca::u32 defaultUid, const std::vector<ca::u32>& targetUids,
                                std::optional<ca::u32> pos);
-/// 建标签（Label 归属方法 arena，B8 归属制）；返回其 uid。
+/// 建标签（Boundary 角色，锚在前置边界/方法末尾）；返回其 uid。
 ca::u32 facadeEmitLabel(FacadeSession& s, const std::string& cls, const std::string& name,
                         const std::string& desc, std::optional<ca::u32> pos);
-/// 摘链进墓地（uid 保留映射，后续解析抛 "insn removed"；节点内存随树回收）。
+/// 摘链进墓地（uid 保留映射，后续解析抛 "insn removed"）。
 void facadeRemoveInsn(FacadeSession& s, const std::string& cls, const std::string& name,
                       const std::string& desc, ca::u32 uid);
 
@@ -407,7 +443,8 @@ void facadeRemoveTryCatch(FacadeSession& s, const std::string& cls, const std::s
 
 // ── 写回/落盘（脏纪律） ──
 
-/// 单类 树→字节 + 清脏；COMPUTE_FRAMES 写不出即抛（结构/栈校验语义）。
+/// 单类 会话→字节 + 清脏；compute_frames=true 时 Strict 帧重算 + SMT 再生
+///（失败即抛；v<49 无 SMT 定义跳过）。
 void facadeWriteBack(FacadeSession& s, const std::string& name, bool computeFrames);
 
 /// 全脏树写回；返回写出的类名（升序）。
@@ -415,15 +452,6 @@ std::vector<std::string> facadeFlush(FacadeSession& s, bool computeFrames);
 
 /// flush 全脏 + 两阶段落盘；未解析/未脏类字节原样导出（零成本）。
 void facadeSave(FacadeSession& s, const std::string& path, bool computeFrames);
-
-// ── ephemeral 方法（契约 §3.6；B3 管线 tail 用） ──────────────────────────
-
-/// 登记 pipeline 内部方法 → 返回 ephemeral cls 键段（"\x00ephem:<n>"）。
-/// uid 态挂 session.ephemeralUids；读/指令结构面全量可用，身份写面（rename/
-/// add/remove 成员）不支持。release 后该键全部解析 fail-closed。
-std::string facadeAdoptEphemeralMethod(FacadeSession& s, jbytecode::tree::MethodNode& m,
-                                       const std::string& name, const std::string& desc);
-void facadeReleaseEphemeralMethod(FacadeSession& s, const std::string& ephemKey);
 
 // ── rename token 面（契约 §2.7；单活动 token，rename_begin 重置） ─────────
 
@@ -440,8 +468,7 @@ void facadeTokenRenameField(FacadeSession& s, const std::string& owner, const st
 /// 应用计划到容器（字节码面恒开；reflection/annotations/signatures/resources
 /// 可选，resources 默认开——条目 URI 迁移与 MANIFEST/services 重写同属一次
 /// 语义改名，默认关闭会让导出 jar 新类挂旧 URI）。提交前自动 flush 全部脏树
-/// （computeFrames=false：remap 保帧；COMPUTE_FRAMES 写回对尾插死代码形状有
-/// 损坏案例，需要重算的脚本显式 flush(h, true)）。
+/// （computeFrames=false：remap 保帧；需要重算的脚本显式 flush(h, true)）。
 /// 成功后全部缓存树作废（管线直驱容器字节同款语义）。
 void facadeTokenCommit(FacadeSession& s, bool reflectionStrings, bool annotations,
                        bool signatures, bool resources);
@@ -485,9 +512,8 @@ struct SanitizeLvtReport
 };
 
 /// LVT 清洗（G1 复现盘：Invalid start_pc / Duplicated LVT entry）：
-/// 全类逐方法剔除 start/end 标签已脱链（墓地/删节点）的 LocalVariableNode、
-/// 按 (index,start,end,name,desc) 去重；改动标脏。局部变量节点为方法 arena
-/// 持有（nodes.hpp visitLocalVariable create<>），摘除只出 vector、不 delete。
+/// 全类逐方法剔除 start/end 锚点已脱链（pc 不落在存活指令/方法末尾）的
+/// LocalVariableTable 行、按 (slot,start,end,name,desc) 去重；改动标脏。
 SanitizeLvtReport facadeSanitizeLvt(FacadeSession& s);
 
 struct RejectedSuggestion

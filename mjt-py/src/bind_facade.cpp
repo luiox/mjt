@@ -14,7 +14,6 @@
 
 namespace py = pybind11;
 
-using jbytecode::tree::AbstractInsnNode;
 
 // 声明在 pysdk_bridge.hpp；本 TU 为定义侧（平函数面绑定）。
 namespace mjt::pysdk {
@@ -468,39 +467,39 @@ void bindFacade(py::module_& m)
         out["uid"]     = d.uid;
         out["opcode"]  = d.opcode;
         out["kind"]    = facadeInsnKindName(d.kind);
-        out["mnemonic"] = (d.opcode >= 0 && d.opcode <= 201) ? facadeOpcodeName(d.opcode) : "?";
-        if (d.kind == AbstractInsnNode::INT_INSN) out["operand"] = d.operand;
-        if (d.kind == AbstractInsnNode::VAR_INSN) out["var"] = d.var;
-        if (d.kind == AbstractInsnNode::TYPE_INSN) out["desc"] = d.desc;
-        if (d.kind == AbstractInsnNode::FIELD_INSN) {
+        out["mnemonic"] = (d.opcode >= 0 && d.opcode <= 201) ? facadeInsnMnemonic(d.opcode) : "?";
+        if (d.kind == insn_kind::kInt) out["operand"] = d.operand;
+        if (d.kind == insn_kind::kVar) out["var"] = d.var;
+        if (d.kind == insn_kind::kType) out["desc"] = d.desc;
+        if (d.kind == insn_kind::kField) {
             out["owner"] = d.owner;
             out["name"]  = d.name;
             out["desc"]  = d.desc;
         }
-        if (d.kind == AbstractInsnNode::METHOD_INSN) {
+        if (d.kind == insn_kind::kMethod) {
             out["owner"] = d.owner;
             out["name"]  = d.name;
             out["desc"]  = d.desc;
             out["itf"]   = d.itf;
         }
-        if (d.kind == AbstractInsnNode::INVOKE_DYNAMIC_INSN) {
+        if (d.kind == insn_kind::kIndy) {
             out["name"] = d.name;
             out["desc"] = d.desc;
         }
-        if (d.kind == AbstractInsnNode::JUMP_INSN) out["target"] = d.targetUid;
-        if (d.kind == AbstractInsnNode::LDC_INSN) {
+        if (d.kind == insn_kind::kJump) out["target"] = d.targetUid;
+        if (d.kind == insn_kind::kLdc) {
             out["cst_tag"] = d.cstTag;
             if (d.cstTag == 1) out["cst"] = d.cstStr;
             else if (d.cstTag == 2 || d.cstTag == 3) out["cst"] = static_cast<long long>(d.cstInt);
             else if (d.cstTag == 4 || d.cstTag == 5) out["cst"] = d.cstFloat;
             else out["cst"] = py::none();
         }
-        if (d.kind == AbstractInsnNode::IINC_INSN) {
+        if (d.kind == insn_kind::kIinc) {
             out["var"]  = d.var;
             out["incr"] = d.incr;
         }
-        if (d.kind == AbstractInsnNode::TABLESWITCH_INSN ||
-            d.kind == AbstractInsnNode::LOOKUPSWITCH_INSN) {
+        if (d.kind == insn_kind::kTableSwitch ||
+            d.kind == insn_kind::kLookupSwitch) {
             out["min"] = d.switchMin;
             out["max"] = d.switchMax;
             out["default"] = d.defaultUid;
@@ -511,11 +510,11 @@ void bindFacade(py::module_& m)
             for (const auto key : d.switchKeys) k.append(key);
             out["keys"] = k;
         }
-        if (d.kind == AbstractInsnNode::MULTIANEWARRAY_INSN) {
+        if (d.kind == insn_kind::kMultiANewArray) {
             out["desc"] = d.desc;
             out["dims"] = d.dims;
         }
-        if (d.kind == AbstractInsnNode::LINE) out["line"] = d.line;
+        if (d.kind == insn_kind::kLine) out["line"] = d.line;
         return out;
     };
 
