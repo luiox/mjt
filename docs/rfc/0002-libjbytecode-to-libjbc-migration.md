@@ -92,6 +92,12 @@ mjbase 本身零 libjbytecode（纯 libjbc 基座）。
   - 6.6 xmake 去 libjbytecode + 全链回归（pysdk 测试套全绿）。
 - **B7 依赖图收尾**：mjt xmake.lua 去 libjbytecode/libjblw require/requireconf/
   链接闭包项；luiox-repo libjbytecode 条目加弃用注记（不删）；两仓最终回归。
+  - 执行注记（B7 落地）：libjblw 全退役（libjhasm 0.3.2 换 libjbc 后端后
+    零消费方，unittest/jblw 消费验证套件随目标删除）；libjbytecode 的
+    require/requireconf/链接闭包**保留**——mjbase.lib 的 relaxed_verifier
+    仍在消费（1969 个符号引用，dumpbin 实证），mjbase 被产品二进制链接，
+    闭包兜底不可去，随 B8 8.7（relaxed_verifier 移植 jhasm::analyze）
+    一并收口；luiox-repo 两包条目加弃用注记。
 - **B8 mjbase 设施完善**（迁移完成后继续，同会话）：
   - 8.1 dev_plan 台账校准（A3/A4/A5 已在 libjbc 落地——stale 条目修正）；
   - 8.2 libjbc#10 move-range 原语实现（libjbc 仓：段重定位/标签随迁/边界

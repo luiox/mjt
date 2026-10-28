@@ -35,8 +35,9 @@ xmake build mjt-mcp
 
 Dependencies are pulled directly from
 [luiox-repo](https://github.com/luiox/luiox-repo): libca, libmcp, libjstr,
-libjbytecode, libjzip, libgarena, libjclassfile, libjstd, libjdk_finder,
-libjblw, libjhasm; libarchive / zlib / nlohmann_json come from
+libjbytecode (link-closure only, consumed by mjbase's relaxed_verifier until
+RFC 0002 B8), libjzip, libgarena, libjclassfile, libjstd, libjdk_finder,
+libjhasm; libarchive / zlib / nlohmann_json come from
 [xrepo](https://xmake.io). libjbc is defined as an in-repo inline package
 (git direct with a pinned commit, kept at the same version as mjbase). The
 bytecode foundation itself is mjbase, consumed as a source-level sibling
@@ -56,8 +57,7 @@ failing. Test artifacts land in the `test/` directory of each project root and
 can be redirected with `LIBCA_TEST_OUT_ROOT`.
 
 The packaged libraries ship their own suites under `unittest/`
-(`libjhasm_unittest`, `libjblw_unittest`, `libjdk_finder_unittest`), built and
-run the same way.
+(`libjhasm_unittest`, `libjdk_finder_unittest`), built and run the same way.
 
 ## Run
 
@@ -83,8 +83,7 @@ mjt/src/shared/  capabilities shared across the MCP tool set
 mjt/skills/      MCP skill definitions
 mjt-py/src/      embedded Python SDK (mjt --script embedded interpreter and
                  the mjt.pyd pybind11 binding; gated by --with_pysdk)
-unittest/        suites for the packaged libraries (libjhasm, libjblw,
-                 libjdk_finder)
+unittest/        suites for the packaged libraries (libjhasm, libjdk_finder)
 test_helper/     test scaffolding (gtest integration, artifact path resolution)
 xmake/           build switches, inline libjbc package definition, embedded
                  libca rules, Windows manifest rule, package repository

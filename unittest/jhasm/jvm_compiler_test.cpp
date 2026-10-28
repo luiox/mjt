@@ -3,7 +3,7 @@
 #include "jhasm/parser/declaration_parser.hpp"
 #include "jhasm/parser/tokenizer.hpp"
 
-#include <jblw/asm/bytecode_library.hpp>
+#include <jbc/core/reader.hpp>
 
 #include <gtest/gtest.h>
 
@@ -54,10 +54,13 @@ TEST(JhasmJvmCompilerTest, WritesReadableClassBytes)
                 : result.errors()[0].to_string().to_utf8_string().to_std_string());
     ASSERT_NE(nullptr, result.get());
     EXPECT_GT(result.get()->bytes.size(), 4U);
-    auto reread = jblw::adapter::BytecodeLibrary::read(result.get()->bytes);
-    ASSERT_NE(nullptr, reread);
-    EXPECT_EQ("Example", reread->type()->internalName().to_std_string());
-    EXPECT_EQ(1U, reread->methods().size());
+    // 产物回读验证（B7：libjblw 退役，readClass 同位替入）。unwrap()&& 按
+    // 值返回，先落命名局部再取视图（模型随临时量析构会带走字节视图）。
+    auto reread = jbc::core::readClass(jbc::core::ByteView{result.get()->bytes});
+    ASSERT_TRUE(reread.is_ok());
+    auto opened = std::move(reread).unwrap();
+    EXPECT_EQ("Example", std::string(opened.file->thisName()));
+    EXPECT_EQ(1U, opened.file->methods.size());
 }
 
 TEST(JhasmJvmCompilerTest, CompilesAllUpstreamLegalJvmFixtures)
@@ -73,7 +76,7 @@ TEST(JhasmJvmCompilerTest, CompilesAllUpstreamLegalJvmFixtures)
         ASSERT_TRUE(result.is_ok());
         ASSERT_NE(nullptr, result.get());
         EXPECT_GT(result.get()->bytes.size(), 4U);
-        EXPECT_NE(nullptr, jblw::adapter::BytecodeLibrary::read(result.get()->bytes));
+        EXPECT_TRUE(jbc::core::readClass(jbc::core::ByteView{result.get()->bytes}).is_ok());
         ++count;
     }
     EXPECT_EQ(44U, count);

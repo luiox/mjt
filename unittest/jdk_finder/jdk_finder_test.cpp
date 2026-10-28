@@ -112,12 +112,12 @@ TEST(JdkFinderTest, ContinuesAfterCandidateWithoutJniHeader)
     ScopedEnv javaHome("JAVA_HOME", invalid.string());
     ScopedEnv mjtHome("MJT_JDK_HOME", valid.string());
     jdk_finder::FindOptions opts;
-    opts.requireJniHeader = true;
+    opts.require_jni_header = true;
 
-    auto result = jdk_finder::findJdk(opts);
+    auto result = jdk_finder::find_jdk(opts);
 
     ASSERT_TRUE(result.available) << result.reason;
-    EXPECT_EQ(valid.lexically_normal(), result.javaHome.lexically_normal());
+    EXPECT_EQ(valid.lexically_normal(), result.java_home.lexically_normal());
 }
 
 TEST(JdkFinderTest, SharedScriptStopsAfterFirstFailure)
@@ -146,10 +146,10 @@ TEST(JdkFinderTest, ExplicitMsvcReturnsVcvarsPath)
 
     ScopedEnv include("INCLUDE", "");
     ScopedEnv vcTools("VCToolsInstallDir", tools.string());
-    auto result = jdk_finder::findNativeCompiler(jdk_finder::CCompilerKind::Msvc);
+    auto result = jdk_finder::find_native_compiler(jdk_finder::CCompilerKind::MSVC);
 
     ASSERT_TRUE(result.available) << result.reason;
-    EXPECT_EQ(vcvars.lexically_normal(), result.vcvarsAll.lexically_normal());
+    EXPECT_EQ(vcvars.lexically_normal(), result.vcvars_all.lexically_normal());
 #endif
 }
 
@@ -167,10 +167,10 @@ TEST(JdkFinderTest, ExplicitZigUsesZigExecutableOnPath)
     std::string oldPath    = readEnv("PATH", pathExists);
     ScopedEnv path("PATH", bin.string() + separator + (pathExists ? oldPath : std::string{}));
 
-    auto result = jdk_finder::findNativeCompiler(jdk_finder::CCompilerKind::Zig);
+    auto result = jdk_finder::find_native_compiler(jdk_finder::CCompilerKind::ZIG);
 
     ASSERT_TRUE(result.available) << result.reason;
-    EXPECT_EQ(jdk_finder::CCompilerKind::Zig, result.compiler);
+    EXPECT_EQ(jdk_finder::CCompilerKind::ZIG, result.compiler);
 }
 
 TEST(JdkFinderTest, FindsVisualStudio2019Install)
@@ -187,6 +187,6 @@ TEST(JdkFinderTest, FindsVisualStudio2019Install)
     ScopedEnv programFiles("ProgramFiles", root.string());
     ScopedEnv programFilesX86("ProgramFiles(x86)", "");
 
-    EXPECT_EQ(vcvars.lexically_normal(), jdk_finder::findVcvarsAll().lexically_normal());
+    EXPECT_EQ(vcvars.lexically_normal(), jdk_finder::find_vcvars_all().lexically_normal());
 #endif
 }
