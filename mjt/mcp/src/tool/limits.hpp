@@ -21,6 +21,13 @@ inline constexpr ca::usize kMaximumDecompilerSourceBytes         = 16 * 1024 * 1
 inline constexpr ca::i64   kMaximumDecompilerTimeoutMilliseconds = 300000;
 inline constexpr ca::i32   kMaximumDecompilerMemoryMiB           = 4096;
 
+///工具级超时面（project_open / class_query / search / xref_query 的 timeout_ms）。
+///缺省 3 分钟：大 jar 上一次全量类元数据查询分钟级耗时是常态，无兜底时调用方
+///只能干等。防护上限与反编译子进程超时对齐（300000），越界值由 contract schema
+///拒绝。超时返回结构化错误并中止等待，执行体转孤儿线程至自然完成。
+inline constexpr ca::i64 kDefaultToolTimeoutMilliseconds = 180000;
+inline constexpr ca::i64 kMaximumToolTimeoutMilliseconds = 300000;
+
 ///异步 job 保留上限（含 method_source 与 workflow 两条路径）。
 inline constexpr ca::usize kMaximumRetainedJobs             = 64;
 inline constexpr ca::usize kMaximumWorkflowDecompileClasses = 64;

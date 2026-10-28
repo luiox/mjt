@@ -1,10 +1,14 @@
 #pragma once
 
+#include <condition_variable>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <unordered_map>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -74,6 +78,44 @@ public:
     Json call(const std::string& name, const Json& arguments);
 
 private:
+    ///@brief 限时等待槽（工具级超时面）：worker 写结果并唤醒，主线程限时等待。
+    struct DeadlineSlot final
+    {
+        std::mutex              mutex;
+        std::condition_variable cv;
+        bool                    done = false;
+        Json                    result;
+    };
+
+    ///@brief 超时后继续执行的孤儿 worker：析构面统一 join，不留悬空线程。
+    ///
+    ///线程绝不可自摘除（lambda 末尾释放最后一个 shared_ptr 会在线程仍存活时
+    ///析构 joinable 的 std::thread → terminate）：worker 退出前置 exited 标志，
+    ///登记侧惰性 join 已退出线程回收条目。
+    struct OrphanRun final
+    {
+        std::thread              worker;
+        std::atomic<bool>        exited{false};
+        bool                     joined = false;
+    };
+
+    ///@brief 在临时 worker 上执行 body 并限时等待（工具级超时面）。
+    ///
+    ///超时返回结构化错误（reason=timeout / elapsed_ms / 预订 project_id），
+    ///worker 转孤儿继续执行至自然完成——查询体在孤儿内自行取 executionMutex_，
+    ///后续工具照常按锁序排队，stdio 通道与已打开会话不受阻塞。服务析构 join
+    ///全部孤儿。timedOut 出参供调用方决定 normalize 是否外透 workspace 元数据
+    ///（超时时 workspace 正被孤儿改写，一律不读）。
+    Json callWithDeadline(const std::string& name, const Json& arguments,
+                          std::shared_ptr<ProjectSession> keepalive,
+                          const std::string& reservedProjectId,
+                          std::function<Json()>           body,
+                          bool&                           timedOut);
+
+    ///@brief project_open 执行体（限时 worker 内运行）：打开 + 登记会话。
+    ///@note id 由主线程预订（超时错误可携带）；emplace 时在状态锁下复查冲突。
+    Json openProjectBody(const Json& arguments, const std::string& reservedId);
+
     Json callLocked(const std::string& name, const Json& arguments, ProjectSession& session);
     std::optional<Json> callSessionTool(const std::string& name, const Json& arguments);
     std::optional<Json> callWorkspaceQueryTool(
@@ -99,6 +141,8 @@ private:
     std::mutex executionMutex_;
     std::unordered_map<std::string, std::shared_ptr<ProjectSession>> sessions_;
     std::unordered_map<std::string, std::shared_ptr<JobState>> jobs_;
+    ///@brief 超时转孤儿的执行线程表（worker 自摘除；析构面统一 join）。
+    std::vector<std::shared_ptr<OrphanRun>> orphans_;
     ca::u64 nextWorkspace_ = 1;
     ca::u64 nextJob_ = 1;
     DecompilerSessionSettings decompilerSettings_;
