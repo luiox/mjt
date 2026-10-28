@@ -131,26 +131,20 @@ add_requires("libca " .. LUIOX_LIBCA_VERSION, {configs = {modules = LUIOX_LIBCA_
 -- luiox 家族直连包消费 0.0.2（libca 0.0.14 对齐版）。
 add_requires("libmcp 0.1.0")
 add_requires("libjstr 0.0.2")
-add_requires("libjbytecode 0.0.2")
 add_requires("libjzip 0.0.2")
-add_requires("libgarena 0.0.2")
 add_requires("libjclassfile 0.0.2")
 -- libjbc 走项目内联包定义（git 直连 + commit 锁，与 mjbase 同版本）：
 -- luiox-repo 的发布版落后于 mjbase 需要的面，且内联定义不吃 requireconfs，
 -- 其嵌套 libca 由定义内的 add_deps 钉到上面的单源版本。
 includes("xmake/packages/libjbc.lua")
-add_requires("libjbc 0.4.18")
+add_requires("libjbc 0.4.19")
 add_requires("libjstd 0.0.1")
 add_requires("libjdk_finder 0.1.0")
 add_requires("libjhasm 0.3.2")
 -- 嵌套 libca 全路径钉定，缺一条就多一个实例。
 add_requireconfs("libmcp.libca",                 {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
 add_requireconfs("libjstr.libca",                {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
-add_requireconfs("libjbytecode.libca",           {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
-add_requireconfs("libjbytecode.libjstr.libca",   {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
-add_requireconfs("libjbytecode.libgarena.libca", {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
 add_requireconfs("libjzip.libca",                {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
-add_requireconfs("libgarena.libca",              {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
 add_requireconfs("libjclassfile.libca",          {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
 add_requireconfs("libjclassfile.libjstr.libca",  {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
 add_requireconfs("libjstd.libca",                {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})

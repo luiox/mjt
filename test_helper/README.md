@@ -51,8 +51,6 @@ and builds a `name → absolute_path` map:
 | File location | Content (name) | Resolved path |
 |---|---|---|
 | `.project_root_file` | `mjt` | *project root* |
-| `libs/libjbytecode/.project_root_file` | `libjbytecode` | `libs/libjbytecode/` |
-| `libs/libjbytecode/core/.project_root_file` | `libjbytecode_core` | `libs/libjbytecode/core/` |
 | ... | ... | ... |
 
 Blacklist (directories skipped during scan): `.`-prefix, `build`-prefix, `node_modules`.
