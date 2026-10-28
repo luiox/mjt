@@ -1,6 +1,6 @@
 #include "jhasm/jhasm.hpp"
 
-#include <jblw/asm/bytecode_library.hpp>
+#include <jbc/core/reader.hpp>
 
 #include <gtest/gtest.h>
 
@@ -113,5 +113,5 @@ TEST(LibJhasmEntryTest, CompilerUsesInjectedInheritanceForFrameWriting)
                 ? ""
                 : compiled.errors()[0].to_string().to_utf8_string().to_std_string());
     EXPECT_GT(checker.calls, 0);
-    EXPECT_NE(nullptr, jblw::adapter::BytecodeLibrary::read(compiled.get()->bytes));
+    EXPECT_TRUE(jbc::core::readClass(jbc::core::ByteView{compiled.get()->bytes}).is_ok());
 }

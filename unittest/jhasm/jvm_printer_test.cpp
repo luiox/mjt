@@ -4,7 +4,7 @@
 #include "jhasm/parser/tokenizer.hpp"
 #include "jhasm/printer/jvm_printer.hpp"
 
-#include <jblw/asm/bytecode_library.hpp>
+#include <jbc/core/reader.hpp>
 
 #include <gtest/gtest.h>
 
@@ -63,24 +63,33 @@ TEST(JhasmJvmPrinterTest, RoundTripsAllUpstreamLegalJvmFixtures)
         auto       second     = compile(normalized);
         ASSERT_TRUE(second.is_ok()) << firstError(second.errors()) << "\n" << normalized;
 
-        const auto& left  = first.get()->classFile;
-        const auto& right = second.get()->classFile;
-        EXPECT_EQ(left->type()->internalName(), right->type()->internalName());
-        ASSERT_EQ(left->fields().size(), right->fields().size());
-        ASSERT_EQ(left->methods().size(), right->methods().size());
-        EXPECT_EQ(left->visibleRuntimeAnnotations().size(),
-                  right->visibleRuntimeAnnotations().size());
-        EXPECT_EQ(left->invisibleRuntimeAnnotations().size(),
-                  right->invisibleRuntimeAnnotations().size());
-        for (ca::usize index = 0; index < left->fields().size(); ++index) {
-            EXPECT_EQ(left->fields()[index]->name(), right->fields()[index]->name());
-            EXPECT_EQ(left->fields()[index]->type()->descriptor(),
-                      right->fields()[index]->type()->descriptor());
+        // 0.3.x JvmCompileResult 只剩 bytes（libjblw 模型视图退役）：roundtrip
+        // 对读经 libjbc readClass 重建。unwrap()&& 按值返回，命名局部保寿命
+        // （字节视图随模型走，先拷出再断言）。
+        auto leftRead  = jbc::core::readClass(jbc::core::ByteView{first.get()->bytes});
+        auto rightRead = jbc::core::readClass(jbc::core::ByteView{second.get()->bytes});
+        ASSERT_TRUE(leftRead.is_ok());
+        ASSERT_TRUE(rightRead.is_ok());
+        auto left  = std::move(leftRead).unwrap();
+        auto right = std::move(rightRead).unwrap();
+        EXPECT_EQ(std::string(left.file->thisName()), std::string(right.file->thisName()));
+        ASSERT_EQ(left.file->fields.size(), right.file->fields.size());
+        ASSERT_EQ(left.file->methods.size(), right.file->methods.size());
+        EXPECT_EQ(left.file->findClassAttr("RuntimeVisibleAnnotations") != nullptr,
+                  right.file->findClassAttr("RuntimeVisibleAnnotations") != nullptr);
+        EXPECT_EQ(left.file->findClassAttr("RuntimeInvisibleAnnotations") != nullptr,
+                  right.file->findClassAttr("RuntimeInvisibleAnnotations") != nullptr);
+        for (ca::usize index = 0; index < left.file->fields.size(); ++index) {
+            EXPECT_EQ(std::string(left.file->nameOf(left.file->fields[index])),
+                      std::string(right.file->nameOf(right.file->fields[index])));
+            EXPECT_EQ(std::string(left.file->descOf(left.file->fields[index])),
+                      std::string(right.file->descOf(right.file->fields[index])));
         }
-        for (ca::usize index = 0; index < left->methods().size(); ++index) {
-            EXPECT_EQ(left->methods()[index]->name(), right->methods()[index]->name());
-            EXPECT_EQ(left->methods()[index]->type()->descriptor(),
-                      right->methods()[index]->type()->descriptor());
+        for (ca::usize index = 0; index < left.file->methods.size(); ++index) {
+            EXPECT_EQ(std::string(left.file->nameOf(left.file->methods[index])),
+                      std::string(right.file->nameOf(right.file->methods[index])));
+            EXPECT_EQ(std::string(left.file->descOf(left.file->methods[index])),
+                      std::string(right.file->descOf(right.file->methods[index])));
         }
         ++count;
     }
@@ -110,5 +119,5 @@ TEST(JhasmJvmPrinterTest, ReattachesLineNumbersToTheirOriginalLabels)
 
     auto second = compile(source);
     ASSERT_TRUE(second.is_ok()) << firstError(second.errors()) << "\n" << source;
-    EXPECT_NE(nullptr, jblw::adapter::BytecodeLibrary::read(second.get()->bytes));
+    EXPECT_TRUE(jbc::core::readClass(jbc::core::ByteView{second.get()->bytes}).is_ok());
 }

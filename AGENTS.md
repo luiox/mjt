@@ -19,9 +19,11 @@ xmake run <target> --gtest_brief=1
 
 外部依赖只有 luiox-repo 中心包仓直连包（libca / libmcp / libjstr /
 libjbytecode / libjzip / libgarena / libjclassfile / libjstd / libjdk_finder /
-libjblw / libjhasm + xrepo 的 gtest / libarchive / zlib / nlohmann_json；
+libjhasm + xrepo 的 gtest / libarchive / zlib / nlohmann_json；
 libjbc 走项目内联包定义，git 直连 + commit 锁），不引入仓内副本、不做 phony
 垫片；各包嵌套的 libca 必须用 `add_requireconfs` 钉回同一 `LUIOX_LIBCA_VERSION`。
+libjbytecode 仅剩链接闭包兜底（mjbase.lib 的 relaxed_verifier 消费，
+RFC 0002 B8 收口后随 mjbase 一并摘除）；libjblw 已全退役（B7）。
 
 ## 约定
 
