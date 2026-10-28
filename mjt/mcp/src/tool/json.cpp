@@ -411,8 +411,10 @@ std::optional<Json> checkBranchKeys(const std::string& label,
     for (const auto& [key, _] : arguments.items()) {
         (void)_;
         //kind/target 是分支选择器本身（分支名已含其值），project_id 是会话
-        //键：三者恒放行；target 的枚举合法性由翻译层在白名单检查前裁定。
-        if (key == "project_id" || key == "kind" || key == "target") continue;
+        //键，timeout_ms 是工具级超时面（跨分支键，schema 层管取值范围）：四者
+        //恒放行；target 的枚举合法性由翻译层在白名单检查前裁定。
+        if (key == "project_id" || key == "kind" || key == "target" || key == "timeout_ms")
+            continue;
         const bool inVocabulary = std::any_of(kSelectorVocabulary.begin(),
                                               kSelectorVocabulary.end(),
                                               [&](const char* name) { return key == name; });
@@ -854,10 +856,17 @@ Json normalizeToolError(const std::string& name, const Json& arguments, Json res
     if (!result.value("isError", false) || !result.contains("structuredContent")) return result;
     auto& payload = result["structuredContent"];
     payload["operation"] = name;
-    payload["project_id"] = arguments.contains("project_id") &&
-                                       arguments.at("project_id").is_string()
-                                   ? arguments.at("project_id")
-                                   : Json("");
+    //payload 已自带非空 project_id 时不回填：project_open 超时面把预订 id 随
+    //错误外透（此时 arguments 里没有 project_id 可读，回填会把它抹成空串）。
+    const bool prefilledProjectId = payload.contains("project_id") &&
+                                    payload.at("project_id").is_string() &&
+                                    !payload.at("project_id").get<std::string>().empty();
+    if (!prefilledProjectId) {
+        payload["project_id"] = arguments.contains("project_id") &&
+                                           arguments.at("project_id").is_string()
+                                       ? arguments.at("project_id")
+                                       : Json("");
+    }
     payload["revision"] = workspace ? workspace->revision() : 0;
     if (!payload.contains("diagnostics")) payload["diagnostics"] = Json::array();
     if (payload.contains("status") && payload.at("status").is_object() &&

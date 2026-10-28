@@ -27,3 +27,11 @@
   `decompile` 按调用注入，不再有会话级 settings。
 - `container_mount` 本轮只支持 support 角色的 mount/detach；role=primary
   由 `project_open` 承担，library/runtime 角色留待后续波次。
+
+### Added
+
+- `project_open` / `class_query` / `search` / `xref_query` 增可选
+  `timeout_ms`（缺省 180000，上限 300000，与 `decompile` 的超时上限对齐）。
+  超时返回结构化错误（`reason=timeout` + `elapsed_ms`），执行体转后台收尾，
+  stdio 通道与已打开工程会话保持可用；`project_open` 超时错误携带预订的
+  `project_id`，后台打开完成后该会话照常可寻址。

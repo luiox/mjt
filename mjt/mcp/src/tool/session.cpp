@@ -83,45 +83,8 @@ std::optional<Json> McpToolService::callSessionTool(const std::string& name, con
         jobs_.erase(found);
         return toolResult({{"job_id", released}, {"released", true}});
     }
-    if (name == "project_open") {
-        const auto path = arguments.value("path", std::string{});
-        if (path.empty()) return toolError("path is required");
-        //与 kMaximumRetainedJobs 对齐的资源上限：会话常驻内存（整个
-        //ResourceContainer + 工程 bundle 锁），不设上限会让长会话无界增长。
-        if (sessions_.size() >= detail::kMaximumRetainedWorkspaces)
-            return toolError("too many open projects (limit " +
-                             std::to_string(detail::kMaximumRetainedWorkspaces) +
-                             "); close one first");
-        auto id = arguments.value("project_id", std::string{});
-        if (id.empty()) id = nextWorkspaceId();
-        if (sessions_.find(id) != sessions_.end())
-            return toolError("project already exists: " + id);
-        std::shared_ptr<ProjectSession> instance;
-        bool        created     = false;
-        std::string fingerprint;
-        const auto status = openProjectSession(path,
-                                               arguments.value("project_dir", std::string{}),
-                                               instance,
-                                               created,
-                                               fingerprint);
-        if (status.is_err()) return toolError("open project failed", &status);
-        sessions_.emplace(id, instance);
-        //持久性自描述。temporary 工程在 project_close 即删 bundle，模型
-        //需要显式提示才知道把成果留在盘上要传 project_dir 重开。
-        Json result = {{"project_id", id},
-                       {"revision", 0},
-                       {"project_dir", instance->projectDir},
-                       {"persistence", instance->temporary ? "temporary" : "project"},
-                       {"created", created},
-                       {"container", {{"role", "primary"},
-                                      {"path", instance->workspace->sourcePath()},
-                                      {"fingerprint", fingerprint}}}};
-        if (instance->temporary)
-            result["persistence_hint"] =
-                "this project is temporary and its bundle is deleted on project_close; "
-                "reopen with the same project_dir to persist analysis state and edits";
-        return toolResult(std::move(result));
-    }
+    //project_open 已迁限时 worker 面（service.cpp openProjectBody，工具级超时
+    //参数 #25）：打开体可能分钟级，不再占用状态锁临界区。
     if (name == "project_close") {
         const auto id = arguments.value("project_id", std::string{});
         const auto found = sessions_.find(id);

@@ -331,24 +331,36 @@ Json toolsList()
     const Json mutationOptions = {{"expected_revision", {{"type", "integer"}, {"minimum", 0}}},
                                   {"dry_run", {{"type", "boolean"}}},
                                   {"label", {{"type", "string"}}}};
+    //工具级超时面（#25）：四个长工具的可选执行上限，缺省 180000（3 分钟）。
+    //超时返回结构化错误（reason=timeout / elapsed_ms），服务端中止等待，通道与
+    //已打开会话保持可用；上限与 decompile 的 timeout_ms 对齐（300000）。
+    const Json toolTimeout = {{"timeout_ms",
+                               {{"type", "integer"},
+                                {"minimum", 1},
+                                {"maximum", kMaximumToolTimeoutMilliseconds},
+                                {"description",
+                                 "Optional execution deadline in milliseconds; the call "
+                                 "returns a structured timeout error when exceeded. Default "
+                                 "180000 (3 minutes)."}}}};
     Json result = Json::array();
     //工程会话面（RFC 0001 §8.1）：11 个粗粒度工具，同版本切换取代全部旧名。
     result.push_back(tool(
         "project_open",
         "Open a JAR in a persistent analysis project; creates or reopens the project bundle "
         "and takes its single-writer store lock.",
-        {{"path",
-          {{"type", "string"}, {"description", "Filesystem path of the primary JAR to open."}}},
-         {"project_dir",
-          {{"type", "string"},
-           {"description",
-            "Optional project bundle directory; omitted opens a temporary project whose "
-            "bundle is deleted on project_close. Reopening the same project_dir resumes "
-            "its persisted state."}}},
-         {"project_id",
-          {{"type", "string"},
-           {"description",
-            "Optional caller-selected project ID; otherwise the server generates one."}}}},
+        with({{"path",
+               {{"type", "string"}, {"description", "Filesystem path of the primary JAR to open."}}},
+              {"project_dir",
+               {{"type", "string"},
+                {"description",
+                 "Optional project bundle directory; omitted opens a temporary project whose "
+                 "bundle is deleted on project_close. Reopening the same project_dir resumes "
+                 "its persisted state."}}},
+              {"project_id",
+               {{"type", "string"},
+                {"description",
+                 "Optional caller-selected project ID; otherwise the server generates one."}}}},
+             toolTimeout),
         {"path"}));
     result.push_back(projectTool("project_close",
                                  "Flush pending ledger transactions and close the project "
@@ -390,7 +402,7 @@ Json toolsList()
         "page_size/fields apply to kind=list only. "
         "instructions[] node_type is a coarse semantic label; operands, jump targets and "
         "line numbers are authoritative in the jasm text.",
-        with(pagination,
+        with(with(pagination,
              {{"kind",
                {{"type", "string"},
                 {"enum",
@@ -419,7 +431,7 @@ Json toolsList()
                  "Optional for kind=method|bytecode|method_jasm: member descriptor; omitted "
                  "values resolve by member name in the host class (unique match backfills; "
                  "ambiguous overloads and absent names are rejected), and a member reference "
-                 "handle also backfills."}}}}),
+                 "handle also backfills."}}}}), toolTimeout),
         {"kind"}));
     result.push_back(projectTool(
         "search",
@@ -432,7 +444,7 @@ Json toolsList()
         "resources = query/match_mode/case_sensitive/include_classes/role; shadow = name/"
         "owner/direction/symbol_kind/file (no pagination). Unknown keys per kind are "
         "rejected, never ignored.",
-        with(pagination,
+        with(with(pagination,
              {{"kind",
                {{"type", "string"},
                 {"enum",
@@ -511,7 +523,7 @@ Json toolsList()
                {{"type", "string"},
                 {"description",
                  "shadow kind only: optional sidecar path; defaults to `<jar>.mjt-shadow` "
-                 "next to the primary container."}}}}),
+                 "next to the primary container."}}}}), toolTimeout),
         {"kind"}));
     result.push_back(projectTool(
         "xref_query",
@@ -523,7 +535,7 @@ Json toolsList()
         "ambiguous overloads and absent names are rejected). When the referenced member name "
         "exists but the descriptor does not, the response carries a diagnostics array "
         "listing the real descriptors.",
-        with(pagination,
+        with(with(pagination,
              {{"kind",
                {{"type", "string"},
                 {"enum", {"references", "relations", "overrides"}},
@@ -576,7 +588,7 @@ Json toolsList()
                 {"enum", {"primary", "support", "library", "runtime"}},
                 {"description",
                  "references kind only: optional container-role filter on reference sites; "
-                 "defaults to all roles."}}}}),
+                 "defaults to all roles."}}}}), toolTimeout),
         {"kind"}));
     result.push_back(projectTool(
         "decompile",
