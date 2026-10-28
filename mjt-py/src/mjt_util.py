@@ -24,6 +24,23 @@ _TERMINAL_OPS = {"ireturn", "lreturn", "freturn", "dreturn", "areturn", "return"
                  "athrow", "goto", "goto_w", "tableswitch", "lookupswitch", "ret"}
 _NON_INSN_KINDS = {"label", "line", "frame"}
 
+# 局部变量专用码助记名（iload_0 族）→（基名, 槽位）。合成/源码语料两态并存
+# （javac 口径折叠 vs 通用码），按裸助记名比对的判据门须经此归一。
+_DEDICATED_VAR = {}
+for _f in ("iload", "lload", "fload", "dload", "aload",
+           "istore", "lstore", "fstore", "dstore", "astore"):
+    for _n in range(4):
+        _DEDICATED_VAR[f"{_f}_{_n}"] = (_f, _n)
+
+
+def _var_norm(d):
+    """(归一助记名, 槽位)：专用码展开为基名 + 槽位；其余原样。"""
+    m = d["mnemonic"]
+    if m in _DEDICATED_VAR:
+        base, n = _DEDICATED_VAR[m]
+        return base, d.get("var", n)
+    return m, d.get("var")
+
 
 # ── 函数面读取助手（uid + detail dict） ──────────────────────────────────
 
@@ -173,19 +190,22 @@ class HandlerRef:
     body: list                # [(uid, detail)] handler 体（[0] = handler label 节点）
 
     def remove(self):
-        """删除本组假 handler：handler 体指令逆序摘除 + 对应 try 行删除。
+        """删除本组假 handler：try 行先删 → handler 标签 + 体指令逆序摘除。
 
-        handler label 节点保留为孤儿标记（写回端不产出字节）；try 行按
-        uid 四元组反查删除，键寻址无悬垂。
+        行删除必须在 DOM 动手之前：销毁 handler 标签后行四元组的 handler
+        uid 读数变 0，先动标签会让行匹配扑空、行残留到写回期炸重定位。
+        标签先于体摘：libjbc 里 Boundary 标签锚定的指令不可 erase
+        （StillUsed fail-closed），标签本身无字节形态，销毁即摘边界。
         """
         mref = self.mref
-        for uid, _d in reversed(self.body[1:]):
-            mjt.remove_insn(mref, uid)
         all_rows = mjt.try_catches(mref)
         mine = {tuple(r) for r in self.rows}
         for i in reversed(range(len(all_rows))):
             if tuple(all_rows[i]) in mine:
                 mjt.remove_try_catch(mref, i)
+        mjt.remove_insn(mref, self.body[0][0])   # handler label（Boundary）
+        for uid, _d in reversed(self.body[1:]):
+            mjt.remove_insn(mref, uid)
 
 
 def _handler_body(details, handler_uid):
@@ -200,7 +220,7 @@ def _handler_body(details, handler_uid):
 def _identity_body_shape(body):
     """返回 (ok, wrap_desc)。三形态：裸 athrow / invokestatic 恒等包装 / store 桥。"""
     ins = _real(body)
-    ops = [d["mnemonic"] for _u, d in ins]
+    ops = [_var_norm(d)[0] for _u, d in ins]
     if ops == ["athrow"]:
         return True, None
     if len(ops) == 2 and ops[0] == "invokestatic" and ops[1] == "athrow":
@@ -239,7 +259,8 @@ def _wrap_is_identity(h, owner, name, desc):
         return False
     if len(items) != 2:
         return False
-    return (items[0]["mnemonic"] == "aload" and items[0].get("var", 0) == 0
+    m0, v0 = _var_norm(items[0])
+    return (m0 == "aload" and v0 == 0
             and items[1]["mnemonic"] == "areturn")
 
 
@@ -283,7 +304,12 @@ def identity_rethrows(h, mref, *, allow_overlap=False):
     Returns:
         HandlerRef 列表（每组共享同一 handler 体）。
     """
-    rows_all = mjt.try_catches(mref)
+    try:
+        rows_all = mjt.try_catches(mref)
+    except mjt.StaleRefError:
+        # 无体方法（接口抽象/native 形态）：requireCode fail-closed 抛错，
+        # 保守门语义下无体 = 无 handler 组，静默零报告。
+        return []
     if not rows_all:
         return []
     details = _details(mref)

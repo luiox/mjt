@@ -435,6 +435,20 @@ namespace {
 
 constexpr int kAccStatic = 0x0008;
 
+/// 专用局部变量码（iload_0 族）：0x1A-0x2D 载入 / 0x3B-0x4E 存储，每族 4 连号。
+bool isDedicatedVarOp(jb::Op op)
+{
+    const int v = static_cast<int>(op);
+    return (v >= 0x1A && v <= 0x2D) || (v >= 0x3B && v <= 0x4E);
+}
+
+/// 专用 var 码的槽位（编码在 opcode 字节里；libjbc 导入不落 Insn.a）。
+int dedicatedVarSlot(jb::Op op)
+{
+    const int v = static_cast<int>(op);
+    return v < 0x2E ? (v - 0x1A) % 4 : (v - 0x3B) % 4;
+}
+
 /// 指令 kind 外显值（ASM 系编码，Python 契约按值消费）。
 int kindOf(jb::Op op)
 {
@@ -475,7 +489,9 @@ int kindOf(jb::Op op)
     if (op == jb::Op::NEWARRAY) return insn_kind::kInt;
     const auto sh = jb::shapeOf(op);
     if (sh == jb::Shape::Branch2 || sh == jb::Shape::Branch4) return insn_kind::kJump;
-    if (sh == jb::Shape::Local1) return insn_kind::kVar;
+    // 专用局部变量码（iload_0 族，shape None）：按 var 族呈现——合成语料
+    // （javac 口径折叠）与通用码两态并存，呈现层归一保判据门单口径。
+    if (isDedicatedVarOp(op)) return insn_kind::kVar;
     if (sh == jb::Shape::Imm1 || sh == jb::Shape::Imm2) return insn_kind::kInt;
     return insn_kind::kInsn;
 }
@@ -956,8 +972,11 @@ MemberInfo methodInfoOf(TreeEntry& te, ir::MethodId id)
         out.maxLocals = mu.code->maxLocals;
     }
     else {
+        // 无 Code 属性（abstract/native）时 decodeCode 返回 Ok(nullptr)：
+        // Result ok ≠ 指针非空，解引用前必须判空（实测 SEH → pybind
+        // "Caught an unknown exception!"）。
         auto ca = cf.decodeCode(cf.methods[mu.backingIndex]);
-        if (ca.is_ok()) {
+        if (ca.is_ok() && ca.unwrap() != nullptr) {
             out.maxStack  = ca.unwrap()->maxStack;
             out.maxLocals = ca.unwrap()->maxLocals;
         }
@@ -1012,7 +1031,8 @@ InsnDetail detailOf(MethodRef r, ca::u32 uid)
         d.operand = in->a;
         break;
     case insn_kind::kVar:
-        d.var = in->a;
+        // 专用 var 码槽位从 opcode 推导（导入不落 a）；通用码读 a。
+        d.var = isDedicatedVarOp(in->op) ? dedicatedVarSlot(in->op) : in->a;
         break;
     case insn_kind::kType:
     case insn_kind::kMultiANewArray:
@@ -1135,6 +1155,18 @@ const char* facadeInsnKindName(int kind)
     }
 }
 
+/// 专用 var 码的呈现助记名 = 基名（iload_0 → iload）；其余原样。
+const char* facadeInsnMnemonic(int op)
+{
+    static const char* kDedicatedBases[] = {
+        "iload", "lload", "fload", "dload", "aload",
+        "istore", "lstore", "fstore", "dstore", "astore",
+    };
+    if (op >= 0x1A && op <= 0x2D) return kDedicatedBases[(op - 0x1A) / 4];
+    if (op >= 0x3B && op <= 0x4E) return kDedicatedBases[5 + (op - 0x3B) / 4];
+    return facadeOpcodeName(op);
+}
+
 const char* facadeOpcodeName(int op)
 {
     // 标准 JVM opcode 助记名表（索引=opcode 值，JVM 规范序 0..201）。
@@ -1153,7 +1185,7 @@ const char* facadeOpcodeName(int op)
         "sastore", "pop", "pop2", "dup", "dup_x1", "dup_x2", "dup2", "dup2_x1", "dup2_x2",
         "swap", "iadd", "ladd", "fadd", "dadd", "isub", "lsub", "fsub", "dsub", "imul", "lmul",
         "fmul", "dmul", "idiv", "ldiv", "fdiv", "ddiv", "irem", "lrem", "frem", "drem", "ineg",
-        "lneg", "fneg", "dneg", "ishl", "lshl", "ishr", "lshr", "iushr", "iand", "land",
+        "lneg", "fneg", "dneg", "ishl", "lshl", "ishr", "lshr", "iushr", "lushr", "iand", "land",
         "ior", "lor", "ixor", "lxor", "iinc", "i2l", "i2f", "i2d", "l2i", "l2f", "l2d", "f2i",
         "f2l", "f2d", "d2i", "d2l", "d2f", "i2b", "i2c", "i2s", "lcmp", "fcmpl", "fcmpg",
         "dcmpl", "dcmpg", "ifeq", "ifne", "iflt", "ifge", "ifgt", "ifle", "if_icmpeq",
@@ -1510,7 +1542,9 @@ std::string facadeAddMethod(FacadeSession& s, const std::string& cls, const std:
     seed.name      = name;
     seed.desc      = desc;
     seed.access    = static_cast<ca::u32>(access);
-    seed.withCode  = true;
+    // native/abstract 方法禁止 Code 属性（JVMS 4.6）；libjbc writeClass
+    // 校验拒载，旧树管线静默容忍掩盖了这一契约。
+    seed.withCode  = (access & (0x0100 /*NATIVE*/ | 0x0400 /*ABSTRACT*/)) == 0;
     seed.maxStack  = static_cast<ca::u16>(maxStack);
     seed.maxLocals = static_cast<ca::u16>(maxLocals);
     const auto added = te.session->addMethod(seed);

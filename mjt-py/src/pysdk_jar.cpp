@@ -307,7 +307,7 @@ void writeSyntheticDemoJar(const std::string& outJarPath)
     }
     {
         const auto id  = app.addMethod("main", "([Ljava/lang/String;)V",
-                                       0x0001 | 0x0008, 2, 1);
+                                       0x0001 | 0x0008, 2, 2);
         auto&      dom = app.body(id).dom;
         dom.append(cpInsnOf(core::Op::GETSTATIC,
                             app.internFieldRef("java/lang/System", "out",
@@ -316,11 +316,16 @@ void writeSyntheticDemoJar(const std::string& outJarPath)
         dom.append(cpInsnOf(core::Op::INVOKEVIRTUAL,
                             app.internMethodRef("java/io/PrintStream", "println",
                                                 "(Ljava/lang/String;)V", false)));
-        // decode(II) 需要真参压栈：旧树版夹具空栈调用（线性块无合并点，
-        // 旧 COMPUTE_FRAMES 不校验栈深侥幸过），libjbc FrameEngine 真验证
-        // fail-closed——夹具字节码本身修成合法形态。
+        // decode(II) 需要真参：旧树版夹具空栈调用（线性块无合并点，旧
+        // COMPUTE_FRAMES 不校验栈深侥幸过），FrameEngine 真验证 fail-closed。
+        // 实参取局部变量形态（iconst_1; istore_1; iconst_2; iload_1）而非
+        // 双常量直压——util.decryptor_sites 启发式把「紧邻调用点 ≥2 条连续
+        // 常量 int」判为解密站点，常量直压会让 main 成为第二个站点，自测
+        // 的普查口径（站点唯一 = Crypto.decode）随之破。
         dom.append(insnOf(core::Op::ICONST_1));
+        dom.append(varInsnOf(core::Op::ISTORE, 1));
         dom.append(insnOf(core::Op::ICONST_2));
+        dom.append(varInsnOf(core::Op::ILOAD, 1));
         dom.append(cpInsnOf(core::Op::INVOKESTATIC,
                             app.internMethodRef("me/demo/Crypto", "decode",
                                                 "(II)Ljava/lang/String;", false)));

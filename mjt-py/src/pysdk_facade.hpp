@@ -233,6 +233,10 @@ ca::core::Any facadeInternedStr(FacadeSession& s, const std::string& v);
 /// 标准 JVM opcode 助记名（索引=opcode 值，规范序 0..201；越界返回 "?"）。
 const char* facadeOpcodeName(int op);
 
+/// 指令呈现助记名：专用局部变量码（iload_0 族）归一为基名，其余同
+/// facadeOpcodeName（detail 出口单口径）。
+const char* facadeInsnMnemonic(int op);
+
 // ── 树面（B2，契约 §2.2-2.6）─────────────────────────────────────────────
 // 键口径：cref=(句柄, internal name)、mref/fref=(句柄, cls, name, desc)——
 // 元组由绑定层拼装，facade 直言普通参数。所有树操作 lazy 解析（首触即建缓存），

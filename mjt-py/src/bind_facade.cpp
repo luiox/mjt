@@ -467,7 +467,7 @@ void bindFacade(py::module_& m)
         out["uid"]     = d.uid;
         out["opcode"]  = d.opcode;
         out["kind"]    = facadeInsnKindName(d.kind);
-        out["mnemonic"] = (d.opcode >= 0 && d.opcode <= 201) ? facadeOpcodeName(d.opcode) : "?";
+        out["mnemonic"] = (d.opcode >= 0 && d.opcode <= 201) ? facadeInsnMnemonic(d.opcode) : "?";
         if (d.kind == insn_kind::kInt) out["operand"] = d.operand;
         if (d.kind == insn_kind::kVar) out["var"] = d.var;
         if (d.kind == insn_kind::kType) out["desc"] = d.desc;
