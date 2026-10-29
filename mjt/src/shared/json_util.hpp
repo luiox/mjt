@@ -3,7 +3,7 @@
 #include <cstddef>
 #include <string>
 
-#include "mjbase/cli/output_sink.hpp"
+#include "output_sink.hpp"
 
 namespace mjt::json {
 
@@ -103,7 +103,7 @@ public:
     ///@param sink 输出目标（通常是 cli::out）。
     ///不标 noexcept：构造/析构中的 printf 走输出通道，抛异常时 noexcept 只会
     ///把可恢复错误升级成 terminate。
-    explicit JsonArrayWriter(mjbase::cli::OutputSink& sink)
+    explicit JsonArrayWriter(mjt::OutputSink& sink)
         : sink_(sink)
     {
         sink_.printf("[\n");
@@ -119,7 +119,7 @@ public:
 
     ///@brief 标记开始一个新元素，在非首元素前输出 `,\n` 分隔符。
     ///@return 输出 sink 的引用，便于调用方在分隔符后直接 printf 元素内容。
-    mjbase::cli::OutputSink& next()
+    mjt::OutputSink& next()
     {
         if (!first_) sink_.printf(",\n");
         first_ = false;
@@ -127,7 +127,7 @@ public:
     }
 
 private:
-    mjbase::cli::OutputSink& sink_;
+    mjt::OutputSink& sink_;
     bool                            first_ = true;
 };
 
