@@ -21,12 +21,12 @@
 namespace mjt::mcp {
 
 using namespace detail;
-using mjbase::workspace::MutationRequest;
-using mjbase::workspace::PipelineRequest;
-using mjbase::workspace::WorkflowCandidateCommitRequest;
-using mjbase::workspace::WorkflowReferenceQuery;
-using mjbase::workspace::WorkflowRequest;
-using mjbase::workspace::IWorkspace;
+using mjt::workspace::MutationRequest;
+using mjt::workspace::PipelineRequest;
+using mjt::workspace::WorkflowCandidateCommitRequest;
+using mjt::workspace::WorkflowReferenceQuery;
+using mjt::workspace::WorkflowRequest;
+using mjt::workspace::IWorkspace;
 
 namespace fs = std::filesystem;
 

@@ -25,11 +25,11 @@ using mjbase::mapping::IntermediateMapping;
 
 ///i18n 文本 → WorkspaceErrorInfo（与 errStatus 同源的呈现面，错误通道换
 ///mjbase workspace 的值语义）。
-mjbase::workspace::WorkspaceErrorInfo errInfo(mjbase::workspace::WorkspaceError code,
+mjt::workspace::WorkspaceErrorInfo errInfo(mjt::workspace::WorkspaceError code,
                                               const char*                                key,
                                               std::initializer_list<std::string_view> args = {})
 {
-    mjbase::workspace::WorkspaceErrorInfo info;
+    mjt::workspace::WorkspaceErrorInfo info;
     info.code    = code;
     info.message = shared::trfStr(key, args);
     return info;
@@ -118,31 +118,31 @@ bool parsePolicy(const std::string& name, RemapPolicy& policy)
     return false;
 }
 
-mjbase::workspace::WorkspaceErrorInfo buildPlan(const std::vector<std::string>& classNames,
+mjt::workspace::WorkspaceErrorInfo buildPlan(const std::vector<std::string>& classNames,
                                                 const std::string&              format,
                                                 const std::string&              mappingText,
                                                 const std::string&              policyName,
                                                 MemberRemapPlan& plan, RemapPolicy& policy)
 {
     if (format.empty() || mappingText.empty()) {
-        return errInfo(mjbase::workspace::WorkspaceError::InvalidArgument,
+        return errInfo(mjt::workspace::WorkspaceError::InvalidArgument,
                        "mjt.shared.err.ws_remap_missing");
     }
     auto registry = mjbase::mapping::MappingFormatRegistry::withStandardFormats();
     const auto formatRef = ca::str::Utf8StringRef::from_cstr(format.c_str());
     if (!registry.hasFormat(formatRef)) {
-        return errInfo(mjbase::workspace::WorkspaceError::InvalidArgument,
+        return errInfo(mjt::workspace::WorkspaceError::InvalidArgument,
                        "mjt.shared.err.unknown_mapping_format", {format});
     }
     if (!parsePolicy(policyName, policy)) {
-        return errInfo(mjbase::workspace::WorkspaceError::InvalidArgument,
+        return errInfo(mjt::workspace::WorkspaceError::InvalidArgument,
                        "mjt.shared.err.unknown_remap_policy", {policyName});
     }
     auto parsed = registry.parse(
         formatRef, ca::str::Utf8StringRef::from_data(
                        reinterpret_cast<const ca::u8*>(mappingText.data()), mappingText.size()));
     if (parsed.is_err()) {
-        return errInfo(mjbase::workspace::WorkspaceError::InvalidArgument,
+        return errInfo(mjt::workspace::WorkspaceError::InvalidArgument,
                        "mjt.shared.err.parse_mapping_failed",
                        {mappingErrorText(std::move(parsed).unwrap_err())});
     }
@@ -169,8 +169,8 @@ std::vector<std::string> classNames(const mjbase::model::ResourceContainer& cont
     return names;
 }
 
-std::vector<std::string> classNames(const mjbase::workspace::IWorkspace&         workspace,
-                                    mjbase::workspace::WorkspaceErrorInfo&       status)
+std::vector<std::string> classNames(const mjt::workspace::IWorkspace&         workspace,
+                                    mjt::workspace::WorkspaceErrorInfo&       status)
 {
     std::vector<std::string> names;
     auto classes = workspace.listClasses();
@@ -244,20 +244,20 @@ ca::StatusOr<bool> remapJar(const JarRemapRequest& request)
     }
 }
 
-mjbase::workspace::WorkspaceErrorInfo buildWorkspaceRemapPlan(
-    mjbase::workspace::IWorkspace& workspace, const WorkspaceRemapRequest& request,
+mjt::workspace::WorkspaceErrorInfo buildWorkspaceRemapPlan(
+    mjt::workspace::IWorkspace& workspace, const WorkspaceRemapRequest& request,
     MemberRemapPlan& plan, RemapPolicy& policy)
 {
-    mjbase::workspace::WorkspaceErrorInfo status;
+    mjt::workspace::WorkspaceErrorInfo status;
     auto names = classNames(workspace, status);
     if (status.is_err()) return status;
     return buildPlan(names, request.format, request.mappingText, request.policy, plan, policy);
 }
 
-mjbase::workspace::ImpactAnalysis analyzeWorkspaceRemap(
-    mjbase::workspace::IWorkspace& workspace, const WorkspaceRemapRequest& request)
+mjt::workspace::ImpactAnalysis analyzeWorkspaceRemap(
+    mjt::workspace::IWorkspace& workspace, const WorkspaceRemapRequest& request)
 {
-    mjbase::workspace::ImpactAnalysis result;
+    mjt::workspace::ImpactAnalysis result;
     MemberRemapPlan plan;
     RemapPolicy     policy;
     auto status = buildWorkspaceRemapPlan(workspace, request, plan, policy);
@@ -268,15 +268,15 @@ mjbase::workspace::ImpactAnalysis analyzeWorkspaceRemap(
     return workspace.analyzeRemap(plan, policy);
 }
 
-mjbase::workspace::MutationResult applyWorkspaceRemap(
-    mjbase::workspace::IWorkspace& workspace, const WorkspaceRemapRequest& request,
-    const mjbase::workspace::MutationRequest& mutation)
+mjt::workspace::MutationResult applyWorkspaceRemap(
+    mjt::workspace::IWorkspace& workspace, const WorkspaceRemapRequest& request,
+    const mjt::workspace::MutationRequest& mutation)
 {
     MemberRemapPlan plan;
     RemapPolicy     policy;
     auto status = buildWorkspaceRemapPlan(workspace, request, plan, policy);
     if (status.is_err()) {
-        mjbase::workspace::MutationResult result;
+        mjt::workspace::MutationResult result;
         result.status     = std::move(status);
         result.revision   = workspace.revision();
         result.exportable = workspace.canExport();

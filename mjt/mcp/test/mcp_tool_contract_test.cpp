@@ -154,7 +154,7 @@ TEST(McpServerTest, ShapesCoarseToolSelectors)
     EXPECT_EQ(ca::usize{detail::kMaximumPageSize},
               schemaFor("search").at("properties").at("limit").at("maximum"));
     EXPECT_TRUE(classQuery.at("properties").at("cursor").contains("description"));
-    EXPECT_EQ(((mjbase::workspace::kMaximumClassReplacementSize + 2) / 3) * 4,
+    EXPECT_EQ(((mjt::workspace::kMaximumClassReplacementSize + 2) / 3) * 4,
               editApply.at("properties").at("content_base64").at("maxLength"));
     const auto search = schemaFor("search");
     EXPECT_EQ(Json::array({"classes", "members", "strings", "numbers", "instructions",
@@ -286,7 +286,7 @@ TEST(McpServerTest, RejectsMaliciousToolArgumentsAndUnsafeExports)
                           "edit_apply", ca::StatusCode::INVALID_ARGUMENT,
                           "strict RFC 4648 base64");
     const auto maximumBase64 =
-        ((mjbase::workspace::kMaximumClassReplacementSize + 2) / 3) * 4;
+        ((mjt::workspace::kMaximumClassReplacementSize + 2) / 3) * 4;
     expectDirectToolError(service.call("edit_apply",
                                        {{"project_id", projectId},
                                         {"kind", "class_bytes"},

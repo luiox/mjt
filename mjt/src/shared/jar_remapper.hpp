@@ -3,7 +3,7 @@
 #include <string>
 
 #include "libca/core/status.hpp"
-#include "mjbase/workspace/i_workspace.hpp"
+#include "workspace/i_workspace.hpp"
 
 namespace mjt {
 
@@ -37,17 +37,17 @@ struct WorkspaceRemapRequest final
 
 ///@brief 将 mapping 文本解析为可供单一 Workspace 候选事务复用的 remap 计划。
 ///@note 输出计划必须在使用它的 Workspace 调用返回前保持有效。
-mjbase::workspace::WorkspaceErrorInfo buildWorkspaceRemapPlan(
-    mjbase::workspace::IWorkspace& workspace, const WorkspaceRemapRequest& request,
+mjt::workspace::WorkspaceErrorInfo buildWorkspaceRemapPlan(
+    mjt::workspace::IWorkspace& workspace, const WorkspaceRemapRequest& request,
     mjbase::asm_remapper::MemberRemapPlan& plan, mjbase::asm_remapper::RemapPolicy& policy);
 
 ///@brief 返回 mapping 应用后的引用影响、验证诊断和字节 diff，不提交工作区。
-mjbase::workspace::ImpactAnalysis analyzeWorkspaceRemap(
-    mjbase::workspace::IWorkspace& workspace, const WorkspaceRemapRequest& request);
+mjt::workspace::ImpactAnalysis analyzeWorkspaceRemap(
+    mjt::workspace::IWorkspace& workspace, const WorkspaceRemapRequest& request);
 
 ///@brief 原子应用 mapping 文本；dryRun 时返回与分析一致的 MutationResult。
-mjbase::workspace::MutationResult applyWorkspaceRemap(
-    mjbase::workspace::IWorkspace& workspace, const WorkspaceRemapRequest& request,
-    const mjbase::workspace::MutationRequest& mutation = {});
+mjt::workspace::MutationResult applyWorkspaceRemap(
+    mjt::workspace::IWorkspace& workspace, const WorkspaceRemapRequest& request,
+    const mjt::workspace::MutationRequest& mutation = {});
 
 }   //namespace mjt

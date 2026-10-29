@@ -31,9 +31,9 @@
 namespace mjt::mcp {
 
 using namespace detail;
-using mjbase::workspace::SearchHit;
-using mjbase::workspace::SearchOptions;
-using mjbase::workspace::IWorkspace;
+using mjt::workspace::SearchHit;
+using mjt::workspace::SearchOptions;
+using mjt::workspace::IWorkspace;
 
 namespace {
 
@@ -608,7 +608,7 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
             };
             hitList.erase(std::remove_if(hitList.begin(),
                                          hitList.end(),
-                                         [&](const mjbase::workspace::SearchHit& hit) {
+                                         [&](const mjt::workspace::SearchHit& hit) {
                                              //判别文本面与 mjbase 的匹配面同源：
                                              //类行=内部名/URI，成员行=owner/name/
                                              //descriptor/value，其余=拼接 value。
@@ -631,7 +631,7 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
             const bool wantLiteral = stringKindFilter == "string_literal";
             hitList.erase(std::remove_if(hitList.begin(),
                                          hitList.end(),
-                                         [&](const mjbase::workspace::SearchHit& hit) {
+                                         [&](const mjt::workspace::SearchHit& hit) {
                                              if (wantLiteral)
                                                  return hit.kind != "constant_pool_string" &&
                                                         hit.kind != "resource_string";
@@ -651,7 +651,7 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
             };
             hitList.erase(std::remove_if(hitList.begin(),
                                          hitList.end(),
-                                         [&](const mjbase::workspace::SearchHit& hit) {
+                                         [&](const mjt::workspace::SearchHit& hit) {
                                              detail::InstructionHitParts parts;
                                              if (!detail::parseInstructionHitValue(hit.value, parts))
                                                  return true;

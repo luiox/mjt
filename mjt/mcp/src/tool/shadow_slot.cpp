@@ -10,7 +10,7 @@
 #include "tool/json.hpp"
 
 #include "mjbase/mapping/shadow_alias_format.hpp"
-#include "mjbase/workspace/i_workspace.hpp"
+#include "workspace/i_workspace.hpp"
 
 namespace mjt::mcp::slot {
 
@@ -33,7 +33,7 @@ Json slotError(const std::string& message)
     return detail::toolError(message);
 }
 
-WorkspaceShadowTable loadWorkspaceShadowTable(mjbase::workspace::IWorkspace& workspace,
+WorkspaceShadowTable loadWorkspaceShadowTable(mjt::workspace::IWorkspace& workspace,
                                               const std::string& file)
 {
     WorkspaceShadowTable slots;
@@ -81,7 +81,7 @@ bool resolveClassSlot(const WorkspaceShadowTable& slots,
     return true;
 }
 
-bool resourceUriOfResolved(mjbase::workspace::IWorkspace& workspace,
+bool resourceUriOfResolved(mjt::workspace::IWorkspace& workspace,
                            const std::string&                    internalName,
                            std::string&                          uri,
                            Json&                                 error)
@@ -159,7 +159,7 @@ bool resolveMethodSlots(const WorkspaceShadowTable& slots,
     return true;
 }
 
-bool backfillMemberDescriptor(mjbase::workspace::IWorkspace& workspace,
+bool backfillMemberDescriptor(mjt::workspace::IWorkspace& workspace,
                               const std::string&             ownerRaw,
                               const std::string&             memberName,
                               bool                           field,
@@ -222,7 +222,7 @@ bool backfillMemberDescriptor(mjbase::workspace::IWorkspace& workspace,
     return false;
 }
 
-bool memberDescriptorMismatch(mjbase::workspace::IWorkspace& workspace,
+bool memberDescriptorMismatch(mjt::workspace::IWorkspace& workspace,
                               const std::string&             ownerRaw,
                               const std::string&             memberName,
                               const std::string&             descriptor,
@@ -262,7 +262,7 @@ bool memberDescriptorMismatch(mjbase::workspace::IWorkspace& workspace,
     return false;
 }
 
-bool resolveClassArgument(mjbase::workspace::IWorkspace& workspace,
+bool resolveClassArgument(mjt::workspace::IWorkspace& workspace,
                           const Json&                           arguments,
                           const std::string&                    key,
                           bool                                  verifyRaw,
@@ -281,7 +281,7 @@ bool resolveClassArgument(mjbase::workspace::IWorkspace& workspace,
     return true;
 }
 
-bool resolveClassUriArgument(mjbase::workspace::IWorkspace& workspace,
+bool resolveClassUriArgument(mjt::workspace::IWorkspace& workspace,
                              const Json&                           arguments,
                              const std::string&                    key,
                              std::string&                          out,

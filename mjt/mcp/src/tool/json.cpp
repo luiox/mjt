@@ -11,20 +11,20 @@
 
 namespace mjt::mcp::detail {
 
-using mjbase::workspace::AnnotationElement;
-using mjbase::workspace::AnnotationInfo;
-using mjbase::workspace::ClassInfo;
-using mjbase::workspace::ClassSummary;
-using mjbase::workspace::FieldInfo;
-using mjbase::workspace::ImpactAnalysis;
-using mjbase::workspace::JarRepairResult;
-using mjbase::workspace::MethodInfo;
-using mjbase::workspace::MutationResult;
-using mjbase::workspace::SearchHit;
-using mjbase::workspace::SupportingResourceInfo;
-using mjbase::workspace::WorkflowReferenceKind;
-using mjbase::workspace::WorkflowResult;
-using mjbase::workspace::IWorkspace;
+using mjt::workspace::AnnotationElement;
+using mjt::workspace::AnnotationInfo;
+using mjt::workspace::ClassInfo;
+using mjt::workspace::ClassSummary;
+using mjt::workspace::FieldInfo;
+using mjt::workspace::ImpactAnalysis;
+using mjt::workspace::JarRepairResult;
+using mjt::workspace::MethodInfo;
+using mjt::workspace::MutationResult;
+using mjt::workspace::SearchHit;
+using mjt::workspace::SupportingResourceInfo;
+using mjt::workspace::WorkflowReferenceKind;
+using mjt::workspace::WorkflowResult;
+using mjt::workspace::IWorkspace;
 
 ca::str::Utf16String utf16(const std::string& value)
 {
@@ -526,7 +526,7 @@ Json jarRepairJson(const JarRepairResult& repair)
     return result;
 }
 
-Json referenceJson(const mjbase::workspace::ReferenceInfo& reference)
+Json referenceJson(const mjt::workspace::ReferenceInfo& reference)
 {
     return {{"source", {{"class", reference.sourceClass},
                          {"method", reference.sourceMethod},
@@ -610,7 +610,7 @@ std::string base64(const std::vector<ca::u8>& value)
 bool decodeBase64(const std::string& encoded, std::vector<ca::u8>& output, std::string& error)
 {
     constexpr ca::usize kMaximumEncodedClassSize =
-        ((mjbase::workspace::kMaximumClassReplacementSize + 2) / 3) * 4;
+        ((mjt::workspace::kMaximumClassReplacementSize + 2) / 3) * 4;
     if (encoded.empty()) {
         error = "content_base64 must not be empty";
         return false;
@@ -656,7 +656,7 @@ bool decodeBase64(const std::string& encoded, std::vector<ca::u8>& output, std::
         if (!pad2) output.push_back(static_cast<ca::u8>((v1 << 4) | (v2 >> 2)));
         if (!pad3) output.push_back(static_cast<ca::u8>((v2 << 6) | v3));
     }
-    if (output.size() > mjbase::workspace::kMaximumClassReplacementSize) {
+    if (output.size() > mjt::workspace::kMaximumClassReplacementSize) {
         error = "decoded class exceeds the class size limit";
         output.clear();
         return false;

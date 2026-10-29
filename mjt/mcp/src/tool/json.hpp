@@ -14,9 +14,9 @@ std::string utf8(ca::str::Utf16StringRef value);
 std::string lowercased(const std::string& value);
 Json statusJson(const ca::Status& status);
 Json diagnosticJson(const mjbase::jasm::Diagnostic& diagnostic);
-Json methodJson(const mjbase::workspace::MethodInfo& method);
-Json supportingResourceJson(const mjbase::workspace::SupportingResourceInfo& support);
-Json classJson(const mjbase::workspace::ClassInfo& clazz);
+Json methodJson(const mjt::workspace::MethodInfo& method);
+Json supportingResourceJson(const mjt::workspace::SupportingResourceInfo& support);
+Json classJson(const mjt::workspace::ClassInfo& clazz);
 
 ///@brief instructions 搜索命中 value（拼接文本）的结构化拆解。
 ///
@@ -90,11 +90,11 @@ std::string selectorKeyError(const std::string& key,
                              const std::string& value,
                              const std::vector<std::string>& expected);
 
-Json searchHitJson(const mjbase::workspace::SearchHit& hit);
-Json mutationJson(const mjbase::workspace::MutationResult& mutation);
-Json jarRepairJson(const mjbase::workspace::JarRepairResult& repair);
-Json referenceJson(const mjbase::workspace::ReferenceInfo& reference);
-Json workflowJson(const mjbase::workspace::WorkflowResult& workflow);
+Json searchHitJson(const mjt::workspace::SearchHit& hit);
+Json mutationJson(const mjt::workspace::MutationResult& mutation);
+Json jarRepairJson(const mjt::workspace::JarRepairResult& repair);
+Json referenceJson(const mjt::workspace::ReferenceInfo& reference);
+Json workflowJson(const mjt::workspace::WorkflowResult& workflow);
 Json toolResult(Json payload, bool isError = false);
 Json toolError(const std::string& message, const ca::Status* status = nullptr);
 std::string base64(const std::vector<ca::u8>& value);
@@ -128,14 +128,14 @@ bool parseCursor(const Json& arguments, ca::usize total, ca::usize& offset);
 ///@return true 时 out 携带分页文档；false 时 error 携带结构化 toolError。
 bool page(Json values, const Json& arguments, Json& out, std::string& error,
           const std::vector<std::string>& rowKeys);
-bool classSummaryPage(const std::vector<mjbase::workspace::ClassSummary>& values,
+bool classSummaryPage(const std::vector<mjt::workspace::ClassSummary>& values,
                       const Json& arguments,
                       Json& out,
                       std::string& error);
-Json impactJson(const mjbase::workspace::ImpactAnalysis& impact);
+Json impactJson(const mjt::workspace::ImpactAnalysis& impact);
 Json normalizeToolError(const std::string& name,
                         const Json& arguments,
                         Json result,
-                        const mjbase::workspace::IWorkspace* workspace);
+                        const mjt::workspace::IWorkspace* workspace);
 
 }   //namespace mjt::mcp::detail

@@ -725,7 +725,7 @@ Json toolsList()
               {"content_base64",
                {{"type", "string"},
                 {"minLength", 4},
-                {"maxLength", ((mjbase::workspace::kMaximumClassReplacementSize + 2) / 3) * 4}}},
+                {"maxLength", ((mjt::workspace::kMaximumClassReplacementSize + 2) / 3) * 4}}},
               {"pipeline", pipeline.at("pipeline")},
               {"passes", pipeline.at("passes")},
               {"jdk_path", pipeline.at("jdk_path")},

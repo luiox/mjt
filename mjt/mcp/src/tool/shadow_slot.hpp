@@ -8,7 +8,7 @@
 #include "mjbase/renamer/shadow_alias.hpp"
 #include "mjbase/renamer/shadow_token.hpp"
 
-namespace mjbase::workspace {
+namespace mjt::workspace {
 class IWorkspace;
 }
 
@@ -33,7 +33,7 @@ struct WorkspaceShadowTable
 
 ///@brief 加载 workspace 的缺省 sidecar（`<jar>.mjt-shadow`；`file` 显式覆盖）。
 ///读取/解析失败不抛：记入 note 并按缺表继续（见类型注释）。
-WorkspaceShadowTable loadWorkspaceShadowTable(mjbase::workspace::IWorkspace& workspace,
+WorkspaceShadowTable loadWorkspaceShadowTable(mjt::workspace::IWorkspace& workspace,
                                               const std::string& file = {});
 
 ///@brief name 槽解析结果（接线层薄包装）。
@@ -57,7 +57,7 @@ bool resolveClassSlot(const WorkspaceShadowTable& slots,
 ///（classInfo 语义；exact-URI 消费面 patch_*/workspace_revert_class 用）。
 ///raw 输入不经此函数（原样直通，契约不变）。
 ///@return false 时 `error` 已填结构化 toolError。
-bool resourceUriOfResolved(mjbase::workspace::IWorkspace& workspace,
+bool resourceUriOfResolved(mjt::workspace::IWorkspace& workspace,
                            const std::string&                    internalName,
                            std::string&                          uri,
                            Json&                                 error);
@@ -98,7 +98,7 @@ bool resolveMethodSlots(const WorkspaceShadowTable& slots,
 ///错误（表外类如 java/lang/Object 的直通查询不受影响）。
 ///@param field true 按字段池解析（xref target=field），false 按方法池。
 ///@return false 时 `error` 已填结构化 toolError（含 diagnostics）。
-bool backfillMemberDescriptor(mjbase::workspace::IWorkspace& workspace,
+bool backfillMemberDescriptor(mjt::workspace::IWorkspace& workspace,
                               const std::string&             ownerRaw,
                               const std::string&             memberName,
                               bool                           field,
@@ -108,7 +108,7 @@ bool backfillMemberDescriptor(mjbase::workspace::IWorkspace& workspace,
 ///@brief arguments 内 class 语义键（`class`）就地解析：Ref → 内部名；
 ///raw → verifyRaw 核表后原样。空值直通（workspace 既有 canonical 错误）。
 ///@return false 时 `error` 已填结构化 toolError。
-bool resolveClassArgument(mjbase::workspace::IWorkspace& workspace,
+bool resolveClassArgument(mjt::workspace::IWorkspace& workspace,
                           const Json&                           arguments,
                           const std::string&                    key,
                           bool                                  verifyRaw,
@@ -120,7 +120,7 @@ bool resolveClassArgument(mjbase::workspace::IWorkspace& workspace,
 ///Ref → 内部名 → 精确资源 URI（exact-URI 消费面契约）；raw → 按内部名核表
 ///（miss → raw-not-found），命中后**原样透传**（URI 契约零漂移）。空值直通。
 ///@return false 时 `error` 已填结构化 toolError。
-bool resolveClassUriArgument(mjbase::workspace::IWorkspace& workspace,
+bool resolveClassUriArgument(mjt::workspace::IWorkspace& workspace,
                              const Json&                           arguments,
                              const std::string&                    key,
                              std::string&                          out,
@@ -131,7 +131,7 @@ bool resolveClassUriArgument(mjbase::workspace::IWorkspace& workspace,
 ///歧义路径同一呈现面）。name 不存在 / owner 不可解析 / descriptor 恰好命中
 ///时返回 true（不适配——失败另有其因，走 canonical 错误）。
 ///@return false 时 `error` 已填结构化 toolResult（含 diagnostics）。
-bool memberDescriptorMismatch(mjbase::workspace::IWorkspace& workspace,
+bool memberDescriptorMismatch(mjt::workspace::IWorkspace& workspace,
                               const std::string&             ownerRaw,
                               const std::string&             memberName,
                               const std::string&             descriptor,
