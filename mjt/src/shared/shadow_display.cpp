@@ -8,7 +8,7 @@
 #include <filesystem>
 
 #include "libca/i18n/i18n.hpp"
-#include "mjbase/cli/output_sink.hpp"
+#include "output_sink.hpp"
 #include "mjbase/mapping/identifier_util.hpp"
 #include "mjbase/mapping/shadow_alias_format.hpp"
 
@@ -111,7 +111,7 @@ ShadowDisplay loadShadowDisplay(const std::string& jarPath, const std::string& e
     auto mappings = mjbase::mapping::readShadowAliasFile(refOf(path));
     if (mappings.is_err()) {
         auto       error = std::move(mappings).unwrap_err();
-        mjbase::cli::err().printf(
+        mjt::err().printf(
             "%s\n",
             ca::i18n::trf("mjt.cmd.shadow.err.sidecar_invalid",
                           {path, error.message.to_std_string()})
