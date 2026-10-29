@@ -55,7 +55,7 @@ ca::StatusOr<DecompiledSource> decompileSnapshotClass(
     const DecompilerOptions& options,
     const std::function<bool()>& cancellationRequested = {});
 ca::StatusOr<DecompiledSource> decompileWorkspaceClass(
-    mjbase::workspace::IWorkspace& workspace,
+    mjt::workspace::IWorkspace& workspace,
     const std::string& className,
     const DecompilerOptions& options);
 Json decompiledSourceJson(const DecompiledSource& result, const char* sourceScope,

@@ -8,21 +8,21 @@
 
 namespace mjt::mcp::detail {
 
-using mjbase::workspace::ClassMutation;
-using mjbase::workspace::ClassMutationKind;
-using mjbase::workspace::ConstantKind;
-using mjbase::workspace::ConstantSpec;
-using mjbase::workspace::HandleSpec;
-using mjbase::workspace::InstructionKind;
-using mjbase::workspace::JarRepairRequest;
-using mjbase::workspace::MutationRequest;
-using mjbase::workspace::PipelineRequest;
-using mjbase::workspace::RenameKind;
-using mjbase::workspace::RenameRequest;
-using mjbase::workspace::SearchMatchMode;
-using mjbase::workspace::SearchOptions;
-using mjbase::workspace::WorkflowReferenceKind;
-using mjbase::workspace::WorkflowReferenceQuery;
+using mjt::workspace::ClassMutation;
+using mjt::workspace::ClassMutationKind;
+using mjt::workspace::ConstantKind;
+using mjt::workspace::ConstantSpec;
+using mjt::workspace::HandleSpec;
+using mjt::workspace::InstructionKind;
+using mjt::workspace::JarRepairRequest;
+using mjt::workspace::MutationRequest;
+using mjt::workspace::PipelineRequest;
+using mjt::workspace::RenameKind;
+using mjt::workspace::RenameRequest;
+using mjt::workspace::SearchMatchMode;
+using mjt::workspace::SearchOptions;
+using mjt::workspace::WorkflowReferenceKind;
+using mjt::workspace::WorkflowReferenceQuery;
 
 bool parseSearchOptions(const Json& arguments, SearchOptions& output, std::string& error)
 {
@@ -150,7 +150,7 @@ bool parseConstant(const Json& value, ConstantSpec& output, std::string& error,
     return true;
 }
 
-bool parseInstruction(const Json& value, mjbase::workspace::InstructionSpec& output,
+bool parseInstruction(const Json& value, mjt::workspace::InstructionSpec& output,
                       std::string& error)
 {
     if (!value.is_object()) {
@@ -234,34 +234,34 @@ bool parseInstruction(const Json& value, mjbase::workspace::InstructionSpec& out
     return true;
 }
 
-bool parseAccessFlags(const Json& values, mjbase::workspace::AnnotationTarget target,
+bool parseAccessFlags(const Json& values, mjt::workspace::AnnotationTarget target,
                       ca::i32& output, std::string& error)
 {
     //JVM access 位（JVMS 表 4.1/4.4/4.5/4.6/4.7）：mbase Opcodes::ACC_* 的
     //mjbase 对应物是 workspace_types 的 kAcc* 常量集；此处按旧名起别名，保
     //调用点零漂移。
-    constexpr ca::u32 ACC_PUBLIC       = mjbase::workspace::kAccPublic;
-    constexpr ca::u32 ACC_PRIVATE      = mjbase::workspace::kAccPrivate;
-    constexpr ca::u32 ACC_PROTECTED    = mjbase::workspace::kAccProtected;
-    constexpr ca::u32 ACC_STATIC       = mjbase::workspace::kAccStatic;
-    constexpr ca::u32 ACC_FINAL        = mjbase::workspace::kAccFinal;
-    constexpr ca::u32 ACC_SUPER        = mjbase::workspace::kAccSuper;
-    constexpr ca::u32 ACC_SYNCHRONIZED = mjbase::workspace::kAccSynchronized;
-    constexpr ca::u32 ACC_VOLATILE     = mjbase::workspace::kAccVolatile;
-    constexpr ca::u32 ACC_BRIDGE       = mjbase::workspace::kAccBridge;
-    constexpr ca::u32 ACC_TRANSIENT    = mjbase::workspace::kAccTransient;
-    constexpr ca::u32 ACC_VARARGS      = mjbase::workspace::kAccVarargs;
-    constexpr ca::u32 ACC_NATIVE       = mjbase::workspace::kAccNative;
-    constexpr ca::u32 ACC_INTERFACE    = mjbase::workspace::kAccInterface;
-    constexpr ca::u32 ACC_ABSTRACT     = mjbase::workspace::kAccAbstract;
-    constexpr ca::u32 ACC_STRICT       = mjbase::workspace::kAccStrict;
-    constexpr ca::u32 ACC_SYNTHETIC    = mjbase::workspace::kAccSynthetic;
-    constexpr ca::u32 ACC_ANNOTATION   = mjbase::workspace::kAccAnnotation;
-    constexpr ca::u32 ACC_ENUM         = mjbase::workspace::kAccEnum;
-    constexpr ca::u32 ACC_MODULE       = mjbase::workspace::kAccModule;
-    constexpr ca::u32 ACC_RECORD       = mjbase::workspace::kAccRecord;
-    constexpr ca::u32 ACC_SEALED       = mjbase::workspace::kAccSealed;
-    constexpr ca::u32 ACC_DEPRECATED   = mjbase::workspace::kAccDeprecated;
+    constexpr ca::u32 ACC_PUBLIC       = mjt::workspace::kAccPublic;
+    constexpr ca::u32 ACC_PRIVATE      = mjt::workspace::kAccPrivate;
+    constexpr ca::u32 ACC_PROTECTED    = mjt::workspace::kAccProtected;
+    constexpr ca::u32 ACC_STATIC       = mjt::workspace::kAccStatic;
+    constexpr ca::u32 ACC_FINAL        = mjt::workspace::kAccFinal;
+    constexpr ca::u32 ACC_SUPER        = mjt::workspace::kAccSuper;
+    constexpr ca::u32 ACC_SYNCHRONIZED = mjt::workspace::kAccSynchronized;
+    constexpr ca::u32 ACC_VOLATILE     = mjt::workspace::kAccVolatile;
+    constexpr ca::u32 ACC_BRIDGE       = mjt::workspace::kAccBridge;
+    constexpr ca::u32 ACC_TRANSIENT    = mjt::workspace::kAccTransient;
+    constexpr ca::u32 ACC_VARARGS      = mjt::workspace::kAccVarargs;
+    constexpr ca::u32 ACC_NATIVE       = mjt::workspace::kAccNative;
+    constexpr ca::u32 ACC_INTERFACE    = mjt::workspace::kAccInterface;
+    constexpr ca::u32 ACC_ABSTRACT     = mjt::workspace::kAccAbstract;
+    constexpr ca::u32 ACC_STRICT       = mjt::workspace::kAccStrict;
+    constexpr ca::u32 ACC_SYNTHETIC    = mjt::workspace::kAccSynthetic;
+    constexpr ca::u32 ACC_ANNOTATION   = mjt::workspace::kAccAnnotation;
+    constexpr ca::u32 ACC_ENUM         = mjt::workspace::kAccEnum;
+    constexpr ca::u32 ACC_MODULE       = mjt::workspace::kAccModule;
+    constexpr ca::u32 ACC_RECORD       = mjt::workspace::kAccRecord;
+    constexpr ca::u32 ACC_SEALED       = mjt::workspace::kAccSealed;
+    constexpr ca::u32 ACC_DEPRECATED   = mjt::workspace::kAccDeprecated;
     if (!values.is_array()) {
         error = "access_flags must be an array";
         return false;
@@ -285,39 +285,39 @@ bool parseAccessFlags(const Json& values, mjbase::workspace::AnnotationTarget ta
         else if (name == "final") flag = ACC_FINAL;
         else if (name == "synthetic") flag = ACC_SYNTHETIC;
         else if (name == "deprecated") flag = ACC_DEPRECATED;
-        else if (target == mjbase::workspace::AnnotationTarget::Class && name == "super")
+        else if (target == mjt::workspace::AnnotationTarget::Class && name == "super")
             flag = ACC_SUPER;
-        else if (target == mjbase::workspace::AnnotationTarget::Class && name == "interface")
+        else if (target == mjt::workspace::AnnotationTarget::Class && name == "interface")
             flag = ACC_INTERFACE;
-        else if (target == mjbase::workspace::AnnotationTarget::Class && name == "abstract")
+        else if (target == mjt::workspace::AnnotationTarget::Class && name == "abstract")
             flag = ACC_ABSTRACT;
-        else if (target == mjbase::workspace::AnnotationTarget::Class && name == "annotation")
+        else if (target == mjt::workspace::AnnotationTarget::Class && name == "annotation")
             flag = ACC_ANNOTATION;
-        else if (target == mjbase::workspace::AnnotationTarget::Class && name == "enum")
+        else if (target == mjt::workspace::AnnotationTarget::Class && name == "enum")
             flag = ACC_ENUM;
-        else if (target == mjbase::workspace::AnnotationTarget::Class && name == "module")
+        else if (target == mjt::workspace::AnnotationTarget::Class && name == "module")
             flag = ACC_MODULE;
-        else if (target == mjbase::workspace::AnnotationTarget::Class && name == "record")
+        else if (target == mjt::workspace::AnnotationTarget::Class && name == "record")
             flag = ACC_RECORD;
-        else if (target == mjbase::workspace::AnnotationTarget::Class && name == "sealed")
+        else if (target == mjt::workspace::AnnotationTarget::Class && name == "sealed")
             flag = ACC_SEALED;
-        else if (target == mjbase::workspace::AnnotationTarget::Field && name == "volatile")
+        else if (target == mjt::workspace::AnnotationTarget::Field && name == "volatile")
             flag = ACC_VOLATILE;
-        else if (target == mjbase::workspace::AnnotationTarget::Field && name == "transient")
+        else if (target == mjt::workspace::AnnotationTarget::Field && name == "transient")
             flag = ACC_TRANSIENT;
-        else if (target == mjbase::workspace::AnnotationTarget::Field && name == "enum")
+        else if (target == mjt::workspace::AnnotationTarget::Field && name == "enum")
             flag = ACC_ENUM;
-        else if (target == mjbase::workspace::AnnotationTarget::Method && name == "synchronized")
+        else if (target == mjt::workspace::AnnotationTarget::Method && name == "synchronized")
             flag = ACC_SYNCHRONIZED;
-        else if (target == mjbase::workspace::AnnotationTarget::Method && name == "bridge")
+        else if (target == mjt::workspace::AnnotationTarget::Method && name == "bridge")
             flag = ACC_BRIDGE;
-        else if (target == mjbase::workspace::AnnotationTarget::Method && name == "varargs")
+        else if (target == mjt::workspace::AnnotationTarget::Method && name == "varargs")
             flag = ACC_VARARGS;
-        else if (target == mjbase::workspace::AnnotationTarget::Method && name == "native")
+        else if (target == mjt::workspace::AnnotationTarget::Method && name == "native")
             flag = ACC_NATIVE;
-        else if (target == mjbase::workspace::AnnotationTarget::Method && name == "abstract")
+        else if (target == mjt::workspace::AnnotationTarget::Method && name == "abstract")
             flag = ACC_ABSTRACT;
-        else if (target == mjbase::workspace::AnnotationTarget::Method && name == "strict")
+        else if (target == mjt::workspace::AnnotationTarget::Method && name == "strict")
             flag = ACC_STRICT;
         else {
             error = "access flag is not valid for this target: " + name;
@@ -395,13 +395,13 @@ bool parseMutation(const Json& arguments, ClassMutation& mutation, std::string& 
     }
     mutation.access = arguments.value("access", 0);
     if (arguments.contains("access_flags")) {
-        mjbase::workspace::AnnotationTarget accessTarget;
+        mjt::workspace::AnnotationTarget accessTarget;
         if (mutation.kind == ClassMutationKind::SetFieldAccess ||
                  mutation.kind == ClassMutationKind::AddField)
-            accessTarget = mjbase::workspace::AnnotationTarget::Field;
+            accessTarget = mjt::workspace::AnnotationTarget::Field;
         else if (mutation.kind == ClassMutationKind::SetMethodAccess ||
                  mutation.kind == ClassMutationKind::AddMethod)
-            accessTarget = mjbase::workspace::AnnotationTarget::Method;
+            accessTarget = mjt::workspace::AnnotationTarget::Method;
         else {
             error = "access_flags is only valid for access setters and member additions";
             return false;
@@ -417,9 +417,9 @@ bool parseMutation(const Json& arguments, ClassMutation& mutation, std::string& 
     mutation.annotationDescriptor = arguments.value("annotation_descriptor", std::string{});
     mutation.annotationVisible = arguments.value("annotation_visible", true);
     const auto annotationTarget = arguments.value("annotation_target", std::string("class"));
-    if (annotationTarget == "class") mutation.annotationTarget = mjbase::workspace::AnnotationTarget::Class;
-    else if (annotationTarget == "field") mutation.annotationTarget = mjbase::workspace::AnnotationTarget::Field;
-    else if (annotationTarget == "method") mutation.annotationTarget = mjbase::workspace::AnnotationTarget::Method;
+    if (annotationTarget == "class") mutation.annotationTarget = mjt::workspace::AnnotationTarget::Class;
+    else if (annotationTarget == "field") mutation.annotationTarget = mjt::workspace::AnnotationTarget::Field;
+    else if (annotationTarget == "method") mutation.annotationTarget = mjt::workspace::AnnotationTarget::Method;
     else {
         error = "unsupported annotation target: " + annotationTarget;
         return false;
@@ -459,7 +459,7 @@ bool parseMutation(const Json& arguments, ClassMutation& mutation, std::string& 
             return false;
         }
         for (const auto& value : arguments.at("initial_instructions")) {
-            mjbase::workspace::InstructionSpec spec;
+            mjt::workspace::InstructionSpec spec;
             if (!parseInstruction(value, spec, error)) return false;
             mutation.initialInstructions.push_back(std::move(spec));
         }

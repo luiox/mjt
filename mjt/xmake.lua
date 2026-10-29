@@ -13,6 +13,9 @@ target("mjt_shared")
     add_includedirs("src", {public = true})
 
     add_files("src/shared/*.cpp")
+    -- workspace 引擎（自 mjbase workspace 模块移交，ns mjt::workspace）：编辑
+    -- 台账/类变更/引用·摘要扫描，MCP 工具面与 pysdk 绑定共用的底座件。
+    add_files("src/workspace/**.cpp")
     add_files("src/shared/translations/*.lang", {rules = "libca.i18n.embed-lang"})
 
 target("mjt_mcp_core")
@@ -70,6 +73,27 @@ target("mjt-mcp")
     set_rundir("$(projectdir)")
 
 if has_config("with_tests") then
+    target("mjt_workspace_unittest")
+        set_kind("binary")
+        set_group("mjt/test")
+        set_default(false)
+
+        add_deps("mjt_shared", "test_helper")
+        add_packages("gtest")
+        -- xmake 3.x 不把静态 target 依赖传进 binary 链接：显式给全闭包，按
+        -- 「消费者在前、被依赖在后」排序（与 mjt_mcp_unittest 同款）。
+         mjt_binary_link_closure("mjt_shared", "mjbase")
+        mjt_binary_link_closure("libjhasm", "libjclassfile", "libjstr", "libjbc", "libjzip", "test_helper", "libjdk_finder")
+        add_files("test/workspace/*.cpp")
+        set_rundir("$(projectdir)")
+
+        if is_plat("windows") then
+            add_cxflags("/utf-8", {tools = "cl"})
+        end
+        if is_plat("linux") then
+            add_syslinks("pthread")
+        end
+
     target("mjt_mcp_unittest")
         set_kind("binary")
         set_group("mjt/test")

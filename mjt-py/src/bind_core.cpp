@@ -20,7 +20,7 @@
 #include "mjbase/spi/pass_registry.hpp"
 #include "mjbase/spi/pipeline_builder.hpp"
 #include "mjbase/spi/strict_type_resolver.hpp"
-#include "mjbase/workspace/workspace.hpp"
+#include "workspace/workspace.hpp"
 
 
 #include "pysdk_bridge.hpp"
@@ -232,7 +232,7 @@ struct JdkResolverChain
         if (jdkPath.empty()) return;
         pool          = std::make_unique<mjbase::KeyPool>();
         hierarchy     = std::make_unique<mjbase::hierarchy::ClassHierarchy>(*pool);
-        mjbase::workspace::scanJdkHierarchy(jdkPath, *hierarchy, *pool);
+        mjt::workspace::scanJdkHierarchy(jdkPath, *hierarchy, *pool);
         superResolver = std::make_unique<mjbase::spi::CommonSuperClassResolver>(*hierarchy);
         typeResolver  = std::make_unique<mjbase::spi::StrictTypeResolverAdapter>(*superResolver);
     }

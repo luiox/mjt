@@ -69,6 +69,7 @@ if has_config("with_pysdk") then
                   "src/pysdk_limits.cpp", "src/bind_core.cpp", "src/bind_facade.cpp")
         add_files(path.join(mjtSharedSrc, "shared", "decompiler.cpp"),
                   path.join(mjtSharedSrc, "shared", "jar_remapper.cpp"))
+        add_files(path.join(mjtSharedSrc, "workspace", "**.cpp"))
 
         -- xmake 3.x 不把静态 target 依赖传进 shared 链接：显式给全闭包，按
         -- 「消费者在前、被依赖在后」排序（MSVC 对序不敏感，此序为 GNU ld 兼容
@@ -101,6 +102,7 @@ if has_config("with_pysdk") then
                       "src/mjt_pysdk_unittest.cpp", "src/mjt_pysdk_facade_test.cpp")
             add_files(path.join(mjtSharedSrc, "shared", "decompiler.cpp"),
                       path.join(mjtSharedSrc, "shared", "jar_remapper.cpp"))
+            add_files(path.join(mjtSharedSrc, "workspace", "**.cpp"))
             mjt_binary_link_closure("mjbase", "libjhasm",
                                     "libjclassfile",
                                     "libjstr", "libjbc", "libjzip")

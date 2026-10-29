@@ -13,7 +13,7 @@ namespace mjt::mcp::detail {
 
 namespace fs = std::filesystem;
 
-using mjbase::workspace::IWorkspace;
+using mjt::workspace::IWorkspace;
 
 ScopedTemporaryDirectory::ScopedTemporaryDirectory(fs::path path)
     : path_(std::move(path))

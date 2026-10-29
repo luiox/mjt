@@ -13,7 +13,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "mjbase/workspace/i_workspace.hpp"
+#include "workspace/i_workspace.hpp"
 #include "shared/jar_workspace.hpp"
 #include "tool/project_session.hpp"
 

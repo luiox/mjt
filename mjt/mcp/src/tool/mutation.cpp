@@ -22,10 +22,10 @@
 namespace mjt::mcp {
 
 using namespace detail;
-using mjbase::workspace::ClassMutation;
-using mjbase::workspace::PipelineRequest;
-using mjbase::workspace::RenameRequest;
-using mjbase::workspace::IWorkspace;
+using mjt::workspace::ClassMutation;
+using mjt::workspace::PipelineRequest;
+using mjt::workspace::RenameRequest;
+using mjt::workspace::IWorkspace;
 
 std::optional<Json> McpToolService::callMutationTool(
     const std::string& name, const Json& arguments, ProjectSession& session)
@@ -582,8 +582,8 @@ std::optional<Json> McpToolService::callMutationTool(
         }
         //显式 if-else 分派替代原 3 层嵌套三元，避免重复读取 arguments 与拷贝；
         //用 lambda 单次构造返回。
-        auto query = [&]() -> mjbase::workspace::WorkspaceResult<
-                             std::vector<mjbase::workspace::ReferenceInfo>> {
+        auto query = [&]() -> mjt::workspace::WorkspaceResult<
+                             std::vector<mjt::workspace::ReferenceInfo>> {
             if (name == "xref_method") {
                 return current->xrefsToMethod(owner, member, descriptor);
             }
@@ -616,7 +616,7 @@ std::optional<Json> McpToolService::callMutationTool(
                 if (record.role == wanted) roleSupportIds.insert(record.supportId);
             items.erase(std::remove_if(items.begin(),
                                        items.end(),
-                                       [&](const mjbase::workspace::ReferenceInfo& item) {
+                                       [&](const mjt::workspace::ReferenceInfo& item) {
                                            //保留 = 站点在本角色容器内；其余全部剔除。
                                            if (!item.supporting) return true;
                                            if (roleSupportIds.count(item.supportId) == 0)
@@ -629,7 +629,7 @@ std::optional<Json> McpToolService::callMutationTool(
         else if (roleFilter == "primary") {
             items.erase(std::remove_if(items.begin(),
                                        items.end(),
-                                       [](const mjbase::workspace::ReferenceInfo& item) {
+                                       [](const mjt::workspace::ReferenceInfo& item) {
                                            return item.supporting;
                                        }),
                         items.end());
@@ -637,7 +637,7 @@ std::optional<Json> McpToolService::callMutationTool(
         else if (roleFilter == "support") {
             items.erase(std::remove_if(items.begin(),
                                        items.end(),
-                                       [&](const mjbase::workspace::ReferenceInfo& item) {
+                                       [&](const mjt::workspace::ReferenceInfo& item) {
                                            if (!item.supporting) return false;
                                            return findMountedContainer(session, item.supportId) ==
                                                   nullptr;
