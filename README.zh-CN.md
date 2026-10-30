@@ -31,7 +31,7 @@ xmake build mjt-mcp
 
 依赖经 [luiox-repo](https://github.com/luiox/luiox-repo) 直连拉取：libca、libmcp、
 libjstr、libjzip、libgarena、libjclassfile、libjstd、
-libjdk_finder、libjhasm；libarchive / zlib / nlohmann_json 走
+libjdk_finder、libjhasm；zlib / nlohmann_json 走
 [xrepo](https://xmake.io)。libjbc 走项目内联包定义（git 直连 + commit 锁，与
 mjbase 同版本）。字节码基座本体是 mjbase，打包进 luiox-repo 前以兄弟目录源码级
 依赖消费（`--mjbase_root`，默认 `../mjbase`）。

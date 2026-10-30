@@ -47,7 +47,7 @@ mjt 当前的分析载体是 **进程内 workspace**：MCP 会话里 `workspace_
 
 ### 2.3 已落地的容器层：`mjbase::model`
 
-`mjbase/mjbase/src/mjbase/model/`（module-map 批 2，libarchive 后端保留，`module-map.md:33`）：`IResource`（URI + 类型化载荷：Class/Manifest/Jar/Unknown，`resource_model.hpp:39-47,111-122`）+ `IResourceContainer`（unordered_map + Utf8StringArena，重复条目 first-wins 对齐 JVM 类加载并记录 `duplicateResourceUris`，issue #962，`resource_container.hpp:9-11,32-110`）。
+`mjbase/mjbase/src/mjbase/model/`（module-map 批 2，`module-map.md:33`）：`IResource`（URI + 类型化载荷：Class/Manifest/Jar/Unknown，`resource_model.hpp:39-47,111-122`）+ `IResourceContainer`（unordered_map + Utf8StringArena，重复条目 first-wins 对齐 JVM 类加载并记录 `duplicateResourceUris`，issue #962，`resource_container.hpp:9-11,32-110`）。
 
 ### 2.4 公私边界与批次现状
 

@@ -36,7 +36,7 @@ xmake build mjt-mcp
 Dependencies are pulled directly from
 [luiox-repo](https://github.com/luiox/luiox-repo): libca, libmcp, libjstr,
 libjzip, libgarena, libjclassfile, libjstd, libjdk_finder,
-libjhasm; libarchive / zlib / nlohmann_json come from
+libjhasm; zlib / nlohmann_json come from
 [xrepo](https://xmake.io). libjbc is defined as an in-repo inline package
 (git direct with a pinned commit, kept at the same version as mjbase). The
 bytecode foundation itself is mjbase, consumed as a source-level sibling
