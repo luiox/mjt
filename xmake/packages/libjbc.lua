@@ -66,6 +66,9 @@ package("libjbc")
     -- 0.4.24 = 帧引擎汇合点入边栈深守卫（Fail::StackMismatch，非 handler join
     -- 不再静默选深侧；handler 入口与 BestEffort jsr/ret 方法豁免）。
     add_versions("0.4.24", "ba274c5765688df19e1b16c1ed1aba6a2e22602b") -- 0.4.24 版本化头  2026-10-30
+    -- 0.4.25 = CP 装载结果形状按描述符精确映射（invoke/getstatic/getfield
+    -- 的 1 槽→Ref 粗化修正，()I/()F/()D 结果帧失真消除）。
+    add_versions("0.4.25", "6e4cf71bfbed261a5114d860bb5e20f6d1c1a2bf") -- 0.4.25 版本化头  2026-10-30
 
     -- 嵌套 libca 直接钉到本仓单源版本：项目内联包定义不吃 deps.lua 的
     -- **.libca / libjbc.libca requireconfs（实测），裸声明会解析到仓库最新版
