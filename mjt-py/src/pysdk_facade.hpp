@@ -497,13 +497,18 @@ struct VerifyIssue
 struct ContainerVerifyReport
 {
     ca::usize match = 0, mismatch = 0, malformed = 0, depMissing = 0, nonClass = 0;
+    ca::usize frameNotOk = 0;   ///< 帧门拒绝：数据流 not-ok / SMT 读↔算对拍不符
+    ca::usize frameSkipped = 0; ///< 帧门跳过：jsr/ret 传统形态（显式跳过计数）
     std::vector<VerifyIssue> mismatchDetails;   ///< entry 路径 ↔ this_class 不符
     std::vector<VerifyIssue> malformedDetails;  ///< 解析失败
     std::vector<VerifyIssue> depMissingDetails; ///< 引用的非 JDK 类不在容器内
+    std::vector<VerifyIssue> frameNotOkDetails; ///< 帧门拒绝定位（类条目 + 方法 + 原因）
 };
 
 /// 全量体检：逐 *.class 条目解析（malformed）、entry 名 ↔ 声明名比对（mismatch）、
-/// 常量池引用的容器外非 JDK 类清点（dep_missing）。与数据无关，只读。
+/// 常量池引用的容器外非 JDK 类清点（dep_missing）、逐方法 Strict 帧数据流 +
+/// 既有 StackMapTable 读↔算对拍（frame_not_ok；jsr/ret 传统形态显式跳过计数）。
+/// 与数据无关，只读。
 ContainerVerifyReport facadeVerifyContainer(FacadeSession& s);
 
 struct SanitizeLvtReport

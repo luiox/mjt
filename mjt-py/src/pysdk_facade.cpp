@@ -15,6 +15,7 @@
 #include "shared/decompiler.hpp"
 
 #include <jbc/analysis/domain.hpp>
+#include <jbc/analysis/smt_read.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -2400,6 +2401,114 @@ bool isJdkType(const std::string& name)
            name.rfind("org/omg/", 0) == 0;
 }
 
+/// 帧门槽级相容判定（读↔算对拍口径）：
+/// - Top 任一侧出现即相容（未知槽不比——形态格的 Top 是「不关心」）；
+/// - Null ⊑ Ref 单向放行（数据流合并把 null 路吸收成通用引用是保守上界，
+///   SMT 侧声明 Null 是其下界，verifier 语义下共存）；
+/// - Uninitialized/ReturnAddress 比产生方 pc（Uninitialized）；
+/// - Ref 不比名（ShapeResolver 注入的帧计算引用合并退化为通用引用——
+///   名字缺席是口径不是缺陷）。
+bool frameSlotCompatible(const jan::VType& computed, const jan::VType& smt)
+{
+    using K = jan::VKind;
+    if (computed.k == K::Top || smt.k == K::Top) return true;
+    if (computed.k == K::Ref && smt.k == K::Null) return true;
+    if (computed.k != smt.k) return false;
+    if (computed.k == K::Uninitialized || computed.k == K::ReturnAddress) {
+        return computed.cls == smt.cls;
+    }
+    return true;
+}
+
+/// 帧一致性门（单类）：逐方法 Strict 形状数据流（ShapeResolver 注入——
+/// 引用合并退化为通用引用，类型/栈深/栈下溢等结构性失败全量暴露）+ 既有
+/// StackMapTable 读↔算对拍。v<50 无 SMT 定义只跑数据流；jsr/ret 传统形态
+/// 显式跳过（子程序多调用点是合法遗留形态，精确档按显式拒绝处理会误报）。
+/// 方法级结论：返回 not-ok 描述（已带方法名），全绿返回空；跳过数经
+/// skipped 带出（jsr/ret 传统形态）。
+std::vector<std::string> frameGateOfClass(ir::ClassSession& session, ca::usize& skipped)
+{
+    std::vector<std::string> problems;
+    auto&                    unit = session.unit();
+    auto&                    sp   = unit.symbols();
+    jan::ShapeResolver       resolver;
+    for (auto& mu : unit.methods) {
+        if (!mu.code) continue;   // abstract/native：无方法体不检
+        auto& cu = *mu.code;
+        const std::string mname(sp.str(mu.name));
+        jan::MethodSig sig;
+        sig.isStatic  = (mu.access & kAccStatic) != 0;
+        sig.desc      = sp.str(mu.desc);
+        sig.name      = sp.str(mu.name);
+        sig.thisClass = sp.str(unit.thisClass);
+        jan::FrameEngine engine(session.backing().cp, resolver, jan::FramePolicy::Strict);
+        std::vector<jan::FrameAt> frames;
+        const auto sum = engine.compute(cu, sig, frames);
+        if (!sum.ok) {
+            if (sum.fail == jan::FrameSummary::Fail::Subroutine) {   // jsr 遗留形态
+                ++skipped;
+                continue;
+            }
+            const ir::Insn* at = sum.failAt == ir::kNoInsn
+                                     ? nullptr
+                                     : cu.dom.peek(sum.failAt);
+            problems.push_back(mname + ": frame dataflow " + jan::to_string(sum.fail)
+                               + (at != nullptr ? " @pc " + std::to_string(at->srcPc)
+                                                : ""));
+            continue;
+        }
+        if (sum.hasSubroutine) {   // RET 存在但数据流可算：SMT 语义面跳过对拍
+            ++skipped;
+            continue;
+        }
+        // SMT 读↔算对拍（v>=50；属性缺席 = 无控制流目标，合法缺席）。
+        auto rd = jan::readFramesFromSmt(session, cu);
+        if (rd.is_err()) {
+            problems.push_back(mname + ": smt read " + jan::to_string(rd.unwrap_err()));
+            continue;
+        }
+        const auto& views = rd.unwrap();
+        if (views.empty()) continue;
+        // 计算帧的 pc 索引（srcPc → order 下标；帧与 order 同序对齐）。
+        std::unordered_map<ca::u32, ca::usize> idxOf;
+        const auto&                            order = cu.dom.order();
+        idxOf.reserve(order.size() * 2);
+        for (ca::usize i = 0; i < order.size(); ++i) {
+            const ir::Insn* in = cu.dom.peek(order[i]);
+            if (in != nullptr) idxOf.emplace(in->srcPc, i);
+        }
+        for (const auto& v : views) {
+            const auto it = idxOf.find(v.pc);
+            if (it == idxOf.end()) {
+                problems.push_back(mname + ": smt target pc " + std::to_string(v.pc)
+                                   + " not on live insn");
+                continue;
+            }
+            const jan::FrameAt& got = frames[it->second];
+            if (!got.reachable) continue;   // 不可达目标的帧 verifier 忽略
+            if (got.stack.size() != v.frame.stack.size()) {
+                problems.push_back(mname + ": stack depth @pc " + std::to_string(v.pc)
+                                   + " code=" + std::to_string(got.stack.size()) + " smt="
+                                   + std::to_string(v.frame.stack.size()));
+                continue;
+            }
+            bool slotBad = false;
+            for (ca::usize i = 0; i < got.stack.size() && !slotBad; ++i) {
+                slotBad = !frameSlotCompatible(got.stack[i], v.frame.stack[i]);
+            }
+            const ca::usize nL = std::min(got.locals.size(), v.frame.locals.size());
+            for (ca::usize i = 0; i < nL && !slotBad; ++i) {
+                slotBad = !frameSlotCompatible(got.locals[i], v.frame.locals[i]);
+            }
+            if (slotBad) {
+                problems.push_back(mname + ": frame shape mismatch @pc "
+                                   + std::to_string(v.pc));
+            }
+        }
+    }
+    return problems;
+}
+
 }   // namespace
 
 ContainerVerifyReport facadeVerifyContainer(FacadeSession& s)
@@ -2444,6 +2553,25 @@ ContainerVerifyReport facadeVerifyContainer(FacadeSession& s)
             ++rep.malformed;
             rep.malformedDetails.push_back({uri, e.what()});
             return;
+        }
+
+        // 帧一致性门：逐方法 Strict 帧数据流 + SMT 对拍（F3 门；坏帧类进
+        // frame_not_ok 明细，不阻塞其余体检项）。
+        try {
+            ca::usize frameSkips = 0;
+            auto frameProblems   = frameGateOfClass(*session, frameSkips);
+            rep.frameSkipped += frameSkips;
+            if (!frameProblems.empty()) {
+                ++rep.frameNotOk;
+                for (const auto& p : frameProblems) {
+                    rep.frameNotOkDetails.push_back({uri, p});
+                }
+            }
+        }
+        catch (const std::exception& e) {
+            // 门自身异常按 not-ok 计（防御：不吞）。
+            ++rep.frameNotOk;
+            rep.frameNotOkDetails.push_back({uri, std::string("frame gate: ") + e.what()});
         }
 
         // entry 路径 ↔ this_class 比对（oracle entry-probe 同款口径）。

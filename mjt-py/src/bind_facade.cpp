@@ -391,6 +391,9 @@ void bindFacade(py::module_& m)
                 for (const auto& i : v) out.append(py::make_tuple(i.entry, i.detail));
                 return out;
             };
+            out["frame_not_ok"]      = rep.frameNotOk;
+            out["frame_skipped"]     = rep.frameSkipped;
+            out["frame_not_ok_details"] = toList(rep.frameNotOkDetails);
             out["mismatch_details"]  = toList(rep.mismatchDetails);
             out["malformed_details"] = toList(rep.malformedDetails);
             out["dep_missing_details"] = toList(rep.depMissingDetails);

@@ -409,16 +409,23 @@ TEST(FacadeTree, EmitLabelJumpLdcChain)
     auto& s      = FacadeRegistry::instance().get(h);
     facadeParseClass(s, "me/demo/Util");
     facadeAddMethod(s, "me/demo/Util", "branchy", "(I)I", 0x0009, 2, 1);
-    // branchy: iload 0; ifeq L; iconst_1; goto Lend; L: iconst_0; Lend: ireturn
-    const auto load  = facadeEmitVar(s, "me/demo/Util", "branchy", "(I)I", 0x15 /*iload*/, 0, std::nullopt);
-    const auto label = facadeEmitLabel(s, "me/demo/Util", "branchy", "(I)I", std::nullopt);
-    facadeEmitJump(s, "me/demo/Util", "branchy", "(I)I", 0x99 /*ifeq*/, label, std::nullopt);
+    // branchy: iload 0; ifeq L; iconst_1; goto Lend; L: iconst_0; Lend: ireturn。
+    // label 发射时锚定到紧随其后的指令，前向目标（L/Lend）经 set_target 改指
+    // 落位；两条携等深操作数栈的入边在 Lend 汇合——COMPUTE_FRAMES 帧计算须过。
+    const auto load = facadeEmitVar(s, "me/demo/Util", "branchy", "(I)I", 0x15 /*iload*/, 0, std::nullopt);
+    const auto la   = facadeEmitLabel(s, "me/demo/Util", "branchy", "(I)I", std::nullopt);
+    const auto cond = facadeEmitJump(s, "me/demo/Util", "branchy", "(I)I", 0x99 /*ifeq*/, la, std::nullopt);
     facadeEmitInsn(s, "me/demo/Util", "branchy", "(I)I", 0x04 /*iconst_1*/, std::nullopt);
+    const auto lb   = facadeEmitLabel(s, "me/demo/Util", "branchy", "(I)I", std::nullopt);
+    const auto go   = facadeEmitJump(s, "me/demo/Util", "branchy", "(I)I", 0xA7 /*goto*/, lb, std::nullopt);
+    // L 锚：iconst_0 首条入点。
+    const auto l    = facadeEmitLabel(s, "me/demo/Util", "branchy", "(I)I", std::nullopt);
+    const auto l1   = facadeEmitInsn(s, "me/demo/Util", "branchy", "(I)I", 0x03 /*iconst_0*/, std::nullopt);
+    // Lend 锚：ireturn。
     const auto lend = facadeEmitLabel(s, "me/demo/Util", "branchy", "(I)I", std::nullopt);
-    const auto go   = facadeEmitJump(s, "me/demo/Util", "branchy", "(I)I", 0xA7 /*goto*/, lend, std::nullopt);
-    const auto l1   = facadeEmitInsn(s, "me/demo/Util", "branchy", "(I)I", 0x03 /*iconst_0*/, lend);
     facadeEmitInsn(s, "me/demo/Util", "branchy", "(I)I", 0xAC /*ireturn*/, std::nullopt);
-    // 前向跳转目标 uid 可改指（set_target）。
+    // 前向跳转目标 uid 改指（set_target）：两分支落位到 L / Lend。
+    facadeInsnSetTarget(s, "me/demo/Util", "branchy", "(I)I", cond, l);
     facadeInsnSetTarget(s, "me/demo/Util", "branchy", "(I)I", go, lend);
     EXPECT_NO_THROW(facadeWriteBack(s, "me/demo/Util", true));
     (void)load;
@@ -766,6 +773,81 @@ TEST(FacadeContainer, VerifyContainerCountsMismatchMalformedDeps)
     facadeRemoveEntry(s, "me/demo/Util.class");
     const auto rep2 = facadeVerifyContainer(s);
     EXPECT_GE(rep2.depMissing, std::size_t{1});
+    FacadeRegistry::instance().close(h);
+}
+
+TEST(FacadeContainer, VerifyContainerFrameGateFlagsMergeDepthMismatch)
+{
+    namespace ir  = jbc::ir;
+    namespace jb  = jbc::core;
+    // 汇合点入边栈深不一致形态：同一 join 两入边，goto 侧携 int、条件跳转
+    // 侧空栈——真 verifier 语义下必须在 join 处拒绝（不许静默选深侧后带病
+    // 写出）。帧门须把该类计入 frame_not_ok 并给出方法级明细。
+    //   0: aconst_null; 1: ifnull -> join; 4: iconst_1; 5: goto -> join;
+    //   join: nop; return
+    ir::NewClassSeed seed;
+    seed.access    = 0x0021;   // PUBLIC|SUPER
+    seed.thisName  = "me/demo/FrameProbe";
+    seed.superName = "java/lang/Object";
+    auto made      = ir::makeSession(seed);
+    ASSERT_TRUE(made.is_ok());
+    auto session = std::move(made).unwrap();
+    ir::MethodSeed mseed;
+    mseed.name      = "probe";
+    mseed.desc      = "()V";
+    mseed.access    = 0x0009;   // PUBLIC|STATIC
+    mseed.withCode  = true;
+    mseed.maxStack  = 1;
+    mseed.maxLocals = 0;
+    auto added      = session->addMethod(mseed);
+    ASSERT_TRUE(added.is_ok());
+    ASSERT_TRUE(ir::promoteMethod(*session, added.unwrap()).is_ok());
+    auto& dom = session->unit().method(added.unwrap())->code->dom;
+
+    auto mk = [](jb::Op op) {
+        ir::Insn in;
+        in.op    = op;
+        in.srcPc = ir::kNoPc;
+        return in;
+    };
+    // 前向分支（目标指令 append 期未落位）：受控延后绑定构建态，全落位后收尾。
+    dom.beginDeferredTargets();
+    auto put = [&](ir::Insn in) {
+        const auto r = dom.append(std::move(in));
+        EXPECT_TRUE(r.is_ok());
+        return r.is_ok() ? r.unwrap() : ir::InsnId{};
+    };
+    const auto ifn  = put(mk(jb::Op::ACONST_NULL)), acond = put(mk(jb::Op::IFNULL));
+    put(mk(jb::Op::ICONST_1));
+    const auto gjmp = put(mk(jb::Op::GOTO));
+    const auto join = put(mk(jb::Op::NOP));
+    put(mk(jb::Op::RETURN));
+    auto lab = dom.createLabel(join);
+    ASSERT_TRUE(lab.is_ok());
+    dom.get(acond).unwrap()->target = lab.unwrap();
+    dom.get(gjmp).unwrap()->target  = lab.unwrap();
+    ASSERT_TRUE(dom.endDeferredTargets().is_ok());
+    ASSERT_TRUE(ir::lowerMethod(*session, added.unwrap()).is_ok());
+    const auto written = jb::writeClass(session->backing());
+    ASSERT_TRUE(written.is_ok());
+    const auto bytes = std::move(written).unwrap();
+    ASSERT_FALSE(bytes.empty());
+
+    const auto h = openDemo("mjt_facade_frame.jar");
+    auto&      s = FacadeRegistry::instance().get(h);
+    {
+        // 基线：合成 demo jar 帧门全绿。
+        const auto rep = facadeVerifyContainer(s);
+        EXPECT_EQ(rep.frameNotOk, std::size_t{0});
+        EXPECT_TRUE(rep.frameNotOkDetails.empty());
+    }
+    facadeAddEntry(s, "me/demo/FrameProbe.class", bytes);
+    const auto rep = facadeVerifyContainer(s);
+    EXPECT_EQ(rep.frameNotOk, std::size_t{1});
+    ASSERT_EQ(rep.frameNotOkDetails.size(), std::size_t{1});
+    EXPECT_EQ(rep.frameNotOkDetails[0].entry, "me/demo/FrameProbe.class");
+    EXPECT_NE(rep.frameNotOkDetails[0].detail.find("probe"), std::string::npos);
+    EXPECT_NE(rep.frameNotOkDetails[0].detail.find("frame dataflow"), std::string::npos);
     FacadeRegistry::instance().close(h);
 }
 
