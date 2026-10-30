@@ -2401,28 +2401,31 @@ bool isJdkType(const std::string& name)
            name.rfind("org/omg/", 0) == 0;
 }
 
-/// 帧门槽级相容判定（读↔算对拍口径）：
-/// - Top 任一侧出现即相容（未知槽不比——形态格的 Top 是「不关心」）；
-/// - Null ⊑ Ref 单向放行（数据流合并把 null 路吸收成通用引用是保守上界，
-///   SMT 侧声明 Null 是其下界，verifier 语义下共存）；
-/// - Uninitialized/ReturnAddress 比产生方 pc（Uninitialized）；
-/// - Ref 不比名（ShapeResolver 注入的帧计算引用合并退化为通用引用——
-///   名字缺席是口径不是缺陷）。
+/// 帧门槽级相容判定（读↔算对拍口径，形状档算侧 vs SMT 精确声明侧）：
+/// - Top 任一侧 / 算侧 Bottom 即相容（未知与合并降级槽不比——形状格的
+///   Top 是「不关心」，Bottom 是引用合并的降级产物）；
+/// - 引用族（Ref/Null/UninitThis/Uninitialized）两侧同族即相容：形状档把
+///   Null 与未初始化实例折叠为 Ref，名字与产生方 pc 缺席是口径不是缺陷；
+/// - 其余尺寸类（Int/Float/Long/Double/ReturnAddress）按种类精确相等
+///   ——跨尺寸类（如 int 槽对上引用槽）仍是结构不一致，照报。
 bool frameSlotCompatible(const jan::VType& computed, const jan::VType& smt)
 {
     using K = jan::VKind;
-    if (computed.k == K::Top || smt.k == K::Top) return true;
-    if (computed.k == K::Ref && smt.k == K::Null) return true;
-    if (computed.k != smt.k) return false;
-    if (computed.k == K::Uninitialized || computed.k == K::ReturnAddress) {
-        return computed.cls == smt.cls;
-    }
-    return true;
+    if (computed.k == K::Top || smt.k == K::Top || computed.k == K::Bottom) return true;
+    const auto refFamily = [](K k) {
+        return k == K::Ref || k == K::Null || k == K::UninitThis || k == K::Uninitialized;
+    };
+    if (refFamily(computed.k) && refFamily(smt.k)) return true;
+    return computed.k == smt.k;
 }
 
-/// 帧一致性门（单类）：逐方法 Strict 形状数据流（ShapeResolver 注入——
-/// 引用合并退化为通用引用，类型/栈深/栈下溢等结构性失败全量暴露）+ 既有
-/// StackMapTable 读↔算对拍。v<50 无 SMT 定义只跑数据流；jsr/ret 传统形态
+/// 帧一致性门（单类）：逐方法 BestEffort 形状数据流 + 既有 StackMapTable
+/// 读↔算对拍。档位选择：Strict 需要类层次感知的 ITypeResolver 求解引用
+/// 公共父类，ShapeResolver（无层次注入）在泛型擦除合并点上不可解 → 对
+/// 合法代码系统性误报 type conflict；BestEffort 把引用合并降级为 Bottom
+/// 继续，结构性失败（汇合点栈深不一致/栈下溢/子程序形态）两档位同规全量
+/// 暴露，精确类型一致性交 SMT 对拍与真 verifier。v<50 无 SMT 定义只跑
+/// 数据流；jsr/ret 传统形态
 /// 显式跳过（子程序多调用点是合法遗留形态，精确档按显式拒绝处理会误报）。
 /// 方法级结论：返回 not-ok 描述（已带方法名），全绿返回空；跳过数经
 /// skipped 带出（jsr/ret 传统形态）。
@@ -2441,7 +2444,7 @@ std::vector<std::string> frameGateOfClass(ir::ClassSession& session, ca::usize& 
         sig.desc      = sp.str(mu.desc);
         sig.name      = sp.str(mu.name);
         sig.thisClass = sp.str(unit.thisClass);
-        jan::FrameEngine engine(session.backing().cp, resolver, jan::FramePolicy::Strict);
+        jan::FrameEngine engine(session.backing().cp, resolver, jan::FramePolicy::BestEffort);
         std::vector<jan::FrameAt> frames;
         const auto sum = engine.compute(cu, sig, frames);
         if (!sum.ok) {
@@ -2493,16 +2496,27 @@ std::vector<std::string> frameGateOfClass(ir::ClassSession& session, ca::usize& 
                 continue;
             }
             bool slotBad = false;
+            std::string slotDesc;
+            auto markBad = [&](std::string_view where, ca::usize idx,
+                               const jan::VType& c, const jan::VType& sv) {
+                if (slotBad) return;
+                slotBad = true;
+                slotDesc = std::string(where) + "[" + std::to_string(idx) + "] code="
+                         + std::to_string(static_cast<int>(c.k)) + " smt="
+                         + std::to_string(static_cast<int>(sv.k));
+            };
             for (ca::usize i = 0; i < got.stack.size() && !slotBad; ++i) {
-                slotBad = !frameSlotCompatible(got.stack[i], v.frame.stack[i]);
+                if (!frameSlotCompatible(got.stack[i], v.frame.stack[i]))
+                    markBad("stack", i, got.stack[i], v.frame.stack[i]);
             }
             const ca::usize nL = std::min(got.locals.size(), v.frame.locals.size());
             for (ca::usize i = 0; i < nL && !slotBad; ++i) {
-                slotBad = !frameSlotCompatible(got.locals[i], v.frame.locals[i]);
+                if (!frameSlotCompatible(got.locals[i], v.frame.locals[i]))
+                    markBad("locals", i, got.locals[i], v.frame.locals[i]);
             }
             if (slotBad) {
                 problems.push_back(mname + ": frame shape mismatch @pc "
-                                   + std::to_string(v.pc));
+                                   + std::to_string(v.pc) + " " + slotDesc);
             }
         }
     }

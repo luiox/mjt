@@ -506,7 +506,7 @@ struct ContainerVerifyReport
 };
 
 /// 全量体检：逐 *.class 条目解析（malformed）、entry 名 ↔ 声明名比对（mismatch）、
-/// 常量池引用的容器外非 JDK 类清点（dep_missing）、逐方法 Strict 帧数据流 +
+/// 常量池引用的容器外非 JDK 类清点（dep_missing）、逐方法 BestEffort 帧数据流 +
 /// 既有 StackMapTable 读↔算对拍（frame_not_ok；jsr/ret 传统形态显式跳过计数）。
 /// 与数据无关，只读。
 ContainerVerifyReport facadeVerifyContainer(FacadeSession& s);
