@@ -122,7 +122,7 @@ add_repositories("luiox-repo https://github.com/luiox/luiox-repo.git")
 -- 放任自解析会多出实例；消费方目标同名包去重后落到无 json 的实例时，
 -- 链接期 LNK2019 ca::json（D33 同族根因）。升级 libca 只改下面两行。
 -- 0.0.15 = zip UTF-8 路径 + 解析器 locale 加固（家族包 0.0.2 即 libca 0.0.14
--- 对齐版，与其基线对齐消 skew）；env 模块为 libjdk_finder 0.1.0 所需。
+-- 对齐版，与其基线对齐消 skew）；env 模块为 libjdk_finder 0.1.1 所需。
 LUIOX_LIBCA_VERSION = "0.0.15"
 LUIOX_LIBCA_MODULES = "core,crypto,str,fs,env,io,json,net,http,process,opt,thread,log,zip,resources,i18n,test"
 add_requires("libca " .. LUIOX_LIBCA_VERSION, {configs = {modules = LUIOX_LIBCA_MODULES}})
@@ -139,7 +139,7 @@ add_requires("libjclassfile 0.0.2")
 includes("xmake/packages/libjbc.lua")
 add_requires("libjbc 0.4.23")
 add_requires("libjstd 0.0.1")
-add_requires("libjdk_finder 0.1.0")
+add_requires("libjdk_finder 0.1.1")
 add_requires("libjhasm 0.3.2")
 -- 嵌套 libca 全路径钉定，缺一条就多一个实例。
 add_requireconfs("libmcp.libca",                 {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
