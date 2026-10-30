@@ -107,11 +107,7 @@ if has_config("with_tests") then
     add_requires("gtest")
 end
 
--- libarchive：mjbase model 资源导入导出的跨平台解包后端（tar/xz/gz/zst）。
--- 本地覆盖包（xmake/repo/packages/l/libarchive/xmake.lua）规避官方包在
--- Linux 漏传 POSIX_REGEX_LIB=NONE 导致的编译失败。
-add_repositories("mjt-repo xmake/repo")
-add_requires("libarchive 3.8.8", {configs = {openssl3 = false}})
+-- zlib：libjzip 传递需要；nlohmann_json：MCP 协议载荷。
 add_requires("zlib")
 add_requires("nlohmann_json 3.12.0")
 
