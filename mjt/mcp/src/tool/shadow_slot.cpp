@@ -145,8 +145,13 @@ bool resolveMethodSlots(const WorkspaceShadowTable& slots,
 {
     const auto ownerInput = arguments.value("owner", std::string{});
     const auto nameInput  = arguments.value("name", std::string{});
-    const auto descInput  = arguments.value("descriptor", std::string{});
-    SlotName    ownerSlot;
+    auto       descInput  = arguments.value("descriptor", std::string{});
+    //描述符槽：desc 带 `${` 引用形状 → 内嵌类 handle 展开，展开值参与
+    //成员 descHint 核对与输出；raw desc 原样直通（契约零漂移）。
+    std::string resolvedDesc;
+    if (!resolveDescriptorArgument(slots, descInput, resolvedDesc, error)) return false;
+    descInput = std::move(resolvedDesc);
+    SlotName  ownerSlot;
     if (!resolveClassSlot(slots, ownerInput, verifyRaw, ownerSlot, error)) return false;
     ownerRaw = ownerSlot.raw;
     SlotName nameSlot;
@@ -319,6 +324,44 @@ bool resolveClassUriArgument(mjt::workspace::IWorkspace& workspace,
     SlotName resolved;
     if (!resolveClassSlot(slots, input, true, resolved, error)) return false;
     return resourceUriOfResolved(workspace, resolved.raw, out, error);
+}
+
+bool resolveDescriptorArgument(const WorkspaceShadowTable& slots,
+                               const std::string&          input,
+                               std::string&                out,
+                               Json&                       error)
+{
+    out = input;
+    //非引用形状（raw 描述符）直通：文法校验与 canonical 错误面在下游，
+    //既有契约零漂移。
+    if (input.empty() || input.find("${") == std::string::npos) return true;
+    mjbase::renamer::ShadowSlotQuery query;
+    query.position = mjbase::renamer::ShadowSlotPosition::Descriptor;
+    const auto result = mjbase::renamer::resolveShadowSlot(slots.table, input, query);
+    if (result.error != ShadowSlotError::None) {
+        error = errorOf(result);
+        return false;
+    }
+    out = result.raw;
+    return true;
+}
+
+bool resolveJasmBodyArgument(const WorkspaceShadowTable& slots,
+                             const std::string&          input,
+                             std::string&                out,
+                             Json&                       error)
+{
+    out = input;
+    if (input.empty() || input.find("${") == std::string::npos) return true;
+    mjbase::renamer::ShadowSlotQuery query;
+    query.position = mjbase::renamer::ShadowSlotPosition::JasmBody;
+    const auto result = mjbase::renamer::resolveShadowSlot(slots.table, input, query);
+    if (result.error != ShadowSlotError::None) {
+        error = errorOf(result);
+        return false;
+    }
+    out = result.raw;
+    return true;
 }
 
 }   //namespace mjt::mcp::slot
