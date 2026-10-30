@@ -573,7 +573,18 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         //严格切换不给混搭语义）。
         const auto stringKindFilter = arguments.value("string_kind", std::string{});
         const auto mnemonicFilter   = arguments.value("mnemonic", std::string{});
-        const auto operandFilter    = arguments.value("operand", std::string{});
+        auto operandFilter          = arguments.value("operand", std::string{});
+        //JasmBody 槽：operand 过滤器带 `${` 引用形状 → 操作数行展开
+        //（类 handle / owner.name 复合 → raw 文本再子串匹配）；raw 过滤器
+        //原样直通（过滤契约零漂移）。
+        if (!operandFilter.empty() && operandFilter.find("${") != std::string::npos) {
+            const auto  slots = slot::loadWorkspaceShadowTable(*current);
+            std::string resolvedOperand;
+            Json        operandSlotError;
+            if (!slot::resolveJasmBodyArgument(slots, operandFilter, resolvedOperand, operandSlotError))
+                return operandSlotError;
+            operandFilter = std::move(resolvedOperand);
+        }
         const auto cstFilter        = arguments.value("cst", std::string{});
         const bool structured =
             !mnemonicFilter.empty() || !operandFilter.empty() || !cstFilter.empty();

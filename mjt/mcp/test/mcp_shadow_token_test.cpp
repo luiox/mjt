@@ -8,15 +8,19 @@
 //JSON），零反编译样本入仓。
 #include <filesystem>
 #include <fstream>
+#include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
 
 #include "mcp_test_support.hpp"
+#include "mjbase/jasm/jvm_jasm_service.hpp"
 #include "mjbase/mapping/shadow_alias_format.hpp"
 #include "mjbase/model/resource_container.hpp"
 #include "mjbase/model/resource_helper.hpp"
+#include "mjbase/model/resource_model.hpp"
 #include "mjbase/renamer/shadow_alias.hpp"
 
 namespace mjt::mcp {
@@ -95,6 +99,76 @@ void expectSlotError(const Json& response,
     if (!exclude.empty()) {
         EXPECT_EQ(std::string::npos, message.find(exclude)) << hint << " | " << message;
     }
+}
+
+///装配诊断首条消息（Utf16 → UTF-8；失败定位用）。
+std::string firstDiagnostic(const mjbase::jasm::Result<mjbase::jasm::JvmJasmClass>& assembled)
+{
+    if (assembled.diagnostics.empty()) return "no diagnostics";
+    return assembled.diagnostics.front().message.ref().to_utf8_string().to_std_string();
+}
+
+///Descriptor/JasmBody 槽 E2E fixture：desc/Gift（被引用类）+ desc/Holder
+///（take (Ldesc/Gift;)V 带类型参数描述符；useIt ()V 内 invokestatic 构造
+///指令操作数引用面）。全部自造 jasm 装配，零样本字节。
+///机械编号：Class_1=desc/Gift、Class_2=desc/Holder；Method_1=take、
+///Method_2=useIt（类内 (name, desc) 字典序）。
+std::filesystem::path writeDescriptorFixture()
+{
+    mjbase::jasm::JvmJasmService assembler;
+    mjbase::model::ResourceContainer container;
+    const auto giftSource = utf16(".super java/lang/Object\n"
+                                  ".class public super desc/Gift {\n"
+                                  "}\n");
+    const auto giftAssembled =
+        assembler.assemble(utf16("Gift.jasm").ref(), giftSource.ref());
+    if (!giftAssembled.isOk())
+        throw std::runtime_error("descriptor Gift fixture did not assemble: " +
+                                 firstDiagnostic(giftAssembled));
+    container.addResource(
+        "desc/Gift.class",
+        std::make_unique<mjbase::model::ClassResource>("desc/Gift.class",
+                                                       giftAssembled.value->bytes));
+    const auto holderSource = utf16(
+        ".super java/lang/Object\n"
+        ".class public super desc/Holder {\n"
+        "  .method public static take (Ldesc/Gift;)V {\n"
+        "    code: {\n"
+        "      return\n"
+        "    }\n"
+        "  }\n"
+        "  .method public static useIt ()V {\n"
+        "    code: {\n"
+        "      aconst_null\n"
+        "      invokestatic desc/Holder.take (Ldesc/Gift;)V\n"
+        "      return\n"
+        "    }\n"
+        "  }\n"
+        "}\n");
+    const auto holderAssembled =
+        assembler.assemble(utf16("Holder.jasm").ref(), holderSource.ref());
+    if (!holderAssembled.isOk())
+        throw std::runtime_error("descriptor Holder fixture did not assemble: " +
+                                 firstDiagnostic(holderAssembled));
+    container.addResource(
+        "desc/Holder.class",
+        std::make_unique<mjbase::model::ClassResource>("desc/Holder.class",
+                                                       holderAssembled.value->bytes));
+    const auto path = test::getTempOutPath("mjt_mcp_descriptor_fixture.jar");
+    mjbase::model::ResourceHelper::exportToJar(container, path.string());
+    return path;
+}
+
+///writeDescriptorFixture 落盘固定路径，本组测试会在 jar 旁写 sidecar，必须
+///逐用例隔离：拷贝到唯一路径后打开副本（同 uniqueFixtureJar 的隔离规则）。
+std::filesystem::path uniqueDescriptorFixtureJar()
+{
+    static int counter = 0;
+    const auto source  = writeDescriptorFixture();
+    auto       target  = source;
+    target.replace_filename("mjt_mcp_descriptor_" + std::to_string(++counter) + ".jar");
+    std::filesystem::copy_file(source, target, std::filesystem::copy_options::overwrite_existing);
+    return target;
 }
 
 }   //namespace
@@ -781,6 +855,156 @@ TEST(McpShadowTokenTest, ShadowToRawAcceptsHandleInput)
     //raw_to_shadow 拒收 Ref（语义面分立，指路 shadow_to_raw）。
     const auto wrongWay = call(server, "search", {{"project_id", projectId}, {"kind", "shadow"}, {"direction", "raw_to_shadow"}, {"name", classRef}});
     expectSlotError(wrongWay, "shadow_to_raw", "", "reverse direction");
+}
+
+//───────────────── Descriptor/JasmBody 槽（工具面实参展开） ─────────────────
+
+TEST(McpShadowTokenTest, DescriptorSlotExpandsEmbeddedClassHandles)
+{
+    const auto jar = uniqueDescriptorFixtureJar();
+    McpSessionHarness server;
+    const auto projectId = openWithSidecar(server, jar);
+
+    const auto giftRef   = firstMatch(server, projectId, "desc/Gift").at("ref").get<std::string>();
+    const auto holderRef = firstMatch(server, projectId, "desc/Holder").at("ref").get<std::string>();
+    const auto takeRef =
+        firstMatch(server, projectId, "take", holderRef, "method").at("ref").get<std::string>();
+    ASSERT_NE(std::string::npos, takeRef.find(".Method_")) << takeRef;
+
+    //class_query kind=method：desc 内嵌类 handle → 展开（与表内核对一致）。
+    const auto method = call(server,
+                             "class_query",
+                             {{"project_id", projectId},
+                              {"kind", "method"},
+                              {"owner", holderRef},
+                              {"name", takeRef},
+                              {"descriptor", "(L" + giftRef + ";)V"}});
+    ASSERT_FALSE(method.at("result").at("isError")) << method.dump();
+    EXPECT_EQ("take", payload(method).at("name"));
+    EXPECT_EQ("(Ldesc/Gift;)V", payload(method).at("descriptor"));
+
+    //xref_query references target=method 同口径：desc handle 展开后命中
+    //真实引用（useIt 内 invokestatic 的操作数描述符）。
+    const auto xref = call(server,
+                           "xref_query",
+                           {{"project_id", projectId},
+                            {"kind", "references"},
+                            {"target", "method"},
+                            {"direction", "to"},
+                            {"owner", holderRef},
+                            {"name", takeRef},
+                            {"descriptor", "(L" + giftRef + ";)V"}});
+    ASSERT_FALSE(xref.at("result").at("isError")) << xref.dump();
+    EXPECT_GE(payload(xref).at("items").size(), 1U) << xref.dump();
+}
+
+TEST(McpShadowTokenTest, DescriptorHandleErrorsSurfaceAtToolBoundary)
+{
+    const auto jar = uniqueDescriptorFixtureJar();
+    McpSessionHarness server;
+    const auto projectId = openWithSidecar(server, jar);
+
+    const auto holderRef = firstMatch(server, projectId, "desc/Holder").at("ref").get<std::string>();
+    const auto takeRef =
+        firstMatch(server, projectId, "take", holderRef, "method").at("ref").get<std::string>();
+
+    //desc 内类 handle token 手滑 → unknown-handle（非 raw-not-found，也不
+    //落下游 canonical NOT_FOUND）。
+    const auto unknown = call(server,
+                              "class_query",
+                              {{"project_id", projectId},
+                               {"kind", "method"},
+                               {"owner", holderRef},
+                               {"name", takeRef},
+                               {"descriptor", "(L${Class_1.deadbeef};)V"}});
+    expectSlotError(unknown, "unknown-handle", "raw-not-found");
+
+    //desc 文法垃圾（L 段内 handle 残缺）→ malformed-handle。
+    const auto malformed = call(server,
+                                "class_query",
+                                {{"project_id", projectId},
+                                 {"kind", "method"},
+                                 {"owner", holderRef},
+                                 {"name", takeRef},
+                                 {"descriptor", "(L${Class_1;"}});
+    expectSlotError(malformed, "malformed-handle");
+}
+
+TEST(McpShadowTokenTest, EditApplyMemberDescriptorHandleExpands)
+{
+    const auto jar = uniqueDescriptorFixtureJar();
+    McpSessionHarness server;
+    const auto projectId = openWithSidecar(server, jar);
+
+    const auto giftRef   = firstMatch(server, projectId, "desc/Gift").at("ref").get<std::string>();
+    const auto holderRef = firstMatch(server, projectId, "desc/Holder").at("ref").get<std::string>();
+    const auto takeRef =
+        firstMatch(server, projectId, "take", holderRef, "method").at("ref").get<std::string>();
+
+    //member_descriptor 内嵌类 handle：槽层展开 → 成员核对一致 → 变更真实
+    //提交（revision 在响应）。
+    const auto committed = call(server,
+                                "edit_apply",
+                                {{"project_id", projectId},
+                                 {"kind", "structured"},
+                                 {"class_uri", holderRef},
+                                 {"mutation_kind", "set_method_access"},
+                                 {"member_name", takeRef},
+                                 {"member_descriptor", "(L" + giftRef + ";)V"},
+                                 {"access_flags", Json::array({"public", "final"})}});
+    ASSERT_FALSE(committed.at("result").at("isError")) << committed.dump();
+    EXPECT_TRUE(payload(committed).contains("revision"));
+
+    //desc handle token 手滑 → unknown-handle，变更不落盘。
+    const auto rejected = call(server,
+                               "edit_apply",
+                               {{"project_id", projectId},
+                                {"kind", "structured"},
+                                {"class_uri", holderRef},
+                                {"mutation_kind", "set_method_access"},
+                                {"member_name", takeRef},
+                                {"member_descriptor", "(L${Class_1.deadbeef};)V"},
+                                {"access_flags", Json::array({"public"})}});
+    expectSlotError(rejected, "unknown-handle", "raw-not-found");
+}
+
+TEST(McpShadowTokenTest, OperandFilterResolvesThroughJasmBodySlot)
+{
+    const auto jar = uniqueDescriptorFixtureJar();
+    McpSessionHarness server;
+    const auto projectId = openWithSidecar(server, jar);
+
+    const auto giftRef   = firstMatch(server, projectId, "desc/Gift").at("ref").get<std::string>();
+    const auto holderRef = firstMatch(server, projectId, "desc/Holder").at("ref").get<std::string>();
+    const auto takeRef =
+        firstMatch(server, projectId, "take", holderRef, "method").at("ref").get<std::string>();
+
+    //类 handle 过滤器 → 展开 desc/Gift 后子串命中 invokestatic 操作数。
+    const auto byClass = call(server,
+                              "search",
+                              {{"project_id", projectId},
+                               {"kind", "instructions"},
+                               {"operand", giftRef}});
+    ASSERT_TRUE(byClass.contains("result")) << "RAWRESP " << byClass.dump();
+    EXPECT_GE(payload(byClass).at("items").size(), 1U) << byClass.dump();
+
+    //成员复合过滤器 → rawOwner.rawName 复合命中同一枚指令。
+    const auto byMember = call(server,
+                               "search",
+                               {{"project_id", projectId},
+                                {"kind", "instructions"},
+                                {"operand", takeRef}});
+    ASSERT_FALSE(byMember.at("result").at("isError")) << byMember.dump();
+    EXPECT_GE(payload(byMember).at("items").size(), 1U) << byMember.dump();
+
+    //raw 过滤器直通：与 handle 展开面同一命中集（过滤契约零漂移）。
+    const auto byRaw = call(server,
+                            "search",
+                            {{"project_id", projectId},
+                             {"kind", "instructions"},
+                             {"operand", "desc/Gift"}});
+    ASSERT_FALSE(byRaw.at("result").at("isError")) << byRaw.dump();
+    EXPECT_EQ(payload(byClass).at("items").size(), payload(byRaw).at("items").size());
 }
 
 }   //namespace mjt::mcp

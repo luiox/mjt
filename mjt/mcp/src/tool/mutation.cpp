@@ -899,11 +899,22 @@ std::optional<Json> McpToolService::callMutationTool(
                 const auto slots = slot::loadWorkspaceShadowTable(*current);
                 const auto ownerInternal =
                     mjt::internalNameOfUri(classUri);
+                //描述符槽：member_descriptor 带 `${` 引用形状 → 内嵌类 handle
+                //展开；展开值参与成员核对并覆盖回 resolvedArgs（parseMutation
+                //读展开值，handle 字面量不落下游）。
+                std::string memberDescriptor;
+                if (!slot::resolveDescriptorArgument(
+                        slots,
+                        arguments.value("member_descriptor", std::string{}),
+                        memberDescriptor,
+                        slotError))
+                    return slotError;
+                resolvedArgs["member_descriptor"] = memberDescriptor;
                 slot::SlotName memberSlot;
                 if (!slot::resolveMemberSlot(slots,
                                              ownerInternal,
                                              memberName,
-                                             arguments.value("member_descriptor", std::string{}),
+                                             memberDescriptor,
                                              true,
                                              memberSlot,
                                              slotError))

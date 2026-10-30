@@ -126,6 +126,24 @@ bool resolveClassUriArgument(mjt::workspace::IWorkspace& workspace,
                              std::string&                          out,
                              Json&                                 error);
 
+///@brief 描述符实参槽：值含 `${` 引用形状 → Descriptor 槽展开（内嵌类
+///handle → 真名，四分类错误直传）；否则原样直通（raw 描述符零漂移，其文法
+///校验与 canonical 错误面留在下游，不因槽接线收紧）。空值直通。
+///@return false 时 `error` 已填结构化 toolError。
+bool resolveDescriptorArgument(const WorkspaceShadowTable& slots,
+                               const std::string&          input,
+                               std::string&                out,
+                               Json&                       error);
+
+///@brief jasm 操作数实参槽（指令搜索 operand 过滤器用）：值含 `${` 引用
+///形状 → JasmBody 槽展开（类 handle / owner.name 复合 / 尾随描述符）；
+///否则原样直通。空值直通。
+///@return false 时 `error` 已填结构化 toolError。
+bool resolveJasmBodyArgument(const WorkspaceShadowTable& slots,
+                             const std::string&          input,
+                             std::string&                out,
+                             Json&                       error);
+
 ///@brief 显式描述符失配诊断：name 在宿主类存在但 descriptor 与任一候选都
 ///不符时，给结构化错误并列出该名全部候选描述符（与省略 descriptor 时的
 ///歧义路径同一呈现面）。name 不存在 / owner 不可解析 / descriptor 恰好命中
