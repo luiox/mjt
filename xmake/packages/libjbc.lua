@@ -63,6 +63,9 @@ package("libjbc")
     add_versions("0.4.22", "a408506203aaba7f74cdf588885187d3a49b0bd0") -- PR #19 合入 main 头  2026-10-28
     -- 0.4.23 = 仓库瘦身（dev_plan/doc_ai/ergonomics 撤离，design.md 现状化）+ class_build_attrs_test 类构建挂载面契约收编（PR #20，main 合入头）。
     add_versions("0.4.23", "4228cf3650b2409a106511a3cf8ca7275ed5ed04") -- PR #21 合入 main 头  2026-10-29
+    -- 0.4.24 = 帧引擎汇合点入边栈深守卫（Fail::StackMismatch，非 handler join
+    -- 不再静默选深侧；handler 入口与 BestEffort jsr/ret 方法豁免）。
+    add_versions("0.4.24", "ba274c5765688df19e1b16c1ed1aba6a2e22602b") -- 0.4.24 版本化头  2026-10-30
 
     -- 嵌套 libca 直接钉到本仓单源版本：项目内联包定义不吃 deps.lua 的
     -- **.libca / libjbc.libca requireconfs（实测），裸声明会解析到仓库最新版
