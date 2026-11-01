@@ -111,6 +111,13 @@ end
 add_requires("zlib")
 add_requires("nlohmann_json 3.12.0")
 
+-- sqlite3：mjbase 基座 analysis_db（project 模块）的存储引擎。mjbase 以源码级
+-- 依赖并入本仓构建图后，其 target 的 add_packages("sqlite3") 只声明消费、
+-- 不自带 require——根必须先 require 同款（版本/配置与 mjbase 源仓一致），
+-- 否则 analysis_db.cpp 编译期找不到 sqlite3.h。切 mjbase 包消费后此行随
+-- 包自足闭包退役。
+add_requires("sqlite3 3.53.0", {configs = {shared = false}})
+
 -- 中心包仓直连包（无仓内副本、无 phony 垫片，消费点直接 add_packages）。
 add_repositories("luiox-repo https://github.com/luiox/luiox-repo.git")
 -- libca 版本/模块双单源：顶层与全部嵌套路径一律归并到同一 (版本, 模块集)。
