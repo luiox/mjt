@@ -1,5 +1,8 @@
 -- lib* 包的 unittest 消费区：库包化（luiox-repo 直连包）后，各库的测试目标
 -- 集中于此——消费包本体 + 本仓 test_helper（JDK/路径测试基建仍在 mjt 侧）。
+-- 归属注记：本目录是「包验收套件」，测的是外部包（libjhasm / libjdk_finder）
+-- 而非 mjt 自有代码，属历史遗留的代养测试；长期归宿是各包自己的仓
+-- （打包时自带测试），两仓具备自测能力后本目录随目标整体退役。
 if has_config("with_tests") then
 
 target("libjdk_finder_unittest")
