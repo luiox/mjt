@@ -138,6 +138,10 @@ add_requires("libjstd 0.0.1")
 add_requires("libjdk_finder 0.1.1")
 add_requires("libjhasm 0.3.2")
 -- 嵌套 libca 全路径钉定，缺一条就多一个实例。
+-- 注：不能用 `*.*` 一类通配塌缩——嵌套依赖不只有 libca（如
+-- libjclassfile.libjstr），通配会把同层非 libca 依赖也钉上 libca 的版本，
+-- 版本决议直接报无此版本。每包一行是当前包机制下的结构必要；根治方向是
+-- 家族包定义内自钉（libjdk_finder/libjhasm 的 modules 超集硬编码即此路线）。
 add_requireconfs("libmcp.libca",                 {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
 add_requireconfs("libjstr.libca",                {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
 add_requireconfs("libjzip.libca",                {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
