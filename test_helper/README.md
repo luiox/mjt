@@ -2,9 +2,7 @@
 
 Shared test utility library for mjt subprojects. Provides resource loading and output path resolution for tests.
 
-`jdk_fixture.hpp` additionally provides shared JDK probing and cross-platform command execution:
-Windows commands run through a temporary `.bat`; POSIX commands run through a temporary `sh`
-script. Both stop at the first failing command and remove the temporary script before returning.
+`jdk_fixture.hpp` additionally provides shared JDK probing and cross-platform command execution:Windows commands run through a temporary `.bat`; POSIX commands run through a temporary `sh` script. Both stop at the first failing command and remove the temporary script before returning.
 
 ## API
 
@@ -45,8 +43,7 @@ All test targets **must** set `set_rundir("$(projectdir)")` in xmake.lua, so CWD
 
 ### `.project_root_file` scanning
 
-On `setup()`, test_helper recursively scans from CWD for all `.project_root_file` files
-and builds a `name → absolute_path` map:
+On `setup()`, test_helper recursively scans from CWD for all `.project_root_file` files and builds a `name → absolute_path` map:
 
 | File location | Content (name) | Resolved path |
 |---|---|---|
@@ -68,16 +65,14 @@ Call `setup("project_name")` once in `main()` to initialize:
 
 ### 跨项目样本访问
 
-当某个子项目需要消费另一子项目的 `test_resource/` 样本时，通过这组按名字定位的
-原语跨项目取，无需各自硬编码相对路径：
+当某个子项目需要消费另一子项目的 `test_resource/` 样本时，通过这组按名字定位的原语跨项目取，无需各自硬编码相对路径：
 
 - `getProjectPath(name)` → 该 `.project_root_file` 名字对应的项目根绝对路径
 - `getProjectResourcePath(name, relPath)` → `<项目根>/test_resource/<relPath>`
 - `hasProjectResource(name, relPath)` → 存在性检查
 - `getProjectResource(name, relPath)` → 读取为 `std::vector<uint8_t>`
 
-定位机制同 `getAsmTestResourcePath`：通过 `.project_root_file` 扫描建立的
-`name → path` 映射查找项目名（如 `"mbase"` / `"mjt"`）。
+定位机制同 `getAsmTestResourcePath`：通过 `.project_root_file` 扫描建立的`name → path` 映射查找项目名（如 `"mbase"` / `"mjt"`）。
 
 ### Adding a new subproject
 
