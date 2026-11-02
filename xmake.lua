@@ -110,9 +110,11 @@ add_requires("sqlite3 3.53.0", {configs = {shared = false}})
 -- 中心包仓直连包（无仓内副本、无 phony 垫片，消费点直接 add_packages）。
 add_repositories("luiox-repo https://github.com/luiox/luiox-repo.git")
 -- libca 版本/模块双单源：顶层与全部嵌套路径一律归并到同一 (版本, 模块集)。
--- 家族包内声明的 libca 依赖无版本约束且是小模块超集（core,str,log,crypto,zip），
--- 放任自解析会多出实例；消费方目标同名包去重后落到无 json 的实例时，
--- 链接期 LNK2019 ca::json（D33 同族根因）。升级 libca 只改下面两行。
+-- 历史上家族包内声明的 libca 依赖无版本约束且是小模块超集（core,str,log,
+-- crypto,zip），放任自解析会多出实例；消费方目标同名包去重后落到无 json 的
+-- 实例时，链接期 LNK2019 ca::json（D33 同族根因）。现 luiox-repo 各包定义
+-- 已全线自钉与本行逐字一致的 17 模块超集（版本裸名或兼容下界，由消费图
+-- 顶层 require 决议），单源靠包定义自钉维持。升级 libca 只改下面两行。
 -- 0.0.16 = 与 mjbase main 及其包词条（0.0.5+）消费版本对齐，消两仓 skew。
 LUIOX_LIBCA_VERSION = "0.0.16"
 LUIOX_LIBCA_MODULES = "core,crypto,str,fs,env,io,json,net,http,process,opt,thread,log,zip,resources,i18n,test"
@@ -133,19 +135,11 @@ add_requires("libjbc 0.4.23")
 add_requires("libjstd 0.0.1")
 add_requires("libjdk_finder 0.1.1")
 add_requires("libjhasm 0.3.3")
--- 嵌套 libca 全路径钉定，缺一条就多一个实例。
--- 注：不能用 `*.*` 一类通配塌缩——嵌套依赖不只有 libca（如
--- libjclassfile.libjstr），通配会把同层非 libca 依赖也钉上 libca 的版本，
--- 版本决议直接报无此版本。每包一行是当前包机制下的结构必要；根治方向是
--- 家族包定义内自钉（libjdk_finder/libjhasm 的 modules 超集硬编码即此路线）。
-add_requireconfs("libmcp.libca",                 {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
-add_requireconfs("libjstr.libca",                {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
-add_requireconfs("libjzip.libca",                {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
-add_requireconfs("libjclassfile.libca",          {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
-add_requireconfs("libjclassfile.libjstr.libca",  {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
-add_requireconfs("libjstd.libca",                {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
-add_requireconfs("libjdk_finder.libca",          {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
-add_requireconfs("libjhasm.libca",                       {version = LUIOX_LIBCA_VERSION, configs = {modules = LUIOX_LIBCA_MODULES}})
+-- 嵌套 libca 不再 requireconf 钉定：libmcp/libjstr/libjzip/libjclassfile/
+-- libjstd/libjdk_finder/libjhasm 的包定义 add_deps 已自钉与本仓逐字一致的
+-- modules 超集（libmcp 为 >=0.0.7 兼容下界，其余裸名走消费图版本决议），
+-- requireconf 重复声明无信息量；包定义漂移（modules 或版本约束偏离本行
+-- 超集）时再按路径补钉。
 -- i18n/resources 构建规则内嵌（.lang add_files 规则，包安装产物不带规则）。
 includes("xmake/libca_rules.lua")
 
