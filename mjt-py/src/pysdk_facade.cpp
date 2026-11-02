@@ -8,11 +8,15 @@
 #include "mjbase/mapping/shadow_alias_format.hpp"
 #include "mjbase/model/resource_helper.hpp"
 #include "mjbase/model/resource_model.hpp"
+#include "mjbase/project/analysis_db.hpp"
 #include "mjbase/renamer/name_suggestion_file.hpp"
 #include "mjbase/renamer/rename_engine.hpp"
 #include "mjbase/renamer/shadow_alias.hpp"
 
 #include "shared/decompiler.hpp"
+#include "workspace/analysis_census.hpp"
+#include "workspace/analysis_ingest.hpp"
+#include "workspace/workspace.hpp"
 
 #include <jbc/analysis/domain.hpp>
 
@@ -3109,6 +3113,99 @@ ShadowSidecarReport facadeShadowPruneFile(const std::string& jarPath,
     auto removed = mjbase::renamer::pruneShadowAliases(container, table);
     if (removed > 0) writeSidecarTable(sidecarPath, table);
     return {sidecarPath, 0, 0, 0, 0, removed, table.size()};
+}
+
+ClassCensusFileReport facadeClassCensusFile(const std::string& jarPath,
+                                            const std::string& outDir)
+{
+    deadlineCheck();
+    std::error_code fsError;
+    if (!std::filesystem::exists(jarPath, fsError) || fsError) {
+        throw std::runtime_error("jar not found: " + jarPath);
+    }
+    const std::string directory = outDir.empty() ? jarPath + ".census" : outDir;
+    if (directory == jarPath) {
+        throw std::runtime_error(
+            "census output directory must not be the jar itself: " + directory);
+    }
+
+    // 投影数据源是一次性临时分析库：整库导入 → 普查投影导出 → 即弃（#39：
+    // 库是事实源、导出是投影；临时库不落工程面，随 root guard 清扫）。
+    namespace fs = std::filesystem;
+    const auto root = fs::path(fs::temp_directory_path()) /
+                      ("mjt_pysdk_census_" +
+                       std::to_string(std::chrono::steady_clock::now()
+                                          .time_since_epoch()
+                                          .count()));
+    fs::create_directories(root, fsError);
+    struct RootGuard
+    {
+        fs::path root;
+        ~RootGuard()
+        {
+            std::error_code ec;
+            fs::remove_all(root, ec);
+        }
+    } guard{root};
+
+    mjt::workspace::WorkspaceBase workspace;
+    if (auto opened = workspace.openJar(jarPath); opened.is_err()) {
+        const auto error = std::move(opened).unwrap_err();
+        throw std::runtime_error("open jar failed: " + error.message);
+    }
+
+    const auto dbPath = root / "analysis.mjdb";
+    auto opened = mjbase::project::AnalysisDb::open(pathRefOf(dbPath.string()),
+                                                    mjbase::project::AnalysisDbOpenMode::ReadWrite);
+    if (opened.is_err()) {
+        throw std::runtime_error(
+            "open census analysis db failed: " +
+            std::move(opened).unwrap_err().message.to_std_string());
+    }
+    auto db = std::move(opened).unwrap();
+
+    if (auto ingested = mjt::workspace::ingestIntoAnalysisDb(workspace, db);
+        ingested.is_err()) {
+        throw std::runtime_error("census ingest failed: " +
+                                 std::move(ingested).unwrap_err().message);
+    }
+
+    auto inputId = mjt::workspace::resolveCensusInput(db, pathRefOf(workspace.sourcePath()));
+    if (inputId.is_err()) {
+        throw std::runtime_error("census input resolve failed: " +
+                                 std::move(inputId).unwrap_err().message);
+    }
+
+    auto exported = mjt::workspace::exportCensus(db, inputId.unwrap(), directory);
+    if (exported.is_err()) {
+        throw std::runtime_error("census export failed: " +
+                                 std::move(exported).unwrap_err().message);
+    }
+    const auto paths = std::move(exported).unwrap();
+
+    // 报告数字与导出同库序同口径：同一输入的 container 汇总投影。
+    auto summary = db.censusContainer(inputId.unwrap());
+    if (summary.is_err()) {
+        throw std::runtime_error("census summary failed: " +
+                                 std::move(summary).unwrap_err().message.to_std_string());
+    }
+    const auto census = std::move(summary).unwrap();
+    if (auto saved = db.save(); saved.is_err()) {
+        throw std::runtime_error("census db checkpoint failed: " +
+                                 std::move(saved).unwrap_err().message.to_std_string());
+    }
+
+    ClassCensusFileReport report;
+    report.classCensusFile     = paths.classCensus;
+    report.containerCensusFile = paths.containerCensus;
+    report.classes       = static_cast<ca::usize>(census.classes);
+    report.methods       = static_cast<ca::usize>(census.methods);
+    report.fields        = static_cast<ca::usize>(census.fields);
+    report.nativeMethods = static_cast<ca::usize>(census.nativeMethods);
+    report.references    = static_cast<ca::usize>(census.references);
+    report.entriesActive    = static_cast<ca::usize>(census.entriesActive);
+    report.entriesIrregular = static_cast<ca::usize>(census.entriesIrregular);
+    return report;
 }
 
 }   // namespace mjt::pysdk

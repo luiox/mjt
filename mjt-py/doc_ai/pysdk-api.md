@@ -1,6 +1,6 @@
 # mjt-py SDK API 参考（pysdk-api.md）
 
-由 `gen_api_docs.py` 自省生成于 2026-10-25T00:43:14；函数改动后重跑本脚本即可刷新，勿手编。
+由 `gen_api_docs.py` 自省生成于 2026-11-02T12:35:04；函数改动后重跑本脚本即可刷新，勿手编。
 
 生成方式：`mjt-mcp.exe --script mjt-py/src/gen_api_docs.py mjt-py/doc_ai/pysdk-api.md`
 
@@ -170,6 +170,28 @@ Returns:
     bytes（落账字节；脏树不参与）。
 Raises:
     StaleRefError: 类名未索引。
+```
+
+### mjt.class_census
+
+```
+class_census(path: str, out_dir: str = '') -> dict
+
+class_census：jar 全量类普查导出（deobf 工作流 S0 量化基线，#39）。
+
+一行一实体的 class_census.tsv（列序版本化、行序按内部名字节序、
+\uXXXX 转义与 mapping 格式同一套），附 container_census.tsv 汇总面。
+数据一律来自分析库投影（临时库整库导入后即弃），输入 jar 只读。
+
+Args:
+    path: jar 路径。
+    out_dir: 输出目录；缺省 `<jar>.census`，目录不存在则创建。
+Returns:
+    报告 dict：{class_census, container_census, classes, methods,
+    fields, native_methods, references, entries_active,
+    entries_irregular}；数字与导出同库序同口径，S0 基线简报直引。
+Raises:
+    RuntimeError: jar 缺失、导入或导出失败。
 ```
 
 ### mjt.class_hierarchy
@@ -1286,7 +1308,7 @@ Raises:
 ### mjt.opt_apply
 
 ```
-opt_apply(h: typing.SupportsInt | typing.SupportsIndex, pass_names: collections.abc.Sequence[str] = [], pipeline: str = '', jdk: str = '') -> mjt.RunStats
+opt_apply(h: typing.SupportsInt | typing.SupportsIndex, pass_names: collections.abc.Sequence[str] = [], pipeline: str = '', jdk: str = '', fail_soft: bool = False) -> mjt.RunStats
 
 优化落盘：管线跑在会话容器上。
 
@@ -1295,17 +1317,19 @@ Args:
     pass_names: pass 名列表（与 pipeline 互斥）。
     pipeline: 管线名；与 pass_names 均空时回落 default-optimize。
     jdk: JDK 路径（可选，跨类层次帧解析用）。
+    fail_soft: 容错档位（默认 False）。True 时失败类/失败方法跳过并
+        继续，跳过清单进 RunStats.skipped；False 时任一失败整作业报错。
 Returns:
     RunStats；成功后树缓存作废并登记最近运行报告。
 Raises:
     ValueError: 选择器非法或 pass/管线名未知。
-    RuntimeError: pass 运行失败。
+    RuntimeError: pass 运行失败（fail_soft=False 且存在不可跳过的失败）。
 ```
 
 ### mjt.opt_preview
 
 ```
-opt_preview(h: typing.SupportsInt | typing.SupportsIndex, pass_names: collections.abc.Sequence[str] = [], pipeline: str = '', jdk: str = '') -> dict
+opt_preview(h: typing.SupportsInt | typing.SupportsIndex, pass_names: collections.abc.Sequence[str] = [], pipeline: str = '', jdk: str = '', fail_soft: bool = False) -> dict
 
 优化试算：管线跑在容器克隆上，diff 后丢弃副本——会话容器零改动。
 
@@ -1314,12 +1338,15 @@ Args:
     pass_names: pass 名列表（与 pipeline 互斥）。
     pipeline: 管线名；与 pass_names 均空时回落 default-optimize。
     jdk: JDK 路径（可选，跨类层次帧解析用）。
+    fail_soft: 容错档位（默认 False）；True 时失败类/方法跳过并继续，
+        跳过清单随结果带出。
 Returns:
     {changed: bool, diffs: [{uri, before_size, after_size, ranges:
-    [{offset, before_length, after_length}]}]}。
+    [{offset, before_length, after_length}]}], skipped: [{scope, target,
+    reason, detail}]}（skipped 仅 fail_soft 下可能非空）。
 Raises:
     ValueError: 选择器非法或 pass/管线名未知。
-    RuntimeError: pass 运行失败。
+    RuntimeError: pass 运行失败（fail_soft=False 且存在不可跳过的失败）。
 ```
 
 ### mjt.parse_class
@@ -1554,7 +1581,7 @@ Raises:
 ### mjt.run_pass
 
 ```
-run_pass(h: typing.SupportsInt | typing.SupportsIndex, name: str, jdk: str = '') -> mjt.RunStats
+run_pass(h: typing.SupportsInt | typing.SupportsIndex, name: str, jdk: str = '', fail_soft: bool = False) -> mjt.RunStats
 
 按名运行 mjbase 内置单 pass。
 
@@ -1562,18 +1589,20 @@ Args:
     h: 容器句柄。
     name: pass 名（mjt.passes() 列出可用面）。
     jdk: JDK 路径——pass 需要跨类层次解析帧时给出；空串跳过。
+    fail_soft: 容错档位（默认 False）。True 时失败类/失败方法跳过并
+        继续，跳过清单进 RunStats.skipped；False 时任一失败整作业报错。
 Returns:
     RunStats（同时登记为该容器最近运行报告）。管线直驱容器字节，
     成功后该容器全部缓存树作废。
 Raises:
     ValueError: pass 名未注册。
-    RuntimeError: pass 运行失败。
+    RuntimeError: pass 运行失败（fail_soft=False 且存在不可跳过的失败）。
 ```
 
 ### mjt.run_pipeline
 
 ```
-run_pipeline(h: typing.SupportsInt | typing.SupportsIndex, pass_names: collections.abc.Sequence[str] = [], pipeline: str = '', jdk: str = '') -> mjt.RunStats
+run_pipeline(h: typing.SupportsInt | typing.SupportsIndex, pass_names: collections.abc.Sequence[str] = [], pipeline: str = '', jdk: str = '', fail_soft: bool = False) -> mjt.RunStats
 
 依序运行多个 pass，或按名运行整条管线。
 
@@ -1583,11 +1612,15 @@ Args:
         无回落）。
     pipeline: 管线名（mjt.pass_describe() 列出可用面）。
     jdk: JDK 路径（可选，跨类层次帧解析用）。
+    fail_soft: 容错档位（默认 False）。True 时失败类/失败方法跳过并
+        继续（其余类照常产出），跳过清单进 RunStats.skipped——混淆
+        样本带出厂坏帧（strict frame compute 失败）时用这个跑通全罐；
+        False 时任一失败整作业报错。
 Returns:
     RunStats；成功后树缓存作废并登记最近运行报告。
 Raises:
     ValueError: pass_names 与 pipeline 同时给出、均空、或名字未知。
-    RuntimeError: pass 运行失败。
+    RuntimeError: pass 运行失败（fail_soft=False 且存在不可跳过的失败）。
 ```
 
 ### mjt.sanitize_lvt
@@ -1912,6 +1945,7 @@ class RunStats
 属性：
 
 - `pipeline`：运行的管线名或单 pass 名。
+- `skipped`：容错档位跳过清单 [{scope, target, reason, detail}]（fail_soft=True 运行才可能非空；scope ∈ class/method，reason ∈ sanitize_error/reader_error/pass_error/writer_error）。
 - `slots`：逐 pass 槽位列表 [{name, scope, processed, changed, failed, duration_ms}]；scope ∈ method/class/global。
 
 ### mjt.StaleRefError
@@ -2533,10 +2567,12 @@ class HandlerRef
 ```
 remove(self)
 
-删除本组假 handler：handler 体指令逆序摘除 + 对应 try 行删除。
+删除本组假 handler：try 行先删 → handler 标签 + 体指令逆序摘除。
 
-handler label 节点保留为孤儿标记（写回端不产出字节）；try 行按
-uid 四元组反查删除，键寻址无悬垂。
+行删除必须在 DOM 动手之前：销毁 handler 标签后行四元组的 handler
+uid 读数变 0，先动标签会让行匹配扑空、行残留到写回期炸重定位。
+标签先于体摘：libjbc 里 Boundary 标签锚定的指令不可 erase
+（StillUsed fail-closed），标签本身无字节形态，销毁即摘边界。
 ```
 
 ### mjt.util.StringCensus

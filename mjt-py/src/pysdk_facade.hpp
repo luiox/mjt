@@ -692,4 +692,30 @@ ShadowSidecarReport facadeShadowGenerateFile(const std::string& jarPath,
 ShadowSidecarReport facadeShadowPruneFile(const std::string& jarPath,
                                           const std::string& file);
 
+/// class_census 文件面报告（数字与导出同库序同口径，S0 基线简报直引）。
+struct ClassCensusFileReport
+{
+    std::string classCensusFile;     ///< class_census.tsv 落盘路径
+    std::string containerCensusFile; ///< container_census.tsv 落盘路径
+    ca::usize   classes       = 0;   ///< 普查类数（class_census 行数）
+    ca::usize   methods       = 0;
+    ca::usize   fields        = 0;
+    ca::usize   nativeMethods = 0;
+    ca::usize   references    = 0;
+    ca::usize   entriesActive    = 0;
+    ca::usize   entriesIrregular = 0; ///< 非常规条目数（伪装目录等硬壳形态）
+};
+
+/// class_census：jar 全量类普查导出（文件面，不依赖打开容器；#39 deobf
+/// 工作流 S0 基线 artifact）。jar → 临时分析库整库导入 → 普查投影（数据
+/// 一律来自 AnalysisDb，不重扫容器）→ `class_census.tsv` +
+/// `container_census.tsv` 落 @p outDir。临时库在系统临时目录即弃，输出
+/// 目录缺省 `<jar>.census`。TSV 转义/行序/表头版本契约见
+/// workspace/analysis_census。
+///
+/// @param jarPath 输入 jar（必须存在；只读，永不改动输入）。
+/// @param outDir  输出目录；空 = `<jar>.census`。目录不存在则创建。
+ClassCensusFileReport facadeClassCensusFile(const std::string& jarPath,
+                                            const std::string& outDir);
+
 }   // namespace mjt::pysdk

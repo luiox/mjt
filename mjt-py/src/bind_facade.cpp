@@ -1999,6 +1999,36 @@ void bindFacade(py::module_& m)
         "    文件。\n"
         "Raises:\n"
         "    RuntimeError: sidecar 缺失或 jar 缺失。");
+    m.def(
+        "class_census",
+        [](const std::string& path, const std::string& out_dir) {
+            const auto report = facadeClassCensusFile(path, out_dir);
+            py::dict   out;
+            out["class_census"]     = report.classCensusFile;
+            out["container_census"] = report.containerCensusFile;
+            out["classes"]          = report.classes;
+            out["methods"]          = report.methods;
+            out["fields"]           = report.fields;
+            out["native_methods"]   = report.nativeMethods;
+            out["references"]       = report.references;
+            out["entries_active"]    = report.entriesActive;
+            out["entries_irregular"] = report.entriesIrregular;
+            return out;
+        },
+        py::arg("path"), py::arg("out_dir") = "",
+        "class_census：jar 全量类普查导出（deobf 工作流 S0 量化基线，#39）。\n\n"
+        "一行一实体的 class_census.tsv（列序版本化、行序按内部名字节序、\n"
+        "\\uXXXX 转义与 mapping 格式同一套），附 container_census.tsv 汇总面。\n"
+        "数据一律来自分析库投影（临时库整库导入后即弃），输入 jar 只读。\n\n"
+        "Args:\n"
+        "    path: jar 路径。\n"
+        "    out_dir: 输出目录；缺省 `<jar>.census`，目录不存在则创建。\n"
+        "Returns:\n"
+        "    报告 dict：{class_census, container_census, classes, methods,\n"
+        "    fields, native_methods, references, entries_active,\n"
+        "    entries_irregular}；数字与导出同库序同口径，S0 基线简报直引。\n"
+        "Raises:\n"
+        "    RuntimeError: jar 缺失、导入或导出失败。");
 }
 
 }   // namespace mjt::pysdk

@@ -7,10 +7,13 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <array>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <string>
 #include <thread>
+#include <vector>
 
 #include "pysdk_facade.hpp"
 #include "pysdk_jar.hpp"
@@ -1350,4 +1353,113 @@ TEST(FacadeJasm, ValidationModeAcceptsThreeTiersAndRejectsUnknown)
     EXPECT_THROW(facadeValidateJasm(s, "me/demo/Util", "", text, "lenient"),
                  std::invalid_argument);
     FacadeRegistry::instance().close(h);
+}
+
+// ── class_census 文件面（#39 S0 量化基线） ───────────────────────────────
+
+namespace {
+
+/// 单行 TSV 切列（转义契约保证列内无 \t，见 workspace/analysis_census）。
+std::vector<std::string> splitTabs(const std::string& line)
+{
+    std::vector<std::string>        fields;
+    std::string::size_type          start = 0;
+    while (start <= line.size()) {
+        const auto tab = line.find('\t', start);
+        if (tab == std::string::npos) {
+            fields.emplace_back(line.substr(start));
+            break;
+        }
+        fields.emplace_back(line.substr(start, tab - start));
+        start = tab + 1;
+    }
+    return fields;
+}
+
+}   // namespace
+
+TEST(FacadeCensus, ExportsVersionedDeterministicTables)
+{
+    const auto jar    = makeDemoJar("mjt_facade_census.jar");
+    const auto outDir = tmpPath("mjt_facade_census_out");
+
+    const auto report = facadeClassCensusFile(jar, outDir);
+    EXPECT_EQ(report.classes, 5U);
+    EXPECT_EQ(report.entriesActive, 7U);   // 5 class 条目 + jar 写入器两级目录占位
+    EXPECT_EQ(report.entriesIrregular, 2U);
+    ASSERT_TRUE(std::filesystem::is_regular_file(report.classCensusFile));
+    ASSERT_TRUE(std::filesystem::is_regular_file(report.containerCensusFile));
+
+    const auto classTsv = readFileBytes(report.classCensusFile);
+    const std::string classText(classTsv.begin(), classTsv.end());
+    // 版本化表头 + 列名行（schema v1 契约；LF 行尾、无 BOM）。
+    EXPECT_EQ(classText.substr(0, classText.find('\n') + 1), "# class-census v1\n");
+    EXPECT_NE(classText.find("internal_name\tkind\taccess\tparent\tiface_count"
+                             "\tmethod_count\tfield_count\tnative_method_count"
+                             "\tbyte_size\tzip_entry\n"),
+              std::string::npos);
+
+    // 一行一类、行序 = internal_name BINARY 升序（"Api" < "App"：'i' < 'p'）。
+    const auto lines = [&] {
+        std::vector<std::string> rows;
+        std::string::size_type   start = 0;
+        while (start < classText.size()) {
+            const auto end = classText.find('\n', start);
+            rows.emplace_back(classText.substr(start, end - start));
+            if (end == std::string::npos) break;
+            start = end + 1;
+        }
+        return rows;
+    }();
+    ASSERT_EQ(lines.size(), 7U);   // 版本行 + 列名行 + 5 类
+    const std::array<const char*, 5> expectedNames = {
+        "me/demo/Api", "me/demo/App", "me/demo/Color", "me/demo/Crypto", "me/demo/Util"};
+    for (std::size_t i = 0; i < expectedNames.size(); ++i) {
+        const auto fields = splitTabs(lines[i + 2]);
+        ASSERT_EQ(fields.size(), 10U) << lines[i + 2];
+        EXPECT_EQ(fields[0], expectedNames[i]) << lines[i + 2];
+        EXPECT_GT(fields[8].size(), 0U) << lines[i + 2];   // byte_size 非空
+        EXPECT_EQ(fields[9], "regular") << lines[i + 2];   // 合成罐无伪装条目
+    }
+    // 接口行全列（Api：PUBLIC|INTERFACE|ABSTRACT → 位序命名；1 抽象方法）。
+    const auto apiFields = splitTabs(lines[2]);
+    EXPECT_EQ(apiFields[1], "interface");
+    EXPECT_EQ(apiFields[2], "public interface abstract");
+    EXPECT_EQ(apiFields[3], "java/lang/Object");
+    EXPECT_EQ(apiFields[4], "0");
+    EXPECT_EQ(apiFields[5], "1");
+    EXPECT_EQ(apiFields[6], "0");
+    EXPECT_EQ(apiFields[7], "0");
+
+    // container_census.tsv：条目面（regular/irregular 二分 + 形态 facet）与
+    // 事实面计数，数字与报告一致。
+    const auto containerTsv = readFileBytes(report.containerCensusFile);
+    const std::string containerText(containerTsv.begin(), containerTsv.end());
+    EXPECT_NE(containerText.find("# container-census v1\n"), std::string::npos);
+    EXPECT_NE(containerText.find("entries_active\t7\n"), std::string::npos);
+    EXPECT_NE(containerText.find("entries_regular\t5\n"), std::string::npos);
+    EXPECT_NE(containerText.find("entries_irregular\t2\n"), std::string::npos);
+    EXPECT_NE(containerText.find("entry_shape_trailing_slash\t2\n"), std::string::npos);
+    EXPECT_NE(containerText.find("entry_kind_class\t5\n"), std::string::npos);
+    EXPECT_NE(containerText.find("entry_kind_resource\t2\n"), std::string::npos);
+    EXPECT_NE(containerText.find("classes\t5\n"), std::string::npos);
+    // 汇总 sha256 行 = 64 位 hex 内容锚形状。
+    const auto shaLine = containerText.find("input_sha256\t");
+    ASSERT_NE(shaLine, std::string::npos);
+    const auto shaValue = containerText.substr(
+        shaLine + std::strlen("input_sha256\t"),
+        containerText.find('\n', shaLine) - (shaLine + std::strlen("input_sha256\t")));
+    EXPECT_EQ(shaValue.size(), 64U);
+
+    // 同输入两次导出逐字节一致（确定性契约，#39 设计要点 2）。
+    const auto outDirAgain = tmpPath("mjt_facade_census_out_again");
+    const auto again = facadeClassCensusFile(jar, outDirAgain);
+    EXPECT_EQ(readFileBytes(again.classCensusFile), classTsv);
+    EXPECT_EQ(readFileBytes(again.containerCensusFile), containerTsv);
+}
+
+TEST(FacadeCensus, MissingJarFailsClosed)
+{
+    EXPECT_THROW(facadeClassCensusFile(tmpPath("mjt_facade_census_missing.jar"), ""),
+                 std::runtime_error);
 }

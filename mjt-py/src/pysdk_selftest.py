@@ -14,7 +14,8 @@
 # 试算零改动/opt_apply 落盘）→ analysis_evaluate（求值/化简/绑定/fail-closed）→
 # shadow sidecar 文件面（generate 幂等/prune 失配清理/缺侧车报错）→
 # decompiler_compare（fail-closed + fake java 双后端实跑）→ init_order（静态
-# 初始化拓扑序：超类边 + clinit 引用边 + 环报告 + roots 子图）。
+# 初始化拓扑序：超类边 + clinit 引用边 + 环报告 + roots 子图）→
+# class_census 文件面（#39 S0 量化基线：导出 → 读回 → 确定性 + 缺省目录）。
 # 全程合成样本（mjt.write_demo_jar），零样本字节入库。
 # 文件尾有 __main__ 兜底入口：--script 宿主 exec 的 __name__ 是 "__main__"，
 # 直接 `--script pysdk_selftest.py` 即跑全套并按 fail 数定退出码。
@@ -1024,6 +1025,42 @@ def run_all():
           [(s["scope"], s["target"], s["reason"]) for s in preview26["skipped"]]
           == [("class", "me/demo/Broken.class", "sanitize_error")], str(preview26["skipped"]))
     mjt.close_container(h26c)
+
+    # ── 27. class_census 文件面（#39 S0 量化基线：导出 → 读回 → 确定性） ──
+    # jar 只读；数据一律来自分析库投影（临时库即弃）。报告数字与 TSV 行数
+    # 一致，同输入两次导出逐字节一致。
+    p27, _h27 = fresh("census")
+    mjt.close_container(_h27)
+    out27 = os.path.join(tmp, "mjt_pysdk_census_out")
+    report27 = mjt.class_census(p27, out27)
+    check("census classes", report27["classes"] == 5, str(report27))
+    check("census files",
+          os.path.isfile(report27["class_census"])
+          and os.path.isfile(report27["container_census"]), str(report27))
+    with open(report27["class_census"], "r", encoding="utf-8", newline="") as f27:
+        rows27 = f27.read().splitlines()
+    check("census header", rows27[0] == "# class-census v1", rows27[0])
+    check("census rows", len(rows27) == 7 and rows27[2].startswith("me/demo/Api\tinterface"),
+          str(rows27[:3]))
+    with open(report27["container_census"], "r", encoding="utf-8", newline="") as f27b:
+        summary27 = dict(line.split("\t", 1) for line in f27b.read().splitlines()[2:])
+    check("census summary classes", summary27.get("classes") == "5", str(summary27))
+    check("census summary shapes",
+          summary27.get("entry_shape_trailing_slash") == "2", str(summary27))
+    # 缺省输出目录约定：<jar>.census（报告字段是 tsv 文件路径，取其目录比对）。
+    report27b = mjt.class_census(p27)
+    check("census default outdir",
+          os.path.dirname(report27b["class_census"]) == p27 + ".census"
+          and os.path.isfile(report27b["class_census"]), str(report27b))
+    with open(report27b["class_census"], "rb") as f27c:
+        bytes27c = f27c.read()
+    with open(report27["class_census"], "rb") as f27d:
+        check("census deterministic", bytes27c == f27d.read(), "byte mismatch")
+    try:
+        mjt.class_census(os.path.join(tmp, "mjt_pysdk_census_missing.jar"))
+        check("census missing jar throws", False, "no exception")
+    except RuntimeError as e:
+        check("census missing jar throws", "jar not found" in str(e), str(e))
 
     if fallback_tmp is not None:
         import shutil
