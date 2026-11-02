@@ -195,10 +195,10 @@ TEST(MjtAnalysisCensusTest, ExportsDeterministicVersionedClassCensusTsv)
     // 版本化表头 + 列序（#39 首期列契约）。
     const auto lines = splitLines(firstBytes);
     ASSERT_GE(lines.size(), 4U);
-    EXPECT_EQ(lines[0], "# class-census v2");
+    EXPECT_EQ(lines[0], "# class-census v3");
     EXPECT_EQ(lines[1],
               "internal_name\tkind\taccess\tparent\tiface_count\tmethod_count"
-              "\tfield_count\tnative_method_count\tbyte_size\tzip_entry");
+              "\tfield_count\tnative_method_count\tbyte_size\tzip_entry\torigin");
 
     // 行序 = internal_name 升序（BINARY 字节序）：census/Alpha < census/Api
     // < census/Color（"Alpha" vs "Api" 在 'l' 0x6C < 'p' 0x70 分出先后）。
@@ -213,7 +213,7 @@ TEST(MjtAnalysisCensusTest, ExportsDeterministicVersionedClassCensusTsv)
         std::istringstream       row(lines[2]);
         std::string              cell;
         while (std::getline(row, cell, '\t')) cells.push_back(cell);
-        ASSERT_EQ(cells.size(), 10U);
+        ASSERT_EQ(cells.size(), 11U);
         EXPECT_EQ(cells[1], "class");
         EXPECT_EQ(cells[2], "public super");
         EXPECT_EQ(cells[3], "java/lang/Object");
@@ -223,6 +223,7 @@ TEST(MjtAnalysisCensusTest, ExportsDeterministicVersionedClassCensusTsv)
         EXPECT_EQ(cells[7], "1");
         EXPECT_GT(std::stoll(cells[8]), 0);
         EXPECT_EQ(cells[9], "regular");
+        EXPECT_EQ(cells[10], "unknown");   // census/* 不落 jdk/known 前缀
     }
     // Api：interface 形态、无父类（空列）、abstract 方法、常规条目。
     {
@@ -230,7 +231,7 @@ TEST(MjtAnalysisCensusTest, ExportsDeterministicVersionedClassCensusTsv)
         std::istringstream       row(lines[3]);
         std::string              cell;
         while (std::getline(row, cell, '\t')) cells.push_back(cell);
-        ASSERT_EQ(cells.size(), 10U);
+        ASSERT_EQ(cells.size(), 11U);
         EXPECT_EQ(cells[1], "interface");
         EXPECT_EQ(cells[2], "public interface abstract");
         EXPECT_EQ(cells[3], "");
@@ -238,6 +239,7 @@ TEST(MjtAnalysisCensusTest, ExportsDeterministicVersionedClassCensusTsv)
         EXPECT_EQ(cells[5], "1");
         EXPECT_EQ(cells[7], "0");
         EXPECT_EQ(cells[9], "regular");
+        EXPECT_EQ(cells[10], "unknown");
     }
     // Color：enum 形态位（jasm enum 修饰 → ACC_ENUM）。
     {
@@ -245,7 +247,7 @@ TEST(MjtAnalysisCensusTest, ExportsDeterministicVersionedClassCensusTsv)
         std::istringstream       row(lines[4]);
         std::string              cell;
         while (std::getline(row, cell, '\t')) cells.push_back(cell);
-        ASSERT_EQ(cells.size(), 10U);
+        ASSERT_EQ(cells.size(), 11U);
         EXPECT_EQ(cells[1], "enum");
         EXPECT_EQ(cells[2], "public final enum");
     }
@@ -317,8 +319,8 @@ TEST(MjtAnalysisCensusTest, TextCellsEscapeWithRenameMappingConvention)
     ASSERT_EQ(lines.size(), 3U);   // 版本行 + 列名行 + 1 数据行
     EXPECT_NE(lines[2].find("weird\\u0009name\\u0001"), std::string::npos);
     EXPECT_NE(lines[2].find("back\\u005Cslash"), std::string::npos);
-    // 表格结构完好：数据行仍为 10 列（9 个制表位）。
-    EXPECT_EQ(std::count(lines[2].begin(), lines[2].end(), '\t'), 9);
+    // 表格结构完好：数据行仍为 11 列（10 个制表位）。
+    EXPECT_EQ(std::count(lines[2].begin(), lines[2].end(), '\t'), 10);
 
     // 补充平面类名（规范形 4 字节 UTF-8，decodeClass 出库形态）：代理对
     // 出码（U+1F600 → \uD83D\uDE00），转义→反转义逐字节闭合，列内仍无
@@ -343,7 +345,7 @@ TEST(MjtAnalysisCensusTest, OversizedCellsFoldToDeterministicIdentityForm)
 {
     // v2 折叠契约：转义后超 kCensusCellFoldBytes 的单元格渲染为
     // #folded:len=<原始字节数>:sha256=<原始字节摘要>——保身份丢字面，
-    // 行结构完好（10 列不动），确定性（两次渲染逐字节一致）。
+    // 行结构完好（11 列不动），确定性（两次渲染逐字节一致）。
     const std::string fatName(5000, 'a');
     const std::string expectedDigest = ca::crypto::sha256_hex(
         ca::core::ByteSlice(reinterpret_cast<const ca::u8*>(fatName.data()), fatName.size()));
@@ -365,7 +367,7 @@ TEST(MjtAnalysisCensusTest, OversizedCellsFoldToDeterministicIdentityForm)
     const auto lines = splitLines(first);
     ASSERT_EQ(lines.size(), 3U);
     EXPECT_NE(lines[2].find(expectedCell), std::string::npos);
-    EXPECT_EQ(std::count(lines[2].begin(), lines[2].end(), '\t'), 9);
+    EXPECT_EQ(std::count(lines[2].begin(), lines[2].end(), '\t'), 10);
 
     // 边界：转义后恰 4096（≤ 阈值）保字面，4097 折叠。ASCII 名转义不变长。
     const std::string edgeKept(4096, 'b');

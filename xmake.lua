@@ -153,10 +153,12 @@ includes("xmake/libca_rules.lua")
 -- 信任级别 meta + recordMaskRuleHits 记账 + mask_evaluator 求值器核心）+
 -- 性能调优（B6：打开面 PRAGMA + refs_source_class 索引 + 按源反查两步走）；
 -- 0.0.11 = census 普查投影（B4：censusClasses/censusContainer 查询面 +
--- entry_shape 形态判定公共面 + class_kind 形态分类）+ mapping \uXXXX 转义
--- 增补平面补全（代理对出码/配对重组）；
--- 本行须待 luiox-repo 追加 0.0.11 词条后方可配置。
-add_requires("mjbase 0.0.12")
+-- 0.0.12 = entry_shape 补 Overlong/WhitespaceEdge 两 facet + mapping 转义
+-- 增补平面补全（#136）；census 超长单元格折叠随 #50 消费。
+-- 0.0.13 = 按源成员引用切片替换（G1）+ 库前缀分类核心（L1）+ 引用与层次
+-- 闭包分页变体（G4）+ censusClasses origin 派生列（#139/#140/#141/#142）；
+-- 本行须待 luiox-repo 追加对应词条后方可配置。
+add_requires("mjbase 0.0.13")
 
 includes("test_helper")
 includes("mjt")

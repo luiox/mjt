@@ -37,7 +37,8 @@ namespace mjt::workspace {
 
 /// @brief class_census.tsv schema 版本（表头首行外显 `# class-census v<N>`）。
 ///        v2 = 超长单元格折叠（#folded 确定形，见文件头契约）。
-inline constexpr ca::u32 kClassCensusSchemaVersion = 2;
+///        v3 = 末列追加 origin（jdk/known/unknown，mjbase library_origin）。
+inline constexpr ca::u32 kClassCensusSchemaVersion = 3;
 
 /// @brief container_census.tsv schema 版本（`# container-census v<N>`）。
 ///        v2 与 class 面同步引入折叠。

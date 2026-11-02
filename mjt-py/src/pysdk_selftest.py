@@ -1039,9 +1039,9 @@ def run_all():
           and os.path.isfile(report27["container_census"]), str(report27))
     with open(report27["class_census"], "r", encoding="utf-8", newline="") as f27:
         rows27 = f27.read().splitlines()
-    check("census header", rows27[0] == "# class-census v2", rows27[0])
-    check("census rows", len(rows27) == 7 and rows27[2].startswith("me/demo/Api\tinterface"),
-          str(rows27[:3]))
+    check("census header", rows27[0] == "# class-census v3", rows27[0])
+    check("census rows", len(rows27) == 7 and rows27[2].startswith("me/demo/Api\tinterface")
+          and rows27[2].endswith("\tunknown"), str(rows27[:3]))
     with open(report27["container_census"], "r", encoding="utf-8", newline="") as f27b:
         summary27 = dict(line.split("\t", 1) for line in f27b.read().splitlines()[2:])
     check("census summary classes", summary27.get("classes") == "5", str(summary27))

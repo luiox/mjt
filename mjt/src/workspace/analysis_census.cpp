@@ -128,7 +128,8 @@ std::string renderClassCensusTsv(const std::vector<DbClassCensusRow>& rows)
     // 表头：版本行 + 列名行（列序变更递增 kClassCensusSchemaVersion）。
     std::string out = "# class-census v" + std::to_string(kClassCensusSchemaVersion) + "\n"
                       "internal_name\tkind\taccess\tparent\tiface_count\tmethod_count"
-                      "\tfield_count\tnative_method_count\tbyte_size\tzip_entry\n";
+                      "\tfield_count\tnative_method_count\tbyte_size\tzip_entry"
+                      "\torigin\n";
     for (const DbClassCensusRow& row : rows) {
         out += censusCell(row.internalName.ref());
         out += '\t';
@@ -149,6 +150,10 @@ std::string renderClassCensusTsv(const std::vector<DbClassCensusRow>& rows)
         out += std::to_string(row.byteSize);
         out += '\t';
         out += zipEntryCell(row.entryRegular);
+        out += '\t';
+        // origin（v3 列）：前缀分类派生来源（mjbase library_origin，规则版本
+        // kLibraryOriginRuleVersion），token = jdk/known/unknown。
+        out += mjbase::project::libraryOriginName(row.origin);
         out += '\n';
     }
     return out;

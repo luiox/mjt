@@ -1392,11 +1392,11 @@ TEST(FacadeCensus, ExportsVersionedDeterministicTables)
 
     const auto classTsv = readFileBytes(report.classCensusFile);
     const std::string classText(classTsv.begin(), classTsv.end());
-    // 版本化表头 + 列名行（schema v1 契约；LF 行尾、无 BOM）。
-    EXPECT_EQ(classText.substr(0, classText.find('\n') + 1), "# class-census v2\n");
+    // 版本化表头 + 列名行（schema v3 契约；LF 行尾、无 BOM）。
+    EXPECT_EQ(classText.substr(0, classText.find('\n') + 1), "# class-census v3\n");
     EXPECT_NE(classText.find("internal_name\tkind\taccess\tparent\tiface_count"
                              "\tmethod_count\tfield_count\tnative_method_count"
-                             "\tbyte_size\tzip_entry\n"),
+                             "\tbyte_size\tzip_entry\torigin\n"),
               std::string::npos);
 
     // 一行一类、行序 = internal_name BINARY 升序（"Api" < "App"：'i' < 'p'）。
@@ -1416,10 +1416,11 @@ TEST(FacadeCensus, ExportsVersionedDeterministicTables)
         "me/demo/Api", "me/demo/App", "me/demo/Color", "me/demo/Crypto", "me/demo/Util"};
     for (std::size_t i = 0; i < expectedNames.size(); ++i) {
         const auto fields = splitTabs(lines[i + 2]);
-        ASSERT_EQ(fields.size(), 10U) << lines[i + 2];
+        ASSERT_EQ(fields.size(), 11U) << lines[i + 2];
         EXPECT_EQ(fields[0], expectedNames[i]) << lines[i + 2];
         EXPECT_GT(fields[8].size(), 0U) << lines[i + 2];   // byte_size 非空
         EXPECT_EQ(fields[9], "regular") << lines[i + 2];   // 合成罐无伪装条目
+        EXPECT_EQ(fields[10], "unknown") << lines[i + 2];  // me/demo 不落前缀
     }
     // 接口行全列（Api：PUBLIC|INTERFACE|ABSTRACT → 位序命名；1 抽象方法）。
     const auto apiFields = splitTabs(lines[2]);
