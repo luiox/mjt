@@ -158,8 +158,11 @@ includes("xmake/libca_rules.lua")
 -- 0.0.10 = analysis-db 出口遮蔽层（B2：suspect 扫描 + mask_rules 表 +
 -- 信任级别 meta + recordMaskRuleHits 记账 + mask_evaluator 求值器核心）+
 -- 性能调优（B6：打开面 PRAGMA + refs_source_class 索引 + 按源反查两步走）；
--- 本行须待 luiox-repo 追加 0.0.10 词条后方可配置。
-add_requires("mjbase 0.0.10")
+-- 0.0.11 = census 普查投影（B4：censusClasses/censusContainer 查询面 +
+-- entry_shape 形态判定公共面 + class_kind 形态分类）+ mapping \uXXXX 转义
+-- 增补平面补全（代理对出码/配对重组）；
+-- 本行须待 luiox-repo 追加 0.0.11 词条后方可配置。
+add_requires("mjbase 0.0.11")
 
 includes("test_helper")
 includes("mjt")
