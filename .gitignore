@@ -35,7 +35,10 @@ compile_commands.json
 /test/*
 !/test/**/.gitkeep
 /mbase/test/*
-/mjt/test/
+# /mjt/test/ 整目录忽略只挡测试产物（getTempOutPath → mjt/test/tmp/）；
+# workspace 单测源码（mjt_workspace_unittest 的 add_files 目录）随仓走。
+/mjt/test/*
+!/mjt/test/workspace/
 /libs/libjdk_finder/test/
 
 ### Temp files ###
