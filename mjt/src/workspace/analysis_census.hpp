@@ -7,12 +7,16 @@
 /// 形态）在 mjbase（entry_shape / class_kind）。
 ///
 /// 确定性契约（#39 设计要点 2，B4 验收）：
-/// - 表头与列序版本化（schema v1，列集/列序变更递增版本行）；
+/// - 表头与列序版本化（列集/列序/值渲染规则变更递增版本行）；
 /// - 行序 = 库序（censusClasses 的 internal_name BINARY 升序；汇总面按
 ///   固定 metric 序 + 分布列稳定序）；
 /// - 文本列统一 `mjbase::mapping::IdentifierUtil::escapeUnicode` 转义
 ///   （\uXXXX 大写，与 rename mapping 格式同一套转义，全链路不做两套），
 ///   转义后不含制表/换行/空白，天然 TSV 安全；
+/// - 超长单元格折叠（v2 起）：转义后超 kCensusCellFoldBytes 的单元格
+///   渲染为 `#folded:len=<原始字节数>:sha256=<原始字节摘要>` 确定形。
+///   空格名混淆 jar 实测 21845 字节名转义成 131KB 单行，diff 基线不可用；
+///   折叠形保身份（len + 原始字节 SHA-256）丢字面，全名仍在库内事实层。
 /// - 字节面：UTF-8 无 BOM、LF 行尾、binary 写出（无 CRT 文本模式翻译），
 ///   不含时间戳——同输入两次导出逐字节一致。
 ///
@@ -32,10 +36,16 @@
 namespace mjt::workspace {
 
 /// @brief class_census.tsv schema 版本（表头首行外显 `# class-census v<N>`）。
-inline constexpr ca::u32 kClassCensusSchemaVersion = 1;
+///        v2 = 超长单元格折叠（#folded 确定形，见文件头契约）。
+inline constexpr ca::u32 kClassCensusSchemaVersion = 2;
 
 /// @brief container_census.tsv schema 版本（`# container-census v<N>`）。
-inline constexpr ca::u32 kContainerCensusSchemaVersion = 1;
+///        v2 与 class 面同步引入折叠。
+inline constexpr ca::u32 kContainerCensusSchemaVersion = 2;
+
+/// @brief 单元格折叠阈值：转义后字节数超过此值的单元格渲染为
+///        `#folded:len=<原始字节数>:sha256=<原始字节摘要>`。
+inline constexpr ca::usize kCensusCellFoldBytes = 4096;
 
 /// @brief census 导出失败来源。
 enum class CensusExportErrorKind : ca::u8

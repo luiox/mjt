@@ -1393,7 +1393,7 @@ TEST(FacadeCensus, ExportsVersionedDeterministicTables)
     const auto classTsv = readFileBytes(report.classCensusFile);
     const std::string classText(classTsv.begin(), classTsv.end());
     // 版本化表头 + 列名行（schema v1 契约；LF 行尾、无 BOM）。
-    EXPECT_EQ(classText.substr(0, classText.find('\n') + 1), "# class-census v1\n");
+    EXPECT_EQ(classText.substr(0, classText.find('\n') + 1), "# class-census v2\n");
     EXPECT_NE(classText.find("internal_name\tkind\taccess\tparent\tiface_count"
                              "\tmethod_count\tfield_count\tnative_method_count"
                              "\tbyte_size\tzip_entry\n"),
@@ -1435,7 +1435,7 @@ TEST(FacadeCensus, ExportsVersionedDeterministicTables)
     // 事实面计数，数字与报告一致。
     const auto containerTsv = readFileBytes(report.containerCensusFile);
     const std::string containerText(containerTsv.begin(), containerTsv.end());
-    EXPECT_NE(containerText.find("# container-census v1\n"), std::string::npos);
+    EXPECT_NE(containerText.find("# container-census v2\n"), std::string::npos);
     EXPECT_NE(containerText.find("entries_active\t7\n"), std::string::npos);
     EXPECT_NE(containerText.find("entries_regular\t5\n"), std::string::npos);
     EXPECT_NE(containerText.find("entries_irregular\t2\n"), std::string::npos);

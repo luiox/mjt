@@ -6,6 +6,7 @@
 #include <fstream>
 #include <utility>
 
+#include "libca/crypto/sha256.hpp"
 #include "mjbase/mapping/identifier_util.hpp"
 #include "workspace_types.hpp"
 
@@ -44,6 +45,21 @@ CensusExportError ioError(std::string message)
 std::string escapeCell(const ca::str::Utf8StringRef& value)
 {
     return mjbase::mapping::IdentifierUtil::escapeUnicode(value).to_std_string();
+}
+
+/// @brief 文本列渲染出口：转义 + 超长折叠（v2 契约，见 analysis_census.hpp）。
+///
+/// 转义后超 kCensusCellFoldBytes 的单元格渲染为
+/// `#folded:len=<原始字节数>:sha256=<原始字节 SHA-256>` 确定形——保身份
+/// 丢字面，全名仍在库内事实层；len/摘要对原始字节计算，与 entries.sha256
+/// 的内容锚约定一致。
+std::string censusCell(const ca::str::Utf8StringRef& value)
+{
+    const std::string escaped = escapeCell(value);
+    if (escaped.size() <= kCensusCellFoldBytes) return escaped;
+    const std::string digest =
+        ca::crypto::sha256_hex(ca::core::ByteSlice(value.data(), value.byte_length()));
+    return "#folded:len=" + std::to_string(value.byte_length()) + ":sha256=" + digest;
 }
 
 /// @brief class 级 access 旗标摘要：JVMS 位序命名（bit 升序，序恒定），
@@ -114,13 +130,13 @@ std::string renderClassCensusTsv(const std::vector<DbClassCensusRow>& rows)
                       "internal_name\tkind\taccess\tparent\tiface_count\tmethod_count"
                       "\tfield_count\tnative_method_count\tbyte_size\tzip_entry\n";
     for (const DbClassCensusRow& row : rows) {
-        out += escapeCell(row.internalName.ref());
+        out += censusCell(row.internalName.ref());
         out += '\t';
         out += mjbase::project::classKindName(row.kind);
         out += '\t';
         out += renderAccessFlags(row.access);
         out += '\t';
-        out += escapeCell(row.superName.ref());
+        out += censusCell(row.superName.ref());
         out += '\t';
         out += std::to_string(row.ifaceCount);
         out += '\t';
@@ -151,9 +167,9 @@ std::string renderContainerCensusTsv(const DbContainerCensus& summary)
     };
 
     // 容器身份。
-    emit("input_path", escapeCell(summary.path.ref()));
+    emit("input_path", censusCell(summary.path.ref()));
     emit("input_size", std::to_string(summary.size));
-    emit("input_sha256", escapeCell(summary.sha256.ref()));
+    emit("input_sha256", censusCell(summary.sha256.ref()));
     // 条目面（活跃/墓碑、形态二分）。
     emit("entries_active", std::to_string(summary.entriesActive));
     emit("entries_tombstoned", std::to_string(summary.entriesTombstoned));

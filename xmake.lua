@@ -156,7 +156,7 @@ includes("xmake/libca_rules.lua")
 -- entry_shape 形态判定公共面 + class_kind 形态分类）+ mapping \uXXXX 转义
 -- 增补平面补全（代理对出码/配对重组）；
 -- 本行须待 luiox-repo 追加 0.0.11 词条后方可配置。
-add_requires("mjbase 0.0.11")
+add_requires("mjbase 0.0.12")
 
 includes("test_helper")
 includes("mjt")

@@ -15,6 +15,7 @@
 
 #include "workspace/analysis_census.hpp"
 #include "workspace/analysis_ingest.hpp"
+#include "libca/crypto/sha256.hpp"
 #include "mjbase/jasm/jvm_jasm_service.hpp"
 #include "mjbase/mapping/identifier_util.hpp"
 #include "mjbase/model/resource_container.hpp"
@@ -194,7 +195,7 @@ TEST(MjtAnalysisCensusTest, ExportsDeterministicVersionedClassCensusTsv)
     // 版本化表头 + 列序（#39 首期列契约）。
     const auto lines = splitLines(firstBytes);
     ASSERT_GE(lines.size(), 4U);
-    EXPECT_EQ(lines[0], "# class-census v1");
+    EXPECT_EQ(lines[0], "# class-census v2");
     EXPECT_EQ(lines[1],
               "internal_name\tkind\taccess\tparent\tiface_count\tmethod_count"
               "\tfield_count\tnative_method_count\tbyte_size\tzip_entry");
@@ -262,7 +263,7 @@ TEST(MjtAnalysisCensusTest, ContainerSummaryReflectsEntryShapeAndFacts)
 
     const auto lines = splitLines(rendered.containerCensusTsv);
     ASSERT_GE(lines.size(), 3U);
-    EXPECT_EQ(lines[0], "# container-census v1");
+    EXPECT_EQ(lines[0], "# container-census v2");
     EXPECT_EQ(lines[1], "metric\tvalue");
 
     // 条目面：5 条真实条目（3 class + 2 resource）+ jar 写入器为逐级路径
@@ -336,6 +337,55 @@ TEST(MjtAnalysisCensusTest, TextCellsEscapeWithRenameMappingConvention)
                 reinterpret_cast<const ca::u8*>("emo\xF0\x9F\x98\x80ji"), 9))
             .to_std_string());
     EXPECT_EQ(roundtrip, "emo\xF0\x9F\x98\x80ji");
+}
+
+TEST(MjtAnalysisCensusTest, OversizedCellsFoldToDeterministicIdentityForm)
+{
+    // v2 折叠契约：转义后超 kCensusCellFoldBytes 的单元格渲染为
+    // #folded:len=<原始字节数>:sha256=<原始字节摘要>——保身份丢字面，
+    // 行结构完好（10 列不动），确定性（两次渲染逐字节一致）。
+    const std::string fatName(5000, 'a');
+    const std::string expectedDigest = ca::crypto::sha256_hex(
+        ca::core::ByteSlice(reinterpret_cast<const ca::u8*>(fatName.data()), fatName.size()));
+    const std::string expectedCell =
+        "#folded:len=5000:sha256=" + expectedDigest;
+
+    std::vector<mjbase::project::DbClassCensusRow> rows;
+    mjbase::project::DbClassCensusRow fat;
+    fat.internalName = Utf8String::from_data_unchecked(
+        reinterpret_cast<const ca::u8*>(fatName.data()), fatName.size());
+    fat.superName = Utf8String::from_data_unchecked(
+        reinterpret_cast<const ca::u8*>("java/lang/Object"), 16);
+    fat.kind = mjbase::project::DbClassKind::Class;
+    rows.push_back(std::move(fat));
+
+    const auto first  = renderClassCensusTsv(rows);
+    const auto second = renderClassCensusTsv(rows);
+    EXPECT_EQ(first, second);
+    const auto lines = splitLines(first);
+    ASSERT_EQ(lines.size(), 3U);
+    EXPECT_NE(lines[2].find(expectedCell), std::string::npos);
+    EXPECT_EQ(std::count(lines[2].begin(), lines[2].end(), '\t'), 9);
+
+    // 边界：转义后恰 4096（≤ 阈值）保字面，4097 折叠。ASCII 名转义不变长。
+    const std::string edgeKept(4096, 'b');
+    const std::string edgeFolded(4097, 'b');
+    std::vector<mjbase::project::DbClassCensusRow> keptRows;
+    mjbase::project::DbClassCensusRow kept;
+    kept.internalName = Utf8String::from_data_unchecked(
+        reinterpret_cast<const ca::u8*>(edgeKept.data()), edgeKept.size());
+    kept.kind = mjbase::project::DbClassKind::Class;
+    keptRows.push_back(std::move(kept));
+    EXPECT_NE(renderClassCensusTsv(keptRows).find(edgeKept), std::string::npos);
+    std::vector<mjbase::project::DbClassCensusRow> foldedRows;
+    mjbase::project::DbClassCensusRow folded;
+    folded.internalName = Utf8String::from_data_unchecked(
+        reinterpret_cast<const ca::u8*>(edgeFolded.data()), edgeFolded.size());
+    folded.kind = mjbase::project::DbClassKind::Class;
+    foldedRows.push_back(std::move(folded));
+    const auto foldedOut = renderClassCensusTsv(foldedRows);
+    EXPECT_EQ(foldedOut.find(edgeFolded), std::string::npos);
+    EXPECT_NE(foldedOut.find("#folded:len=4097:sha256="), std::string::npos);
 }
 
 TEST(MjtAnalysisCensusTest, UnregisteredInputFailsInvalid)
