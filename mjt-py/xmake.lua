@@ -20,7 +20,10 @@ if has_config("with_pysdk") then
     --（十六进制）会被 C++ 编译器当转义序列吃掉（CI 的 hostedtoolcache
     --Python\3.14.9\x64 实证）。Windows API 对正斜杠路径同接受。
     pyHome = pyHome:gsub("\\", "/")
-    local pybind11Root = os.getenv("MORPHER_PYBIND11_ROOT") or "D:/sdk/cpp/pybind11-3.1.0"
+    local pybind11Root = get_config("pybind11_root")
+    if pybind11Root == nil or pybind11Root == "" then
+        pybind11Root = os.getenv("MORPHER_PYBIND11_ROOT") or "D:/sdk/cpp/pybind11-3.1.0"
+    end
     -- mjt shared 反编译执行器（shared/decompiler.hpp 的 include 根）。
     local mjtSharedSrc = path.join(os.scriptdir(), "..", "mjt", "src")
 

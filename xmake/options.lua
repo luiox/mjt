@@ -15,7 +15,8 @@ option("with_tests")
     set_description("Enable the mjt_mcp_unittest target (pulls gtest via xrepo).")
 
 -- 启用 mjt-py 组件（mjt.pyd + 嵌入解释器静态库 + 组件测试）。Python 环境经
--- --python_home=y 或 MJT_PYTHON_HOME 提供；pybind11 经 MORPHER_PYBIND11_ROOT。
+-- --python_home=y 或 MJT_PYTHON_HOME 提供；pybind11 经 --pybind11_root=y 或
+-- MORPHER_PYBIND11_ROOT。
 option("with_pysdk")
     set_default(false)
     set_showmenu(true)
@@ -25,6 +26,11 @@ option("python_home")
     set_default("")
     set_showmenu(true)
     set_description("Python 3.14 home for mjt-py (fallback env: MJT_PYTHON_HOME).")
+
+option("pybind11_root")
+    set_default("")
+    set_showmenu(true)
+    set_description("pybind11 root for mjt-py (fallback env: MORPHER_PYBIND11_ROOT).")
 
 
 -- AddressSanitizer。MSVC 下 /fsanitize=address 会改变 STL 的 ABI
