@@ -164,7 +164,8 @@ int main(int argc, char** argv)
                                        utf8Ref(containerHasher.get_hash()),
                                        static_cast<ca::i64>(canonicalSize));
     if (inputId.is_err()) die("ensureInput failed");
-    auto entryStats = db.ingestEntries(inputId.unwrap(), std::move(entryInputs));
+    // batchId=0 = 无批写入（基准是即弃计时运行，不入 producer 注册表审计面）。
+    auto entryStats = db.ingestEntries(0, inputId.unwrap(), std::move(entryInputs));
     if (entryStats.is_err()) die("ingestEntries failed");
     const double ingestEntryMs = ingestEntryWatch.ms();
     const auto   entryCounts   = entryStats.unwrap();
@@ -222,7 +223,7 @@ int main(int argc, char** argv)
     const double classScanMs = classScanWatch.ms();
 
     Stopwatch ingestClassWatch;
-    auto      classIngest = db.ingestClasses(std::move(classes));
+    auto      classIngest = db.ingestClasses(0, std::move(classes));
     if (classIngest.is_err()) {
         die("ingestClasses failed: " +
             std::move(classIngest).unwrap_err().message.to_std_string());
@@ -288,7 +289,7 @@ int main(int argc, char** argv)
     const ca::usize    refCount   = records.size();
 
     Stopwatch ingestRefWatch;
-    if (db.replaceReferences(std::move(records)).is_err()) die("replaceReferences failed");
+    if (db.replaceReferences(0, std::move(records)).is_err()) die("replaceReferences failed");
     const double ingestRefMs = ingestRefWatch.ms();
 
     //-- 报告：导入相 -------------------------------------------------------

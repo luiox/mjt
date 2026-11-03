@@ -7,6 +7,10 @@ target("mjt_shared")
         add_cxflags("/utf-8", {tools = "cl"})
     end
 
+    -- 工具版本宏（producer 注册表 toolFingerprint 自报用；版本字面量单源在
+    -- 根 xmake.lua 的 MJT_VERSION，与 set_version 同一字面量）。
+    add_defines('MJT_VERSION="' .. MJT_VERSION .. '"')
+
     add_packages("mjbase", {public = true})
     add_packages("libjhasm")
 

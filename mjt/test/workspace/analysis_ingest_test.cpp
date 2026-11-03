@@ -370,4 +370,138 @@ TEST(MjAnalysisIngestTest, FlagsIrregularEntryPathsAsNonRegular)
     ASSERT_TRUE(db.save().is_ok());
 }
 
+TEST(MjAnalysisIngestTest, LandsProducerRegistryAndBatchOwnership)
+{
+    // 注册表接线（#143 §3.6 批 4）：导入桥自报 trusted 身份、一次导入一个
+    // full_import 批、计数与 AnalysisIngestStats 对账、作用域锚
+    // （refs_all + input + 逐类）与归属解析（classOwnership /
+    // refSliceOwnership）落到整库批；二次导入出新批、注册幂等。
+    const auto jarPath = writeFixtureJar();
+    const auto dbPath  = freshDbPath();
+
+    WorkspaceBase workspace;
+    ASSERT_TRUE(
+        workspace.openJar(ca::str::Utf8StringRef::from_string_view(jarPath.string())).is_ok());
+
+    auto db    = openOrDie(dbPath);
+    auto stats = ingestIntoAnalysisDb(workspace, db);
+    ASSERT_TRUE(stats.is_ok());
+    const auto first = std::move(stats).unwrap();
+
+    // producers 非空：唯一一行 = 导入桥身份（trusted，指纹 mjt 前缀）。
+    auto producersListed = db.listProducers();
+    ASSERT_TRUE(producersListed.is_ok());
+    auto producers = std::move(producersListed).unwrap();
+    ASSERT_EQ(1U, producers.size());
+    EXPECT_EQ("mjt.workspace.ingest", producers[0].key.to_std_string());
+    EXPECT_EQ("mjt workspace ingest", producers[0].name.to_std_string());
+    EXPECT_EQ(0, producers[0].toolFingerprint.to_std_string().rfind("mjt ", 0));
+    EXPECT_EQ(mjbase::project::DbProducerTrustLevel::Trusted, producers[0].trustLevel);
+    EXPECT_FALSE(producers[0].createdAt.to_std_string().empty());
+
+    // batches 非空：一个已收尾的 full_import 批，note 自报源容器路径。
+    auto batchesListed = db.listBatches(std::nullopt);
+    ASSERT_TRUE(batchesListed.is_ok());
+    auto batches = std::move(batchesListed).unwrap();
+    ASSERT_EQ(1U, batches.size());
+    EXPECT_EQ(producers[0].producerId, batches[0].producerId);
+    EXPECT_EQ("mjt.workspace.ingest", batches[0].producerKey.to_std_string());
+    EXPECT_EQ(mjbase::project::DbBatchKind::FullImport, batches[0].kind);
+    EXPECT_FALSE(batches[0].finishedAt.to_std_string().empty());
+    EXPECT_EQ(jarPath.string(), batches[0].note.to_std_string());
+    EXPECT_FALSE(batches[0].startedAt.to_std_string().empty());
+
+    // 计数与 AnalysisIngestStats 对账（同一导入运行的两侧账本）。
+    EXPECT_EQ(static_cast<ca::i64>(first.classes), batches[0].classCount);
+    EXPECT_EQ(static_cast<ca::i64>(first.entries), batches[0].entryCount);
+    EXPECT_EQ(static_cast<ca::i64>(first.members), batches[0].memberCount);
+    EXPECT_EQ(static_cast<ca::i64>(first.references), batches[0].refCount);
+
+    // 作用域锚：refs_all (0,0) + input (1,input_id) + 逐类 (2,class_id)×3。
+    auto inputsListed = db.listInputs();
+    ASSERT_TRUE(inputsListed.is_ok());
+    auto inputs = std::move(inputsListed).unwrap();
+    ASSERT_EQ(1U, inputs.size());
+    const ca::i64 inputId = inputs[0].inputId;
+
+    auto scopesListed = db.batchScopes(batches[0].batchId);
+    ASSERT_TRUE(scopesListed.is_ok());
+    auto scopes = std::move(scopesListed).unwrap();
+    ASSERT_EQ(5U, scopes.size());
+    EXPECT_EQ(mjbase::project::DbBatchScopeKind::RefsAll, scopes[0].kind);
+    EXPECT_EQ(0, scopes[0].scopeId);
+    EXPECT_EQ(mjbase::project::DbBatchScopeKind::Input, scopes[1].kind);
+    EXPECT_EQ(inputId, scopes[1].scopeId);
+    for (ca::usize index = 2; index < scopes.size(); ++index) {
+        EXPECT_EQ(mjbase::project::DbBatchScopeKind::Class, scopes[index].kind);
+        EXPECT_GT(scopes[index].scopeId, 0);
+    }
+
+    // 类事实归属解析：逐类作用域行让 classOwnership 可答（整库批）。
+    auto subject = db.findClass(ca::str::Utf8StringRef::from_cstr("workspace/Subject"));
+    ASSERT_TRUE(subject.is_ok());
+    auto subjectInfo = std::move(subject).unwrap();
+    ASSERT_TRUE(subjectInfo.has_value());
+    auto classOwned = db.classOwnership(subjectInfo->classId);
+    ASSERT_TRUE(classOwned.is_ok());
+    auto classOwnership = std::move(classOwned).unwrap();
+    ASSERT_TRUE(classOwnership.has_value());
+    EXPECT_EQ(batches[0].batchId, classOwnership->batchId);
+    EXPECT_EQ("mjt.workspace.ingest", classOwnership->producerKey.to_std_string());
+    EXPECT_EQ(mjbase::project::DbBatchKind::FullImport, classOwnership->kind);
+
+    // 引用切片归属解析：refs_all 锚覆盖全部成员切片（#147 教训：成员身份
+    // 来自导入桥的 ingestClasses，先有成员才有切片可查）。
+    auto member = db.findMember(mjbase::project::DbMemberKind::Method,
+                                ca::str::Utf8StringRef::from_cstr("workspace/Subject"),
+                                ca::str::Utf8StringRef::from_cstr("value"),
+                                ca::str::Utf8StringRef::from_cstr("()I"));
+    ASSERT_TRUE(member.is_ok());
+    auto memberInfo = std::move(member).unwrap();
+    ASSERT_TRUE(memberInfo.has_value());
+    auto sliceOwned = db.refSliceOwnership(mjbase::project::DbMemberKind::Method,
+                                           memberInfo->memberId);
+    ASSERT_TRUE(sliceOwned.is_ok());
+    auto sliceOwnership = std::move(sliceOwned).unwrap();
+    ASSERT_TRUE(sliceOwnership.has_value());
+    EXPECT_EQ(batches[0].batchId, sliceOwnership->batchId);
+    EXPECT_EQ("mjt.workspace.ingest", sliceOwnership->producerKey.to_std_string());
+
+    // 二次导入：第二个批（计数同量），producer 注册幂等仍一行。
+    auto again = ingestIntoAnalysisDb(workspace, db);
+    ASSERT_TRUE(again.is_ok());
+    const auto second = std::move(again).unwrap();
+    EXPECT_EQ(first.classes, second.classes);
+    EXPECT_EQ(0U, second.createdEntries);
+
+    auto batchesAgainListed = db.listBatches(std::nullopt);
+    ASSERT_TRUE(batchesAgainListed.is_ok());
+    auto batchesAgain = std::move(batchesAgainListed).unwrap();
+    ASSERT_EQ(2U, batchesAgain.size());
+    EXPECT_NE(batchesAgain[0].batchId, batchesAgain[1].batchId);
+    EXPECT_EQ(batches[0].batchId, batchesAgain[0].batchId);
+    EXPECT_EQ(mjbase::project::DbBatchKind::FullImport, batchesAgain[1].kind);
+    EXPECT_FALSE(batchesAgain[1].finishedAt.to_std_string().empty());
+    EXPECT_EQ(static_cast<ca::i64>(second.entries), batchesAgain[1].entryCount);
+
+    auto producersAgainListed = db.listProducers();
+    ASSERT_TRUE(producersAgainListed.is_ok());
+    EXPECT_EQ(1U, std::move(producersAgainListed).unwrap().size());
+
+    // 生产者聚合统计：两批求和（批次数与各计数）。
+    auto statsListed = db.producerStats();
+    ASSERT_TRUE(statsListed.is_ok());
+    auto producerStats = std::move(statsListed).unwrap();
+    ASSERT_EQ(1U, producerStats.size());
+    EXPECT_EQ(2, producerStats[0].batchCount);
+    EXPECT_EQ(static_cast<ca::i64>(first.classes + second.classes),
+              producerStats[0].classCount);
+    EXPECT_EQ(static_cast<ca::i64>(first.references + second.references),
+              producerStats[0].refCount);
+    EXPECT_FALSE(producerStats[0].firstBatchAt.to_std_string().empty());
+    EXPECT_FALSE(producerStats[0].lastBatchAt.to_std_string().empty());
+
+    ASSERT_TRUE(db.save().is_ok());
+}
+
 }   // namespace mjt::workspace

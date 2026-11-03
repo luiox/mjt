@@ -16,6 +16,19 @@ namespace {
 
 using ca::str::Utf8String;
 
+/// @brief 整库导入桥的注册身份（#143 §3.6）：稳定 key 幂等注册，trusted
+///        档（产品内置管线）。
+constexpr const char* kIngestProducerKey  = "mjt.workspace.ingest";
+constexpr const char* kIngestProducerName = "mjt workspace ingest";
+
+#if defined(MJT_VERSION)
+/// @brief 自报工具指纹（工具名 + 语义版本；版本字面量单源根 xmake.lua 的
+///        MJT_VERSION，与 set_version 同源）。
+constexpr const char* kIngestToolFingerprint = "mjt " MJT_VERSION;
+#else
+constexpr const char* kIngestToolFingerprint = "mjt";
+#endif
+
 Utf8String utf8(const std::string& value)
 {
     return Utf8String::from_data_unchecked(reinterpret_cast<const ca::u8*>(value.data()),
@@ -66,6 +79,28 @@ Utf8String entryKind(const std::string& type)
 ca::Result<AnalysisIngestStats, AnalysisIngestError> ingestIntoAnalysisDb(
     const WorkspaceBase& workspace, mjbase::project::AnalysisDb& db)
 {
+    //-- producer 注册表身份（#143 §3.6：导入桥自报 trusted 身份，key 幂等） --
+
+    mjbase::project::DbProducerInput producer;
+    producer.key             = Utf8String::from_cstr(kIngestProducerKey);
+    producer.name            = Utf8String::from_cstr(kIngestProducerName);
+    producer.toolFingerprint = Utf8String::from_cstr(kIngestToolFingerprint);
+    producer.trustLevel      = mjbase::project::DbProducerTrustLevel::Trusted;
+    auto producerId          = db.registerProducer(producer);
+    if (producerId.is_err()) {
+        return ca::core::Err(databaseError(std::move(producerId).unwrap_err()));
+    }
+
+    //-- 批次开启（一次导入一个 full_import 批；中途失败留残批不 close——
+    //    finished_at 空串是合法审计状态，与设计稿「批次与事务的关系」一致） --
+
+    auto batch = db.openBatch(producerId.unwrap(), mjbase::project::DbBatchKind::FullImport,
+                              workspace.sourcePath().ref());
+    if (batch.is_err()) {
+        return ca::core::Err(databaseError(std::move(batch).unwrap_err()));
+    }
+    const ca::i64 batchId = batch.unwrap();
+
     //-- 条目身份：容器面遍历 + 内容锚 + 输入/条目登记 ------------------------
 
     auto resources = workspace.listResources(true);
@@ -120,7 +155,7 @@ ca::Result<AnalysisIngestStats, AnalysisIngestError> ingestIntoAnalysisDb(
     }
     const ca::i64 primaryInputId = inputId.unwrap();
 
-    auto entryStats = db.ingestEntries(primaryInputId, std::move(entryInputs));
+    auto entryStats = db.ingestEntries(batchId, primaryInputId, std::move(entryInputs));
     if (entryStats.is_err()) {
         return ca::core::Err(databaseError(std::move(entryStats).unwrap_err()));
     }
@@ -192,7 +227,7 @@ ca::Result<AnalysisIngestStats, AnalysisIngestError> ingestIntoAnalysisDb(
     stats.tombstonedEntries = entryCounts.tombstoned;
     for (const mjbase::project::DbClassInput& input : classes) stats.members += input.members.size();
 
-    auto ingested = db.ingestClasses(std::move(classes));
+    auto ingested = db.ingestClasses(batchId, std::move(classes));
     if (ingested.is_err()) {
         return ca::core::Err(databaseError(std::move(ingested).unwrap_err()));
     }
@@ -254,9 +289,21 @@ ca::Result<AnalysisIngestStats, AnalysisIngestError> ingestIntoAnalysisDb(
     }
 
     stats.references = records.size();
-    auto replaced    = db.replaceReferences(std::move(records));
+    auto replaced    = db.replaceReferences(batchId, std::move(records));
     if (replaced.is_err()) {
         return ca::core::Err(databaseError(std::move(replaced).unwrap_err()));
+    }
+
+    //-- 批次收尾：计数从导入统计回填（注册表不核对，对账由消费方负责） ------
+
+    mjbase::project::DbBatchCounts counts;
+    counts.classCount  = static_cast<ca::i64>(stats.classes);
+    counts.entryCount  = static_cast<ca::i64>(stats.entries);
+    counts.memberCount = static_cast<ca::i64>(stats.members);
+    counts.refCount    = static_cast<ca::i64>(stats.references);
+    auto closed        = db.closeBatch(batchId, counts);
+    if (closed.is_err()) {
+        return ca::core::Err(databaseError(std::move(closed).unwrap_err()));
     }
     return ca::core::Ok(stats);
 }

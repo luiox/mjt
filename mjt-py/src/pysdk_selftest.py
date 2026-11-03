@@ -1028,7 +1028,10 @@ def run_all():
 
     # ── 27. class_census 文件面（#39 S0 量化基线：导出 → 读回 → 确定性） ──
     # jar 只读；数据一律来自分析库投影（临时库即弃）。报告数字与 TSV 行数
-    # 一致，同输入两次导出逐字节一致。
+    # 一致，同输入两次导出逐字节一致。两次导出各走一次整库导入桥（#143 批 4：
+    # 桥内注册 producer 并各开一个 full_import 批，临时即弃库同样落注册表），
+    # 字节级一致即两次独立批次的写入结果可复现；注册表行本身随临时库丢弃，
+    # 归属语义由 workspace 套件的注册表接线用例把门。
     p27, _h27 = fresh("census")
     mjt.close_container(_h27)
     out27 = os.path.join(tmp, "mjt_pysdk_census_out")

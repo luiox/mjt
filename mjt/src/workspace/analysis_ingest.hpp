@@ -14,10 +14,14 @@
 /// - supporting JAR 只作为引用目标出现，其自身 class 与条目均不登记（支持
 ///   库可能包含整个 JDK，不属于工程身份面）。
 ///
-/// 写入顺序：条目身份 → 类事实 → 引用，各步各自单事务；中途失败时前面的
-/// 步已提交，引用仍是旧集合。整库重建可安全重跑：输入按 path 复用
-/// input_id，条目按 (input_id, path, sha256) 匹配——同内容重导入 id 不漂，
-/// 消失条目进墓碑不删行；类身份 upsert 不改 ID，引用是整体替换。
+/// 写入顺序：producer 注册（key=`mjt.workspace.ingest`，trusted，幂等）→
+/// full_import 批开启 → 条目身份 → 类事实 → 引用 → 批次收尾（计数从
+/// AnalysisIngestStats 回填）。批次是逻辑写入运行不是事务：各写入口显式挂
+/// batchId，中途失败留下 finished_at 为空的残批（合法审计状态，不 close）。
+/// 条目身份 → 类事实 → 引用各步各自单事务；中途失败时前面的步已提交，引用
+/// 仍是旧集合。整库重建可安全重跑：输入按 path 复用 input_id，条目按
+/// (input_id, path, sha256) 匹配——同内容重导入 id 不漂，消失条目进墓碑不删
+/// 行；类身份 upsert 不改 ID，引用是整体替换；每次重导入各落一个新批次。
 #pragma once
 
 #include <string>

@@ -1,7 +1,10 @@
 add_rules("plugin.compile_commands.autoupdate", {outputdir = "."})
 
 set_project("mjt")
-set_version("2.3.0")
+-- 工具版本单源：set_version 与 mjt_shared 的 MJT_VERSION 宏（producer 注册表
+-- toolFingerprint 自报，见 workspace/analysis_ingest）共用同一字面量。
+MJT_VERSION = "2.3.0"
+set_version(MJT_VERSION)
 set_xmakever("2.9.3")
 set_allowedplats("windows", "linux", "macosx")
 set_defaultplat("windows")
@@ -160,7 +163,10 @@ includes("xmake/libca_rules.lua")
 -- 本行须待 luiox-repo 追加对应词条后方可配置。
 -- 0.0.14 = refs 目标侧 id 化（schema v5：双可空外键 + 整目标二元化 + 双分支查询，#149，旧 v4 库 fail-loud 拒绝属预期，临时库重导入即可）。
 -- 0.0.15 = member 普查投影面（DbMemberCensusRow + censusMembers(inputId) 复合键行序，#150）。
-add_requires("mjbase 0.0.15")
+-- 0.0.16 = producer 注册表批 1-3（schema v6：producers/batches/batch_scopes +
+-- renames 行级 producer_id，写入口批次参数化，#151；旧 v5 库 fail-loud 属预期，
+-- 临时库重建即愈）。
+add_requires("mjbase 0.0.16")
 
 includes("test_helper")
 includes("mjt")
