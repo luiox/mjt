@@ -158,7 +158,8 @@ includes("xmake/libca_rules.lua")
 -- 0.0.13 = 按源成员引用切片替换（G1）+ 库前缀分类核心（L1）+ 引用与层次
 -- 闭包分页变体（G4）+ censusClasses origin 派生列（#139/#140/#141/#142）；
 -- 本行须待 luiox-repo 追加对应词条后方可配置。
-add_requires("mjbase 0.0.13")
+-- 0.0.14 = refs 目标侧 id 化（schema v5：双可空外键 + 整目标二元化 + 双分支查询，#149，旧 v4 库 fail-loud 拒绝属预期，临时库重导入即可）。
+add_requires("mjbase 0.0.14")
 
 includes("test_helper")
 includes("mjt")

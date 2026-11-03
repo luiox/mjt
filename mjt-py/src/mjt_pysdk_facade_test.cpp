@@ -1101,13 +1101,15 @@ TEST(FacadeContainer, TokenRenameMigratesEntryUriAndManifest)
     EXPECT_NE(std::string(mf.begin(), mf.end()).find("me.demo.Launched"),
               std::string::npos);
     EXPECT_EQ(std::string(mf.begin(), mf.end()).find("me.demo.App"), std::string::npos);
-    // 资源门显式关：URI 保持旧名（调用方自管条目地址的逃生门仍在）。
+    // 资源门显式关：类条目 URI 仍随类改名迁移（mjbase #144 口径——类 URI 换名
+    // 门 = bytecode，旧 URI 挂新字节是坏 jar；resources 门只管 services/
+    // manifest/文本资源面，类条目逃生门不复存在）。
     auto& s2 = reg.create();
     facadeImportJar(s2, makeManifestJar("mjt_facade_token_uri_off.jar"));
     facadeRenameBegin(s2);
     facadeTokenRenameClass(s2, "me/demo/App", "me/demo/Moved");
     facadeTokenCommit(s2, false, false, false, /*resources=*/false);
-    EXPECT_EQ(facadeClassUri(s2, "me/demo/Moved"), "me/demo/App.class");
+    EXPECT_EQ(facadeClassUri(s2, "me/demo/Moved"), "me/demo/Moved.class");
     reg.close(s.handle);
     reg.close(s2.handle);
 }
