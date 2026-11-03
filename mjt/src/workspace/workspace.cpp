@@ -78,6 +78,21 @@ ca::str::Utf16String utf16(const std::string& value)
         reinterpret_cast<const ca::u8*>(value.data()), value.size()));
 }
 
+/// @brief 底层文本 → Utf8String：字节原文直通，不做二次校验（jbc/容器面文本
+///        按 modified UTF-8 原文保留；与 analysis_ingest 的 utf8() 同口径）。
+ca::str::Utf8String utf8(std::string_view value)
+{
+    return ca::str::Utf8String::from_data_unchecked(reinterpret_cast<const ca::u8*>(value.data()),
+                                                    value.size());
+}
+
+/// @brief std::string（DTO/接口面）→ Utf8StringRef 借用视图（B1 扫描查询参数）。
+ca::str::Utf8StringRef utf8Ref(const std::string& value)
+{
+    return ca::str::Utf8StringRef::from_data(reinterpret_cast<const ca::u8*>(value.data()),
+                                             value.size());
+}
+
 /// @brief UTF-8 窄串 → filesystem path（Windows 上 path(std::string) 按 ACP
 ///        解码，非 ASCII 必乱；与 model/resource_io.cpp 的 u8path 口径一致）。
 std::filesystem::path fsPath(const std::string& text)
@@ -905,18 +920,20 @@ std::vector<ReferenceImpact> collectImpacts(const model::ResourceContainer& cont
         std::vector<ReferenceImpact>    impacts;
         std::unordered_set<std::string> seen;
         for (const auto& owner : classes) {
-            for (const auto& reference : index.methodReferencesFromClass(owner)) {
+            for (const auto& reference : index.methodReferencesFromClass(utf8Ref(owner))) {
                 appendUniqueImpact(impacts, seen, "method",
-                                   reference.target.owner + "." + reference.target.name +
-                                       reference.target.descriptor);
+                                   reference.target.owner.to_std_string() + "." +
+                                       reference.target.name.to_std_string() +
+                                       reference.target.descriptor.to_std_string());
             }
-            for (const auto& reference : index.fieldReferencesFromClass(owner)) {
+            for (const auto& reference : index.fieldReferencesFromClass(utf8Ref(owner))) {
                 appendUniqueImpact(impacts, seen, "field",
-                                   reference.target.owner + "." + reference.target.name +
-                                       reference.target.descriptor);
+                                   reference.target.owner.to_std_string() + "." +
+                                       reference.target.name.to_std_string() +
+                                       reference.target.descriptor.to_std_string());
             }
-            for (const auto& reference : index.typeReferencesFromClass(owner)) {
-                appendUniqueImpact(impacts, seen, "type", reference.targetType);
+            for (const auto& reference : index.typeReferencesFromClass(utf8Ref(owner))) {
+                appendUniqueImpact(impacts, seen, "type", reference.targetType.to_std_string());
             }
         }
         std::sort(impacts.begin(), impacts.end(),
@@ -2522,11 +2539,13 @@ WorkspaceResult<std::vector<ReferenceInfo>> WorkspaceBase::xrefsToMethod(
         ReferenceScan scan;
         scan.build(*analysisScanContainer());
         std::vector<ReferenceInfo> result;
-        for (const auto& reference : scan.methodReferencesTo(owner, name, descriptor)) {
+        for (const auto& reference : scan.methodReferencesTo(utf8Ref(owner), utf8Ref(name),
+                                                             utf8Ref(descriptor))) {
             result.push_back(referenceInfo(
                 reference.site,
-                reference.target.owner + "." + reference.target.name +
-                    reference.target.descriptor,
+                reference.target.owner.to_std_string() + "." +
+                    reference.target.name.to_std_string() +
+                    reference.target.descriptor.to_std_string(),
                 "direct"));
         }
         annotateSupportingSources(result);
@@ -2551,11 +2570,13 @@ WorkspaceResult<std::vector<ReferenceInfo>> WorkspaceBase::xrefsToField(
         ReferenceScan scan;
         scan.build(*analysisScanContainer());
         std::vector<ReferenceInfo> result;
-        for (const auto& reference : scan.fieldReferencesTo(owner, name, descriptor)) {
+        for (const auto& reference : scan.fieldReferencesTo(utf8Ref(owner), utf8Ref(name),
+                                                            utf8Ref(descriptor))) {
             result.push_back(referenceInfo(
                 reference.site,
-                reference.target.owner + "." + reference.target.name +
-                    reference.target.descriptor,
+                reference.target.owner.to_std_string() + "." +
+                    reference.target.name.to_std_string() +
+                    reference.target.descriptor.to_std_string(),
                 "direct"));
         }
         annotateSupportingSources(result);
@@ -2579,8 +2600,8 @@ WorkspaceResult<std::vector<ReferenceInfo>> WorkspaceBase::xrefsToClass(
         ReferenceScan scan;
         scan.build(*analysisScanContainer());
         std::vector<ReferenceInfo> result;
-        for (const auto& reference : scan.typeReferencesTo(internalName)) {
-            result.push_back(referenceInfo(reference.site, reference.targetType, "type"));
+        for (const auto& reference : scan.typeReferencesTo(utf8Ref(internalName))) {
+            result.push_back(referenceInfo(reference.site, reference.targetType.ref(), "type"));
         }
         annotateSupportingSources(result);
         sortReferences(result);
@@ -2620,11 +2641,13 @@ WorkspaceResult<std::vector<ReferenceInfo>> WorkspaceBase::calleesOfMethod(
         if (!resolved) {
             ReferenceScan scan;
             scan.build(*analysisScanContainer());
-            for (const auto& reference : scan.methodReferencesFrom(owner, name, descriptor)) {
+            for (const auto& reference : scan.methodReferencesFrom(utf8Ref(owner), utf8Ref(name),
+                                                                   utf8Ref(descriptor))) {
                 result.push_back(referenceInfo(
                     reference.site,
-                    reference.target.owner + "." + reference.target.name +
-                        reference.target.descriptor,
+                    reference.target.owner.to_std_string() + "." +
+                        reference.target.name.to_std_string() +
+                        reference.target.descriptor.to_std_string(),
                     "direct"));
             }
         }
@@ -2685,7 +2708,8 @@ WorkspaceResult<std::vector<ReferenceInfo>> WorkspaceBase::calleesOfMethod(
                                     continue;
                                 expanded = true;
                                 result.push_back(referenceInfo(
-                                    {owner, name, descriptor, static_cast<ca::i32>(index)},
+                                    {utf8(owner), utf8(name), utf8(descriptor),
+                                     static_cast<ca::i32>(index)},
                                     std::string{analysis.hierarchy->nameOf(candidate)} + "." +
                                         semName + semDesc,
                                     "resolved_override"));
@@ -2694,7 +2718,8 @@ WorkspaceResult<std::vector<ReferenceInfo>> WorkspaceBase::calleesOfMethod(
                     }
                     if (!expanded) {
                         result.push_back(referenceInfo(
-                            {owner, name, descriptor, static_cast<ca::i32>(index)},
+                            {utf8(owner), utf8(name), utf8(descriptor),
+                             static_cast<ca::i32>(index)},
                             declaredTarget, "direct"));
                     }
                 }
@@ -2888,9 +2913,9 @@ MutationResult WorkspaceBase::validateJasm(const std::string&      uri,
     try {
         auto                 candidate = cloneWorking();
         ClassMutationService service(*candidate);
-        auto                 assembled = service.applyJasm(std::move(resolvedUri).unwrap(),
-                                                           sourceName, source,
-                                                           request.validationMode);
+        const std::string    uri = std::move(resolvedUri).unwrap();
+        auto assembled = service.applyJasm(ca::str::Utf8StringRef::from_string_view(uri),
+                                           sourceName, source, request.validationMode);
 
         MutationResult result;
         result.revision    = revision_;
@@ -3014,9 +3039,9 @@ MutationResult WorkspaceBase::applyJasm(const std::string&      uri,
     try {
         auto                 candidate = cloneWorking();
         ClassMutationService service(*candidate);
-        auto                 assembled = service.applyJasm(std::move(resolvedUri).unwrap(),
-                                                           sourceName, source,
-                                                           request.validationMode);
+        const std::string    uri = std::move(resolvedUri).unwrap();
+        auto assembled = service.applyJasm(ca::str::Utf8StringRef::from_string_view(uri),
+                                           sourceName, source, request.validationMode);
         if (!assembled.isOk()) {
             MutationResult result;
             result.status = error(WorkspaceError::InvalidArgument, "apply JASM",
@@ -3152,10 +3177,10 @@ MutationResult WorkspaceBase::applyClassMutation(const ClassMutation&   mutation
     if (status.is_err()) return stateFailure(std::move(status));
     //选择器契约对齐 replaceClassBytes：精确资源 URI 直接命中，内部名按字节
     //内容解析到规范 URI。
-    auto resolvedUri = resolveClassUri(*working_, mutation.classUri);
+    auto resolvedUri = resolveClassUri(*working_, mutation.classUri.to_std_string());
     if (resolvedUri.is_err()) return stateFailure(std::move(resolvedUri).unwrap_err());
-    ClassMutation resolvedMutation = mutation;
-    resolvedMutation.classUri = std::move(resolvedUri).unwrap();
+    ClassMutation resolvedMutation = mutation.clone();
+    resolvedMutation.classUri      = utf8(std::move(resolvedUri).unwrap());
     if (request.dryRun) return validateClassMutation(resolvedMutation, request);
     if (!accepts(request)) return revisionConflict();
     try {
@@ -3474,27 +3499,31 @@ WorkspaceResult<std::vector<ReferenceInfo>> workflowReferences(
         std::vector<ReferenceInfo> result;
         switch (query.kind) {
         case WorkflowReferenceKind::Class:
-            for (const auto& reference : scan.typeReferencesTo(query.owner)) {
-                result.push_back(referenceInfo(reference.site, reference.targetType, "type"));
+            for (const auto& reference : scan.typeReferencesTo(utf8Ref(query.owner))) {
+                result.push_back(referenceInfo(reference.site, reference.targetType.ref(), "type"));
             }
             break;
         case WorkflowReferenceKind::Field:
-            for (const auto& reference :
-                 scan.fieldReferencesTo(query.owner, query.name, query.descriptor)) {
+            for (const auto& reference : scan.fieldReferencesTo(utf8Ref(query.owner),
+                                                                utf8Ref(query.name),
+                                                                utf8Ref(query.descriptor))) {
                 result.push_back(referenceInfo(
                     reference.site,
-                    reference.target.owner + "." + reference.target.name +
-                        reference.target.descriptor,
+                    reference.target.owner.to_std_string() + "." +
+                        reference.target.name.to_std_string() +
+                        reference.target.descriptor.to_std_string(),
                     "direct"));
             }
             break;
         case WorkflowReferenceKind::Method:
-            for (const auto& reference :
-                 scan.methodReferencesTo(query.owner, query.name, query.descriptor)) {
+            for (const auto& reference : scan.methodReferencesTo(utf8Ref(query.owner),
+                                                                 utf8Ref(query.name),
+                                                                 utf8Ref(query.descriptor))) {
                 result.push_back(referenceInfo(
                     reference.site,
-                    reference.target.owner + "." + reference.target.name +
-                        reference.target.descriptor,
+                    reference.target.owner.to_std_string() + "." +
+                        reference.target.name.to_std_string() +
+                        reference.target.descriptor.to_std_string(),
                     "direct"));
             }
             break;
@@ -4027,11 +4056,11 @@ MutationResult WorkspaceBase::applyRename(const RenameRequest& request,
     }
     if (request.kind == RenameKind::Local) {
         ClassMutation mutation;
-        mutation.classUri             = request.owner;
+        mutation.classUri             = utf8(request.owner);
         mutation.kind                 = ClassMutationKind::RenameLocal;
-        mutation.member               = {request.methodName, request.descriptor};
-        mutation.localName            = request.name;
-        mutation.replacementLocalName = request.newName;
+        mutation.member               = {utf8(request.methodName), utf8(request.descriptor)};
+        mutation.localName            = utf8(request.name);
+        mutation.replacementLocalName = utf8(request.newName);
         mutation.localIndex           = request.localIndex;
         return applyClassMutation(mutation, requestOptions);
     }

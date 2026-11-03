@@ -42,16 +42,16 @@ constexpr ca::i32 kAtypeBoolean = 4;
 constexpr ca::i32 kAtypeLong    = 11;
 
 WorkspaceErrorInfo error(WorkspaceError code, const std::string& operation,
-                         const std::string& detail)
+                         std::string_view detail)
 {
-    return WorkspaceErrorInfo{code, operation + ": " + detail};
+    return WorkspaceErrorInfo{code, operation + ": " + std::string(detail)};
 }
 
 jbc::core::MemberInfo* findMethod(jbc::core::ClassFile& cf, const MemberSelector& selector)
 {
     for (auto& method : cf.methods) {
-        if (utf8Text(cf, method.nameCp) == selector.name &&
-            utf8Text(cf, method.descCp) == selector.descriptor)
+        if (selector.name.ref() == utf8Text(cf, method.nameCp) &&
+            selector.descriptor.ref() == utf8Text(cf, method.descCp))
             return &method;
     }
     return nullptr;
@@ -60,8 +60,8 @@ jbc::core::MemberInfo* findMethod(jbc::core::ClassFile& cf, const MemberSelector
 jbc::core::MemberInfo* findField(jbc::core::ClassFile& cf, const MemberSelector& selector)
 {
     for (auto& field : cf.fields) {
-        if (utf8Text(cf, field.nameCp) == selector.name &&
-            utf8Text(cf, field.descCp) == selector.descriptor)
+        if (selector.name.ref() == utf8Text(cf, field.nameCp) &&
+            selector.descriptor.ref() == utf8Text(cf, field.descCp))
             return &field;
     }
     return nullptr;
@@ -153,7 +153,7 @@ void setDeprecatedAttribute(jbc::core::ClassFile& cf, bool present)
 ///
 /// 未知名报错并列出 class 目标合法 flag 全集；"deprecated" 单列（Deprecated
 /// 属性，非 access flag——错误提示一并注明）。
-WorkspaceErrorInfo parseClassAccessFlagList(const std::vector<std::string>& names,
+WorkspaceErrorInfo parseClassAccessFlagList(const std::vector<ca::str::Utf8String>& names,
                                             const std::string&              group,
                                             ca::u32&                        mask,
                                             bool&                           deprecated)
@@ -168,7 +168,7 @@ WorkspaceErrorInfo parseClassAccessFlagList(const std::vector<std::string>& name
     };
     mask       = 0;
     deprecated = false;
-    for (const std::string& name : names) {
+    for (const ca::str::Utf8String& name : names) {
         if (name == kDeprecatedFlagName) {
             deprecated = true;
             continue;
@@ -188,7 +188,7 @@ WorkspaceErrorInfo parseClassAccessFlagList(const std::vector<std::string>& name
             legal += entry.first;
         }
         return error(WorkspaceError::InvalidArgument, "change class access",
-                     "unknown access flag '" + group + ": " + name +
+                     "unknown access flag '" + group + ": " + name.to_std_string() +
                          "' (legal flags: " + legal + "; '" + kDeprecatedFlagName +
                          "' is a class attribute, not an access flag)");
     }
@@ -203,8 +203,8 @@ WorkspaceErrorInfo parseClassAccessFlagList(const std::vector<std::string>& name
 
 WorkspaceErrorInfo validateHandle(const HandleSpec& spec)
 {
-    if (spec.tag < 1 || spec.tag > 9 || spec.owner.empty() || spec.name.empty() ||
-        spec.descriptor.empty()) {
+    if (spec.tag < 1 || spec.tag > 9 || spec.owner.is_empty() || spec.name.is_empty() ||
+        spec.descriptor.is_empty()) {
         return WorkspaceErrorInfo{WorkspaceError::InvalidArgument,
                                   "handle requires tag 1..9, owner, name and descriptor"};
     }
@@ -225,7 +225,7 @@ WorkspaceErrorInfo validateConstant(const ConstantSpec& spec, ca::usize depth = 
     case ConstantKind::Double:
         return WorkspaceErrorInfo{};
     case ConstantKind::Type:
-        if (spec.descriptor.empty())
+        if (spec.descriptor.is_empty())
             return WorkspaceErrorInfo{WorkspaceError::InvalidArgument,
                                       "type constant descriptor is required"};
         return WorkspaceErrorInfo{};
@@ -233,7 +233,7 @@ WorkspaceErrorInfo validateConstant(const ConstantSpec& spec, ca::usize depth = 
         return validateHandle(spec.handle);
     case ConstantKind::Dynamic:
     {
-        if (spec.name.empty() || spec.descriptor.empty())
+        if (spec.name.is_empty() || spec.descriptor.is_empty())
             return WorkspaceErrorInfo{WorkspaceError::InvalidArgument,
                                       "constant dynamic name and descriptor are required"};
         if (spec.bootstrapArguments.size() > 128)
@@ -256,7 +256,7 @@ ca::u32 makeConstantCp(ClassSession& session, const ConstantSpec& spec)
 {
     jbc::core::ClassFile& cf = session.backing();
     switch (spec.kind) {
-    case ConstantKind::String: return session.internString(spec.stringValue);
+    case ConstantKind::String: return session.internString(spec.stringValue.ref());
     case ConstantKind::Integer: return session.internInteger(spec.intValue);
     case ConstantKind::Long: return cf.cp.addLong(spec.longValue);
     case ConstantKind::Float:
@@ -271,7 +271,7 @@ ca::u32 makeConstantCp(ClassSession& session, const ConstantSpec& spec)
         std::memcpy(&bits, &spec.doubleValue, sizeof(bits));
         return cf.cp.addDoubleBits(bits);
     }
-    case ConstantKind::Type: return session.internClass(spec.descriptor);
+    case ConstantKind::Type: return session.internClass(spec.descriptor.ref());
     default: return 0;   // Handle/Dynamic 在 validateConstant 已拒绝
     }
 }
@@ -280,7 +280,7 @@ ca::u32 makeConstantCp(ClassSession& session, const ConstantSpec& spec)
 WorkspaceErrorInfo fieldConstant(const ClassMutation& mutation)
 {
     if (!mutation.hasFieldValue) return WorkspaceErrorInfo{};
-    const std::string& descriptor = mutation.member.descriptor;
+    const ca::str::Utf8String& descriptor = mutation.member.descriptor;
     const ConstantKind kind       = mutation.fieldValue.kind;
     const bool         valid =
         ((descriptor == "Z" || descriptor == "B" || descriptor == "C" || descriptor == "S" ||
@@ -348,19 +348,19 @@ bool validInstructionShape(const InstructionSpec& spec, std::string& detail)
         if (spec.opcode != at(O::NEW) && spec.opcode != at(O::ANEWARRAY) &&
             spec.opcode != at(O::CHECKCAST) && spec.opcode != at(O::INSTANCEOF))
             detail = "opcode is not a type JVM instruction";
-        else if (spec.descriptor.empty())
+        else if (spec.descriptor.is_empty())
             detail = "type instruction descriptor is required";
         break;
     case InstructionKind::Field:
         if (spec.opcode < at(O::GETSTATIC) || spec.opcode > at(O::PUTFIELD))
             detail = "opcode is not a field JVM instruction";
-        else if (spec.owner.empty() || spec.name.empty() || spec.descriptor.empty())
+        else if (spec.owner.is_empty() || spec.name.is_empty() || spec.descriptor.is_empty())
             detail = "field instruction requires owner, name and descriptor";
         break;
     case InstructionKind::Method:
         if (spec.opcode < at(O::INVOKEVIRTUAL) || spec.opcode > at(O::INVOKEINTERFACE))
             detail = "opcode is not a method JVM instruction";
-        else if (spec.owner.empty() || spec.name.empty() || spec.descriptor.empty())
+        else if (spec.owner.is_empty() || spec.name.is_empty() || spec.descriptor.is_empty())
             detail = "method instruction requires owner, name and descriptor";
         break;
     case InstructionKind::Jump:
@@ -382,7 +382,7 @@ bool validInstructionShape(const InstructionSpec& spec, std::string& detail)
 ///        句柄经 @p outTarget 交付——此时 Insn 尚未进入 DOM）。
 /// @param labels 符号标签 → DOM 句柄；Jump/switch 形状必查。
 WorkspaceErrorInfo makeInstruction(ClassSession& session, const InstructionSpec& spec,
-                                   const std::unordered_map<std::string, LabelId>& labels,
+                                   const std::unordered_map<ca::str::Utf8String, LabelId>& labels,
                                    Insn& out, LabelId& outTarget)
 {
     std::string detail;
@@ -399,22 +399,24 @@ WorkspaceErrorInfo makeInstruction(ClassSession& session, const InstructionSpec&
         out.wide = spec.operand > 255;
         return WorkspaceErrorInfo{};
     case InstructionKind::Type:
-        out.cp = session.internClass(spec.descriptor);
+        out.cp = session.internClass(spec.descriptor.ref());
         return WorkspaceErrorInfo{};
     case InstructionKind::Field:
-        out.cp = session.internFieldRef(spec.owner, spec.name, spec.descriptor);
+        out.cp = session.internFieldRef(spec.owner.ref(), spec.name.ref(), spec.descriptor.ref());
         return WorkspaceErrorInfo{};
     case InstructionKind::Method:
         out.cp = spec.opcode == static_cast<ca::i32>(Op::INVOKEINTERFACE)
-                     ? session.internInterfaceMethodRef(spec.owner, spec.name, spec.descriptor)
-                     : session.internMethodRef(spec.owner, spec.name, spec.descriptor);
+                     ? session.internInterfaceMethodRef(spec.owner.ref(), spec.name.ref(),
+                                                        spec.descriptor.ref())
+                     : session.internMethodRef(spec.owner.ref(), spec.name.ref(),
+                                               spec.descriptor.ref());
         return WorkspaceErrorInfo{};
     case InstructionKind::Jump:
     {
         const auto found = labels.find(spec.label);
-        if (spec.label.empty() || found == labels.end())
+        if (spec.label.is_empty() || found == labels.end())
             return WorkspaceErrorInfo{WorkspaceError::InvalidArgument,
-                                      "unknown label: " + spec.label};
+                                      "unknown label: " + spec.label.to_std_string()};
         outTarget = found->second;
         return WorkspaceErrorInfo{};
     }
@@ -433,15 +435,15 @@ WorkspaceErrorInfo makeInstruction(ClassSession& session, const InstructionSpec&
         }
         out.op = Op::TABLESWITCH;   // kind 即 opcode（spec.opcode 无需另给）
         const auto defaultFound = labels.find(spec.defaultLabel);
-        if (spec.defaultLabel.empty() || defaultFound == labels.end())
+        if (spec.defaultLabel.is_empty() || defaultFound == labels.end())
             return WorkspaceErrorInfo{WorkspaceError::InvalidArgument,
-                                      "unknown label: " + spec.defaultLabel};
+                                      "unknown label: " + spec.defaultLabel.to_std_string()};
         outTarget = defaultFound->second;
-        for (const std::string& id : spec.labels) {
+        for (const ca::str::Utf8String& id : spec.labels) {
             const auto found = labels.find(id);
-            if (id.empty() || found == labels.end())
+            if (id.is_empty() || found == labels.end())
                 return WorkspaceErrorInfo{WorkspaceError::InvalidArgument,
-                                          "unknown label: " + id};
+                                          "unknown label: " + id.to_std_string()};
             out.targets.push_back(found->second);
         }
         out.a = spec.minimum;
@@ -459,33 +461,33 @@ WorkspaceErrorInfo makeInstruction(ClassSession& session, const InstructionSpec&
         }
         out.op = Op::LOOKUPSWITCH;   // kind 即 opcode（spec.opcode 无需另给）
         const auto defaultFound = labels.find(spec.defaultLabel);
-        if (spec.defaultLabel.empty() || defaultFound == labels.end())
+        if (spec.defaultLabel.is_empty() || defaultFound == labels.end())
             return WorkspaceErrorInfo{WorkspaceError::InvalidArgument,
-                                      "unknown label: " + spec.defaultLabel};
+                                      "unknown label: " + spec.defaultLabel.to_std_string()};
         outTarget = defaultFound->second;
-        for (const std::string& id : spec.labels) {
+        for (const ca::str::Utf8String& id : spec.labels) {
             const auto found = labels.find(id);
-            if (id.empty() || found == labels.end())
+            if (id.is_empty() || found == labels.end())
                 return WorkspaceErrorInfo{WorkspaceError::InvalidArgument,
-                                          "unknown label: " + id};
+                                          "unknown label: " + id.to_std_string()};
             out.targets.push_back(found->second);
         }
         out.keys = spec.keys;
         return WorkspaceErrorInfo{};
     }
     case InstructionKind::MultiANewArray:
-        if (spec.descriptor.empty() || spec.dimensions < 1 || spec.dimensions > 255) {
+        if (spec.descriptor.is_empty() || spec.dimensions < 1 || spec.dimensions > 255) {
             return WorkspaceErrorInfo{WorkspaceError::InvalidArgument,
                                       "multianewarray requires an array descriptor and "
                                       "dimensions in 1..255"};
         }
         out.op = Op::MULTIANEWARRAY;   // kind 即 opcode（spec.opcode 无需另给）
-        out.cp = session.internClass(spec.descriptor);
+        out.cp = session.internClass(spec.descriptor.ref());
         out.a  = spec.dimensions;
         return WorkspaceErrorInfo{};
     case InstructionKind::LdcString:
         out.op = Op::LDC;   // 索引超 u8 时经 widenLdcIfNeeded 拓宽为 LDC_W
-        out.cp = session.internString(spec.stringValue);
+        out.cp = session.internString(spec.stringValue.ref());
         return WorkspaceErrorInfo{};
     case InstructionKind::LdcInt:
         out.op = Op::LDC;
@@ -512,11 +514,11 @@ WorkspaceErrorInfo makeInstruction(ClassSession& session, const InstructionSpec&
         return WorkspaceErrorInfo{};
     }
     case InstructionKind::LdcType:
-        if (spec.descriptor.empty())
+        if (spec.descriptor.is_empty())
             return WorkspaceErrorInfo{WorkspaceError::InvalidArgument,
                                       "LDC type descriptor is required"};
         out.op = Op::LDC;
-        out.cp = session.internClass(spec.descriptor);
+        out.cp = session.internClass(spec.descriptor.ref());
         return WorkspaceErrorInfo{};
     case InstructionKind::LdcHandle:
     case InstructionKind::LdcDynamic:
@@ -540,12 +542,14 @@ void widenLdcIfNeeded(Insn& insn)
 }
 
 /// @brief 在 labels 里找符号标签；空名/未知均按 "unknown label: <id>" 报错。
-WorkspaceErrorInfo findSymbolicLabel(const std::unordered_map<std::string, LabelId>& labels,
-                                     const std::string& id, LabelId& out)
+WorkspaceErrorInfo findSymbolicLabel(
+    const std::unordered_map<ca::str::Utf8String, LabelId>& labels, const ca::str::Utf8String& id,
+    LabelId& out)
 {
     const auto found = labels.find(id);
-    if (id.empty() || found == labels.end())
-        return WorkspaceErrorInfo{WorkspaceError::InvalidArgument, "unknown label: " + id};
+    if (id.is_empty() || found == labels.end())
+        return WorkspaceErrorInfo{WorkspaceError::InvalidArgument,
+                                  "unknown label: " + id.to_std_string()};
     out = found->second;
     return WorkspaceErrorInfo{};
 }
@@ -603,23 +607,23 @@ WorkspaceErrorInfo buildMethodBody(ClassSession&                         session
                                    BuiltBody&                            out)
 {
     // 标签 ID 唯一且非空（前置校验）。
-    std::unordered_set<std::string> labelIds;
+    std::unordered_set<ca::str::Utf8String> labelIds;
     for (const InstructionSpec& spec : specs) {
         if (spec.kind != InstructionKind::Label) continue;
-        if (spec.label.empty() || !labelIds.insert(spec.label).second)
+        if (spec.label.is_empty() || !labelIds.insert(spec.label.clone()).second)
             return error(WorkspaceError::InvalidArgument, "replace method body",
                          "label IDs must be non-empty and unique");
     }
 
-    jbc::ir::CodeUnit                        unit;
-    std::unordered_map<std::string, LabelId> labels;
+    jbc::ir::CodeUnit                                  unit;
+    std::unordered_map<ca::str::Utf8String, LabelId>   labels;
     for (const InstructionSpec& spec : specs) {
         if (spec.kind != InstructionKind::Label) continue;
         auto created = unit.dom.createLabel();
         if (created.is_err())   // 理论不可达：新建 DOM 上 createLabel 恒成功
             return error(WorkspaceError::Internal, "replace method body",
                          "label allocation failed");
-        labels.emplace(spec.label, std::move(created).unwrap());
+        labels.emplace(spec.label.clone(), std::move(created).unwrap());
     }
 
     // pendingAnchors：待绑定到下一条指令的标签（Label 规格落位于自身位置）；
@@ -681,9 +685,9 @@ WorkspaceErrorInfo buildMethodBody(ClassSession&                         session
     pendingAnchors.clear();
 
     // 异常表：符号标签优先，否则代码指令序号（锚到该指令前置边界）。
-    const auto resolveBoundary = [&](const std::string& id, ca::i32 index,
+    const auto resolveBoundary = [&](const ca::str::Utf8String& id, ca::i32 index,
                                      LabelId& outLabel) -> WorkspaceErrorInfo {
-        if (!id.empty()) return findSymbolicLabel(labels, id, outLabel);
+        if (!id.is_empty()) return findSymbolicLabel(labels, id, outLabel);
         const auto& order = unit.dom.order();
         if (index < 0 || static_cast<ca::usize>(index) >= order.size())
             return WorkspaceErrorInfo{WorkspaceError::InvalidArgument,
@@ -706,8 +710,8 @@ WorkspaceErrorInfo buildMethodBody(ClassSession&                         session
         if (status.is_err()) return status;
         status = resolveBoundary(block.handlerLabel, block.handlerInstruction, handler);
         if (status.is_err()) return status;
-        unit.exc.push_back(
-            {start, end, handler, block.type.empty() ? 0U : session.internClass(block.type)});
+        unit.exc.push_back({start, end, handler,
+                            block.type.is_empty() ? 0U : session.internClass(block.type.ref())});
     }
 
     // 导出字节并解析标签 PC。
@@ -766,7 +770,7 @@ WorkspaceErrorInfo buildMethodBody(ClassSession&                         session
         LabelId start;
         LabelId end;
         WorkspaceErrorInfo status = findSymbolicLabel(labels, local.startLabel, start);
-        if (status.is_err() || local.name.empty() || local.descriptor.empty() ||
+        if (status.is_err() || local.name.is_empty() || local.descriptor.is_empty() ||
             local.index < 0)
             return error(WorkspaceError::InvalidArgument, "replace method body",
                          status.message.empty()
@@ -786,11 +790,12 @@ WorkspaceErrorInfo buildMethodBody(ClassSession&                         session
         jbc::core::LocalVariableTableAttr::Row row;
         row.startPc = startPc;
         row.length  = endPc - startPc;
-        row.nameCp  = support::internUtf8(session.backing(), local.name);
+        row.nameCp  = support::internUtf8(session.backing(), local.name.ref());
         row.descCp  = support::internUtf8(
-            session.backing(), local.signature.empty() ? local.descriptor : local.signature);
+            session.backing(),
+            (local.signature.is_empty() ? local.descriptor : local.signature).ref());
         row.slot = static_cast<ca::u32>(local.index);
-        if (local.signature.empty())
+        if (local.signature.is_empty())
             out.lvt.push_back(row);
         else
             out.lvtt.push_back(row);
@@ -849,14 +854,14 @@ jbc::core::AttrSlot* ensureAnnotationSlot(jbc::core::ClassFile&       cf,
 }   // namespace
 
 jasm::Result<jasm::JvmJasmClass> ClassMutationService::applyJasm(
-    const std::string& uri, ca::str::Utf16StringRef sourceName,
+    const ca::str::Utf8StringRef& uri, ca::str::Utf16StringRef sourceName,
     ca::str::Utf16StringRef source, jasm::ValidationMode validationMode)
 {
     // 重建管线的校验门跟随请求档位：off 时 assemble 后跳过 validate。
     jasm::JvmJasmContext context;
     context.validationMode = validationMode;
     jasm::ResourceJasmService service(*container_);
-    return service.assemble(uri, sourceName, source, context);
+    return service.assemble(uri.to_std_string(), sourceName, source, context);
 }
 
 ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation,
@@ -868,12 +873,12 @@ ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation,
         return result;
     };
 
-    if (mutation.classUri.empty())
+    if (mutation.classUri.is_empty())
         return failure(
             error(WorkspaceError::InvalidArgument, "mutate class", "class URI is empty"));
-    model::IResource* rawResource = container_->getResource(mutation.classUri);
+    model::IResource* rawResource = container_->getResource(mutation.classUri.ref());
     if (!ca::core::tag_cast::isa<model::ClassResource>(rawResource))
-        return failure(error(WorkspaceError::NotFound, "mutate class", mutation.classUri));
+        return failure(error(WorkspaceError::NotFound, "mutate class", mutation.classUri.ref()));
     auto* resource = ca::core::tag_cast::cast<model::ClassResource>(rawResource);
 
     try {
@@ -948,7 +953,8 @@ ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation,
         {
             jbc::core::MemberInfo* field = findField(cf, mutation.member);
             if (field == nullptr)
-                status = error(WorkspaceError::NotFound, "set field access", mutation.member.name);
+                status = error(WorkspaceError::NotFound, "set field access",
+                               mutation.member.name.ref());
             else {
                 status =
                     validateAccess(mutation.access, AnnotationTarget::Field, "set field access");
@@ -960,7 +966,8 @@ ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation,
         {
             jbc::core::MemberInfo* method = findMethod(cf, mutation.member);
             if (method == nullptr)
-                status = error(WorkspaceError::NotFound, "set method access", mutation.member.name);
+                status = error(WorkspaceError::NotFound, "set method access",
+                               mutation.member.name.ref());
             else {
                 status = validateAccess(mutation.access, AnnotationTarget::Method,
                                         "set method access");
@@ -979,10 +986,11 @@ ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation,
         case ClassMutationKind::AddField:
         {
             if (findField(cf, mutation.member) != nullptr) {
-                status = error(WorkspaceError::AlreadyExists, "add field", mutation.member.name);
+                status = error(WorkspaceError::AlreadyExists, "add field",
+                               mutation.member.name.ref());
                 break;
             }
-            if (mutation.member.name.empty() || mutation.member.descriptor.empty()) {
+            if (mutation.member.name.is_empty() || mutation.member.descriptor.is_empty()) {
                 status = error(WorkspaceError::InvalidArgument, "add field",
                                "name and descriptor are required");
                 break;
@@ -994,11 +1002,11 @@ ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation,
 
             jbc::core::MemberInfo field;
             field.access = static_cast<ca::u16>(mutation.access);
-            field.nameCp = support::internUtf8(cf, mutation.member.name);
-            field.descCp = support::internUtf8(cf, mutation.member.descriptor);
-            if (!mutation.signature.empty()) {
+            field.nameCp = support::internUtf8(cf, mutation.member.name.ref());
+            field.descCp = support::internUtf8(cf, mutation.member.descriptor.ref());
+            if (!mutation.signature.is_empty()) {
                 auto sig = std::make_unique<jbc::core::SignatureAttr>();
-                sig->signatureCp = support::internUtf8(cf, mutation.signature);
+                sig->signatureCp = support::internUtf8(cf, mutation.signature.ref());
                 field.attrs.push_back(jbc::core::AttrSlot::makeNew(
                     support::internUtf8(cf, "Signature"), std::move(sig)));
             }
@@ -1017,24 +1025,26 @@ ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation,
         {
             bool removed = false;
             for (auto it = cf.fields.begin(); it != cf.fields.end(); ++it) {
-                if (utf8Text(cf, it->nameCp) == mutation.member.name &&
-                    utf8Text(cf, it->descCp) == mutation.member.descriptor) {
+                if (mutation.member.name.ref() == utf8Text(cf, it->nameCp) &&
+                    mutation.member.descriptor.ref() == utf8Text(cf, it->descCp)) {
                     cf.fields.erase(it);
                     removed = true;
                     break;
                 }
             }
             if (!removed)
-                status = error(WorkspaceError::NotFound, "remove field", mutation.member.name);
+                status = error(WorkspaceError::NotFound, "remove field",
+                               mutation.member.name.ref());
             break;
         }
         case ClassMutationKind::AddMethod:
         {
             if (findMethod(cf, mutation.member) != nullptr) {
-                status = error(WorkspaceError::AlreadyExists, "add method", mutation.member.name);
+                status = error(WorkspaceError::AlreadyExists, "add method",
+                               mutation.member.name.ref());
                 break;
             }
-            if (mutation.member.name.empty() || mutation.member.descriptor.empty()) {
+            if (mutation.member.name.is_empty() || mutation.member.descriptor.is_empty()) {
                 status = error(WorkspaceError::InvalidArgument, "add method",
                                "name and descriptor are required");
                 break;
@@ -1053,8 +1063,8 @@ ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation,
                 break;
             }
             bool exceptionInvalid = false;
-            for (const std::string& exception : mutation.exceptions) {
-                if (exception.empty()) {
+            for (const ca::str::Utf8String& exception : mutation.exceptions) {
+                if (exception.is_empty()) {
                     status = error(WorkspaceError::InvalidArgument, "add method",
                                    "exception internal names must be non-empty");
                     exceptionInvalid = true;
@@ -1065,11 +1075,11 @@ ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation,
 
             jbc::core::MemberInfo method;
             method.access = static_cast<ca::u16>(mutation.access);
-            method.nameCp = support::internUtf8(cf, mutation.member.name);
-            method.descCp = support::internUtf8(cf, mutation.member.descriptor);
-            if (!mutation.signature.empty()) {
+            method.nameCp = support::internUtf8(cf, mutation.member.name.ref());
+            method.descCp = support::internUtf8(cf, mutation.member.descriptor.ref());
+            if (!mutation.signature.is_empty()) {
                 auto sig = std::make_unique<jbc::core::SignatureAttr>();
-                sig->signatureCp = support::internUtf8(cf, mutation.signature);
+                sig->signatureCp = support::internUtf8(cf, mutation.signature.ref());
                 method.attrs.push_back(jbc::core::AttrSlot::makeNew(
                     support::internUtf8(cf, "Signature"), std::move(sig)));
             }
@@ -1078,8 +1088,8 @@ ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation,
                 // 会话内合法形态；字节输出与旧 Raw 手拼逐字节一致）。
                 auto exc = std::make_unique<jbc::core::ExceptionsAttr>();
                 exc->exceptionCps.reserve(mutation.exceptions.size());
-                for (const std::string& exception : mutation.exceptions) {
-                    exc->exceptionCps.push_back(session->internClass(exception));
+                for (const ca::str::Utf8String& exception : mutation.exceptions) {
+                    exc->exceptionCps.push_back(session->internClass(exception.ref()));
                 }
                 method.attrs.push_back(jbc::core::AttrSlot::makeNew(
                     support::internUtf8(cf, "Exceptions"), std::move(exc)));
@@ -1101,21 +1111,22 @@ ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation,
         {
             bool removed = false;
             for (auto it = cf.methods.begin(); it != cf.methods.end(); ++it) {
-                if (utf8Text(cf, it->nameCp) == mutation.member.name &&
-                    utf8Text(cf, it->descCp) == mutation.member.descriptor) {
+                if (mutation.member.name.ref() == utf8Text(cf, it->nameCp) &&
+                    mutation.member.descriptor.ref() == utf8Text(cf, it->descCp)) {
                     cf.methods.erase(it);
                     removed = true;
                     break;
                 }
             }
             if (!removed)
-                status = error(WorkspaceError::NotFound, "remove method", mutation.member.name);
+                status = error(WorkspaceError::NotFound, "remove method",
+                               mutation.member.name.ref());
             break;
         }
         case ClassMutationKind::AddMarkerAnnotation:
         case ClassMutationKind::RemoveAnnotation:
         {
-            if (mutation.annotationDescriptor.empty()) {
+            if (mutation.annotationDescriptor.is_empty()) {
                 status = error(WorkspaceError::InvalidArgument, "edit annotation",
                                "annotation descriptor is required");
                 break;
@@ -1129,8 +1140,9 @@ ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation,
             }
             if (mutation.annotationTarget != AnnotationTarget::Class && member == nullptr) {
                 status = error(WorkspaceError::NotFound, "edit annotation",
-                               mutation.member.name.empty() ? mutation.classUri
-                                                            : mutation.member.name);
+                               (mutation.member.name.is_empty() ? mutation.classUri
+                                                                : mutation.member.name)
+                                   .ref());
                 break;
             }
             jbc::core::AttrSlot* slot = ensureAnnotationSlot(
@@ -1154,22 +1166,22 @@ ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation,
                 const bool duplicate = std::any_of(
                     annotations->annos.begin(), annotations->annos.end(),
                     [&](const jbc::core::AnnotationsAttr::Annotation& item) {
-                        return utf8Text(cf, item.typeCp) == mutation.annotationDescriptor;
+                        return mutation.annotationDescriptor.ref() == utf8Text(cf, item.typeCp);
                     });
                 if (duplicate) {
                     status = error(WorkspaceError::AlreadyExists, "add annotation",
-                                   mutation.annotationDescriptor);
+                                   mutation.annotationDescriptor.ref());
                     break;
                 }
                 jbc::core::AnnotationsAttr::Annotation anno;
-                anno.typeCp = support::internUtf8(cf, mutation.annotationDescriptor);
+                anno.typeCp = support::internUtf8(cf, mutation.annotationDescriptor.ref());
                 (void)slot->mutate();
                 annotations->annos.push_back(std::move(anno));
                 break;
             }
             bool removed = false;
             for (auto it = annotations->annos.begin(); it != annotations->annos.end(); ++it) {
-                if (utf8Text(cf, it->typeCp) == mutation.annotationDescriptor) {
+                if (mutation.annotationDescriptor.ref() == utf8Text(cf, it->typeCp)) {
                     (void)slot->mutate();
                     annotations->annos.erase(it);
                     removed = true;
@@ -1178,14 +1190,15 @@ ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation,
             }
             if (!removed)
                 status = error(WorkspaceError::NotFound, "remove annotation",
-                               mutation.annotationDescriptor);
+                               mutation.annotationDescriptor.ref());
             break;
         }
         case ClassMutationKind::RenameLocal:
         {
             jbc::core::MemberInfo* method = findMethod(cf, mutation.member);
             if (method == nullptr) {
-                status = error(WorkspaceError::NotFound, "rename local", mutation.member.name);
+                status = error(WorkspaceError::NotFound, "rename local",
+                               mutation.member.name.ref());
                 break;
             }
             bool changed = false;
@@ -1208,11 +1221,11 @@ ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation,
                         if (table == nullptr) continue;
                         bool tableChanged = false;
                         for (jbc::core::LocalVariableTableAttr::Row& row : table->rows) {
-                            if (utf8Text(cf, row.nameCp) != mutation.localName) continue;
+                            if (mutation.localName.ref() != utf8Text(cf, row.nameCp)) continue;
                             if (mutation.localIndex >= 0 &&
                                 static_cast<ca::i32>(row.slot) != mutation.localIndex)
                                 continue;
-                            row.nameCp = support::internUtf8(cf, mutation.replacementLocalName);
+                            row.nameCp = support::internUtf8(cf, mutation.replacementLocalName.ref());
                             tableChanged = true;
                         }
                         if (tableChanged) {
@@ -1223,7 +1236,8 @@ ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation,
                 }
             }
             if (!changed)
-                status = error(WorkspaceError::NotFound, "rename local", mutation.localName);
+                status =
+                    error(WorkspaceError::NotFound, "rename local", mutation.localName.ref());
             break;
         }
         case ClassMutationKind::ReplaceTryCatchBlocks:
@@ -1231,7 +1245,7 @@ ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation,
             jbc::core::MemberInfo* method = findMethod(cf, mutation.member);
             if (method == nullptr) {
                 status = error(WorkspaceError::NotFound, "replace try catch blocks",
-                               mutation.member.name);
+                               mutation.member.name.ref());
                 break;
             }
             // 空块 + 无绑定：照旧语义为成功无操作（不动方法体）。
@@ -1246,10 +1260,10 @@ ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation,
             }
             jbc::ir::CodeUnitRef unit = std::move(promoted).unwrap();
 
-            std::unordered_map<std::string, LabelId> labels;
+            std::unordered_map<ca::str::Utf8String, LabelId> labels;
             bool bindingInvalid = false;
             for (const LabelBindingSpec& binding : mutation.existingLabels) {
-                if (binding.id.empty() || labels.find(binding.id) != labels.end()) {
+                if (binding.id.is_empty() || labels.find(binding.id) != labels.end()) {
                     status = error(WorkspaceError::InvalidArgument, "bind labels",
                                    "label IDs must be non-empty and unique");
                     bindingInvalid = true;
@@ -1271,13 +1285,13 @@ ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation,
                     bindingInvalid = true;
                     break;
                 }
-                labels.emplace(binding.id, std::move(created).unwrap());
+                labels.emplace(binding.id.clone(), std::move(created).unwrap());
             }
             if (bindingInvalid) break;
 
-            const auto resolve = [&](const std::string& id, ca::i32 index,
+            const auto resolve = [&](const ca::str::Utf8String& id, ca::i32 index,
                                      LabelId& outLabel) -> WorkspaceErrorInfo {
-                if (!id.empty()) return findSymbolicLabel(labels, id, outLabel);
+                if (!id.is_empty()) return findSymbolicLabel(labels, id, outLabel);
                 const auto& order = unit->dom.order();
                 if (index < 0 || static_cast<ca::usize>(index) >= order.size())
                     return WorkspaceErrorInfo{WorkspaceError::InvalidArgument,
@@ -1311,7 +1325,8 @@ ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation,
                     break;
                 }
                 unit->exc.push_back({start, end, handler,
-                                     block.type.empty() ? 0U : session->internClass(block.type)});
+                                     block.type.is_empty() ? 0U
+                                                           : session->internClass(block.type.ref())});
             }
             if (boundaryInvalid) break;
             status = recomputeFrameMaxes(*session, *unit, *method);
@@ -1329,7 +1344,7 @@ ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation,
             jbc::core::MemberInfo* method = findMethod(cf, mutation.member);
             if (method == nullptr) {
                 status = error(WorkspaceError::NotFound, "replace method body",
-                               mutation.member.name);
+                               mutation.member.name.ref());
                 break;
             }
             if ((method->access & (kAccAbstract | kAccNative)) != 0) {
@@ -1366,7 +1381,8 @@ ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation,
         {
             jbc::core::MemberInfo* method = findMethod(cf, mutation.member);
             if (method == nullptr) {
-                status = error(WorkspaceError::NotFound, "edit instruction", mutation.member.name);
+                status = error(WorkspaceError::NotFound, "edit instruction",
+                               mutation.member.name.ref());
                 break;
             }
             const ca::usize methodIndex = static_cast<ca::usize>(method - cf.methods.data());
@@ -1392,10 +1408,10 @@ ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation,
             const InsnId targetId = order[static_cast<ca::usize>(index)];
 
             // 符号标签绑定（existingLabels：绑定 ID → 指令序号）。
-            std::unordered_map<std::string, LabelId> labels;
+            std::unordered_map<ca::str::Utf8String, LabelId> labels;
             bool bindingInvalid = false;
             for (const LabelBindingSpec& binding : mutation.existingLabels) {
-                if (binding.id.empty() || labels.find(binding.id) != labels.end()) {
+                if (binding.id.is_empty() || labels.find(binding.id) != labels.end()) {
                     status = error(WorkspaceError::InvalidArgument, "bind labels",
                                    "label IDs must be non-empty and unique");
                     bindingInvalid = true;
@@ -1416,7 +1432,7 @@ ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation,
                     bindingInvalid = true;
                     break;
                 }
-                labels.emplace(binding.id, std::move(created).unwrap());
+                labels.emplace(binding.id.clone(), std::move(created).unwrap());
             }
             if (bindingInvalid) break;
 
@@ -1455,7 +1471,7 @@ ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation,
             else   // InsertInstruction
             {
                 if (mutation.instruction.kind == InstructionKind::Label) {
-                    if (mutation.instruction.label.empty() ||
+                    if (mutation.instruction.label.is_empty() ||
                         labels.find(mutation.instruction.label) != labels.end()) {
                         status = error(WorkspaceError::InvalidArgument, "edit instruction",
                                        "new label ID must be non-empty and not already bound");

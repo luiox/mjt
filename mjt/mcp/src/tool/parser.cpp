@@ -24,6 +24,23 @@ using mjt::workspace::SearchOptions;
 using mjt::workspace::WorkflowReferenceKind;
 using mjt::workspace::WorkflowReferenceQuery;
 
+/// @brief JSON 文本 → Utf8String：nlohmann 解析契约保证字符串是合法 UTF-8，
+///        直接按字节收编（与 workspace 侧 analysis_ingest 的 utf8() 同口径）。
+ca::str::Utf8String utf8(const std::string& value)
+{
+    return ca::str::Utf8String::from_data_unchecked(
+        reinterpret_cast<const ca::u8*>(value.data()), value.size());
+}
+
+/// @brief JSON 字符串数组 → Utf8String 列表（flag 名单/异常类/switch 标签等）。
+std::vector<ca::str::Utf8String> utf8List(const std::vector<std::string>& values)
+{
+    std::vector<ca::str::Utf8String> result;
+    result.reserve(values.size());
+    for (const std::string& value : values) result.push_back(utf8(value));
+    return result;
+}
+
 bool parseSearchOptions(const Json& arguments, SearchOptions& output, std::string& error)
 {
     const auto mode = arguments.value("match_mode", std::string{"contains"});
@@ -93,9 +110,9 @@ bool parseHandle(const Json& value, HandleSpec& output, std::string& error)
         return false;
     }
     output.tag                = value.value("tag", 0);
-    output.owner              = value.value("owner", std::string{});
-    output.name               = value.value("name", std::string{});
-    output.descriptor         = value.value("descriptor", std::string{});
+    output.owner              = utf8(value.value("owner", std::string{}));
+    output.name               = utf8(value.value("name", std::string{}));
+    output.descriptor         = utf8(value.value("descriptor", std::string{}));
     output.interfaceReference = value.value("interface", false);
     return true;
 }
@@ -124,13 +141,13 @@ bool parseConstant(const Json& value, ConstantSpec& output, std::string& error,
         error = "unsupported constant kind: " + kind;
         return false;
     }
-    output.stringValue = value.value("string_value", std::string{});
+    output.stringValue = utf8(value.value("string_value", std::string{}));
     output.intValue    = value.value("int_value", 0);
     output.longValue   = value.value("long_value", static_cast<ca::i64>(0));
     output.floatValue  = value.value("float_value", 0.0F);
     output.doubleValue = value.value("double_value", 0.0);
-    output.descriptor  = value.value("descriptor", std::string{});
-    output.name        = value.value("name", std::string{});
+    output.descriptor  = utf8(value.value("descriptor", std::string{}));
+    output.name        = utf8(value.value("name", std::string{}));
     if (value.contains("handle") && !parseHandle(value.at("handle"), output.handle, error))
         return false;
     if (value.contains("bootstrap_method") &&
@@ -188,15 +205,15 @@ bool parseInstruction(const Json& value, mjt::workspace::InstructionSpec& output
     output.operand = value.value("operand", 0);
     output.increment = value.value("increment", 0);
     output.interfaceInvocation = value.value("interface", false);
-    output.owner = value.value("owner", std::string{});
-    output.name = value.value("name", std::string{});
-    output.descriptor = value.value("descriptor", std::string{});
-    output.stringValue = value.value("string_value", std::string{});
+    output.owner = utf8(value.value("owner", std::string{}));
+    output.name = utf8(value.value("name", std::string{}));
+    output.descriptor = utf8(value.value("descriptor", std::string{}));
+    output.stringValue = utf8(value.value("string_value", std::string{}));
     output.longValue = value.value("long_value", static_cast<ca::i64>(0));
     output.floatValue = value.value("float_value", 0.0F);
     output.doubleValue = value.value("double_value", 0.0);
-    output.label = value.value("label", std::string{});
-    output.defaultLabel = value.value("default_label", std::string{});
+    output.label = utf8(value.value("label", std::string{}));
+    output.defaultLabel = utf8(value.value("default_label", std::string{}));
     output.minimum = value.value("minimum", 0);
     output.maximum = value.value("maximum", -1);
     output.dimensions = value.value("dimensions", 0);
@@ -206,7 +223,7 @@ bool parseInstruction(const Json& value, mjt::workspace::InstructionSpec& output
             error = "instruction labels must be an array";
             return false;
         }
-        output.labels = value.at("labels").get<std::vector<std::string>>();
+        output.labels = utf8List(value.at("labels").get<std::vector<std::string>>());
     }
     if (value.contains("keys")) {
         if (!value.at("keys").is_array()) {
@@ -330,7 +347,7 @@ bool parseAccessFlags(const Json& values, mjt::workspace::AnnotationTarget targe
 
 bool parseMutation(const Json& arguments, ClassMutation& mutation, std::string& error)
 {
-    mutation.classUri = arguments.value("class_uri", std::string{});
+    mutation.classUri = utf8(arguments.value("class_uri", std::string{}));
     const auto kind = arguments.value("kind", std::string{});
     //set_class_access → change_class_access 严格切换：旧整体替换语义
     //会丢 ACC_SUPER 且静默吞掉不可表达的 flag，工具面不再接受旧词。
@@ -369,7 +386,7 @@ bool parseMutation(const Json& arguments, ClassMutation& mutation, std::string& 
                     "access/access_flags are not valid for it";
             return false;
         }
-        const auto parseFlagList = [&](const char* key, std::vector<std::string>& out) {
+        const auto parseFlagList = [&](const char* key, std::vector<ca::str::Utf8String>& out) {
             if (!arguments.contains(key)) return true;
             if (!arguments.at(key).is_array()) {
                 error = std::string(key) + " must be an array of flag names";
@@ -380,15 +397,15 @@ bool parseMutation(const Json& arguments, ClassMutation& mutation, std::string& 
                     error = std::string(key) + " items must be non-empty flag names";
                     return false;
                 }
-                out.push_back(flag.get_ref<const std::string&>());
+                out.push_back(utf8(flag.get_ref<const std::string&>()));
             }
             return true;
         };
         if (!parseFlagList("set", mutation.setFlags) || !parseFlagList("clear", mutation.clearFlags))
             return false;
     }
-    mutation.member = {arguments.value("member_name", std::string{}),
-                       arguments.value("member_descriptor", std::string{})};
+    mutation.member = {utf8(arguments.value("member_name", std::string{})),
+                       utf8(arguments.value("member_descriptor", std::string{}))};
     if (arguments.contains("access") && arguments.contains("access_flags")) {
         error = "access and access_flags are mutually exclusive";
         return false;
@@ -412,9 +429,9 @@ bool parseMutation(const Json& arguments, ClassMutation& mutation, std::string& 
     mutation.instructionIndex = arguments.value("instruction_index", -1);
     mutation.insertAfter = arguments.value("insert_after", false);
     mutation.localIndex = arguments.value("local_index", -1);
-    mutation.localName = arguments.value("local_name", std::string{});
-    mutation.replacementLocalName = arguments.value("replacement_local_name", std::string{});
-    mutation.annotationDescriptor = arguments.value("annotation_descriptor", std::string{});
+    mutation.localName = utf8(arguments.value("local_name", std::string{}));
+    mutation.replacementLocalName = utf8(arguments.value("replacement_local_name", std::string{}));
+    mutation.annotationDescriptor = utf8(arguments.value("annotation_descriptor", std::string{}));
     mutation.annotationVisible = arguments.value("annotation_visible", true);
     const auto annotationTarget = arguments.value("annotation_target", std::string("class"));
     if (annotationTarget == "class") mutation.annotationTarget = mjt::workspace::AnnotationTarget::Class;
@@ -424,13 +441,13 @@ bool parseMutation(const Json& arguments, ClassMutation& mutation, std::string& 
         error = "unsupported annotation target: " + annotationTarget;
         return false;
     }
-    mutation.signature = arguments.value("signature", std::string{});
+    mutation.signature = utf8(arguments.value("signature", std::string{}));
     if (arguments.contains("exceptions")) {
         if (!arguments.at("exceptions").is_array()) {
             error = "exceptions must be an array";
             return false;
         }
-        mutation.exceptions = arguments.at("exceptions").get<std::vector<std::string>>();
+        mutation.exceptions = utf8List(arguments.at("exceptions").get<std::vector<std::string>>());
     }
     if (arguments.contains("field_value")) {
         mutation.hasFieldValue = true;
@@ -447,7 +464,7 @@ bool parseMutation(const Json& arguments, ClassMutation& mutation, std::string& 
                 return false;
             }
             mutation.existingLabels.push_back(
-                {value.value("id", std::string{}), value.value("instruction_index", -1)});
+                {utf8(value.value("id", std::string{})), value.value("instruction_index", -1)});
         }
     }
     if (arguments.contains("instruction") && !parseInstruction(arguments.at("instruction"), mutation.instruction, error))
@@ -478,10 +495,10 @@ bool parseMutation(const Json& arguments, ClassMutation& mutation, std::string& 
                 {value.value("start_instruction", -1),
                  value.value("end_instruction", -1),
                  value.value("handler_instruction", -1),
-                 value.value("type", std::string{}),
-                 value.value("start_label", std::string{}),
-                 value.value("end_label", std::string{}),
-                 value.value("handler_label", std::string{})});
+                 utf8(value.value("type", std::string{})),
+                 utf8(value.value("start_label", std::string{})),
+                 utf8(value.value("end_label", std::string{})),
+                 utf8(value.value("handler_label", std::string{}))});
         }
     }
     if (arguments.contains("local_variables")) {
@@ -494,11 +511,11 @@ bool parseMutation(const Json& arguments, ClassMutation& mutation, std::string& 
                 error = "each local_variables item must be an object";
                 return false;
             }
-            mutation.localVariables.push_back({value.value("name", std::string{}),
-                                               value.value("descriptor", std::string{}),
-                                               value.value("signature", std::string{}),
-                                               value.value("start_label", std::string{}),
-                                               value.value("end_label", std::string{}),
+            mutation.localVariables.push_back({utf8(value.value("name", std::string{})),
+                                               utf8(value.value("descriptor", std::string{})),
+                                               utf8(value.value("signature", std::string{})),
+                                               utf8(value.value("start_label", std::string{})),
+                                               utf8(value.value("end_label", std::string{})),
                                                value.value("index", -1)});
         }
     }

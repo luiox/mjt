@@ -3,6 +3,8 @@
 #include <string>
 #include <vector>
 
+#include "libca/str/utf8_string.hpp"
+
 #include "libca/core/datatype.hpp"
 
 #include "mjbase/model/resource_container.hpp"
@@ -14,11 +16,24 @@ namespace mjt::workspace {
 /// @file class_mutation_service.hpp
 /// @brief 结构化 class 修改服务（事务与校验语义，指令载体按 libjbc 定型）。
 
+/// @brief 深拷贝元素型列表（Utf8String 与各 Spec 均提供 clone()）。
+template <typename T>
+std::vector<T> cloneList(const std::vector<T>& values)
+{
+    std::vector<T> result;
+    result.reserve(values.size());
+    for (const T& value : values) result.push_back(value.clone());
+    return result;
+}
+
 /// @brief 结构化 class 修改的目标成员标识。
 struct MemberSelector final
 {
-    std::string name;
-    std::string descriptor;
+    ca::str::Utf8String name;
+    ca::str::Utf8String descriptor;
+
+    /// @brief 深拷贝（Utf8String 禁拷贝；按值持有/改写 DTO 的消费点走 clone 族）。
+    MemberSelector clone() const { return {name.clone(), descriptor.clone()}; }
 };
 
 /// @brief 可由结构化编辑接口构造的常用 JVM 指令种类。
@@ -51,11 +66,17 @@ enum class InstructionKind : ca::u8
 /// @brief JVM method handle 的拥有型请求表示。
 struct HandleSpec final
 {
-    ca::i32     tag = 0;
-    std::string owner;
-    std::string name;
-    std::string descriptor;
-    bool        interfaceReference = false;
+    ca::i32             tag = 0;
+    ca::str::Utf8String owner;
+    ca::str::Utf8String name;
+    ca::str::Utf8String descriptor;
+    bool                interfaceReference = false;
+
+    /// @brief 深拷贝（同 MemberSelector）。
+    HandleSpec clone() const
+    {
+        return {tag, owner.clone(), name.clone(), descriptor.clone(), interfaceReference};
+    }
 };
 
 /// @brief LDC、invokedynamic 和 condy bootstrap 参数支持的常量种类。
@@ -75,16 +96,32 @@ enum class ConstantKind : ca::u8
 struct ConstantSpec final
 {
     ConstantKind              kind = ConstantKind::String;
-    std::string               stringValue;
+    ca::str::Utf8String       stringValue;
     ca::i32                   intValue    = 0;
     ca::i64                   longValue   = 0;
     float                     floatValue  = 0.0F;
     double                    doubleValue = 0.0;
-    std::string               descriptor;
-    std::string               name;
+    ca::str::Utf8String       descriptor;
+    ca::str::Utf8String       name;
     HandleSpec                handle;
     HandleSpec                bootstrapMethod;
     std::vector<ConstantSpec> bootstrapArguments;
+
+    /// @brief 深拷贝（bootstrapArguments 递归走 cloneList）。
+    ConstantSpec clone() const
+    {
+        return {kind,
+                stringValue.clone(),
+                intValue,
+                longValue,
+                floatValue,
+                doubleValue,
+                descriptor.clone(),
+                name.clone(),
+                handle.clone(),
+                bootstrapMethod.clone(),
+                cloneList(bootstrapArguments)};
+    }
 };
 
 /// @brief 单条结构化字节码指令；字段按 @p kind 解释。
@@ -99,16 +136,16 @@ struct InstructionSpec final
     ca::i32                   operand             = 0;
     ca::i32                   increment           = 0;
     bool                      interfaceInvocation = false;
-    std::string               owner;
-    std::string               name;
-    std::string               descriptor;
-    std::string               stringValue;
+    ca::str::Utf8String       owner;
+    ca::str::Utf8String       name;
+    ca::str::Utf8String       descriptor;
+    ca::str::Utf8String       stringValue;
     ca::i64                   longValue   = 0;
     float                     floatValue  = 0.0F;
     double                    doubleValue = 0.0;
-    std::string               label;
-    std::string               defaultLabel;
-    std::vector<std::string>  labels;
+    ca::str::Utf8String       label;
+    ca::str::Utf8String       defaultLabel;
+    std::vector<ca::str::Utf8String> labels;
     std::vector<ca::i32>      keys;
     ca::i32                   minimum    = 0;
     ca::i32                   maximum    = -1;
@@ -117,36 +154,90 @@ struct InstructionSpec final
     HandleSpec                handle;
     HandleSpec                bootstrapMethod;
     std::vector<ConstantSpec> bootstrapArguments;
+
+    /// @brief 深拷贝（嵌套 handle/bootstrap 子树走各自 clone）。
+    InstructionSpec clone() const
+    {
+        return {kind,
+                opcode,
+                operand,
+                increment,
+                interfaceInvocation,
+                owner.clone(),
+                name.clone(),
+                descriptor.clone(),
+                stringValue.clone(),
+                longValue,
+                floatValue,
+                doubleValue,
+                label.clone(),
+                defaultLabel.clone(),
+                cloneList(labels),
+                keys,
+                minimum,
+                maximum,
+                dimensions,
+                line,
+                handle.clone(),
+                bootstrapMethod.clone(),
+                cloneList(bootstrapArguments)};
+    }
 };
 
 /// @brief 以代码指令序号或符号 label 描述的 try/catch 块边界。
 struct TryCatchSpec final
 {
-    ca::i32     startInstruction   = -1;
-    ca::i32     endInstruction     = -1;
-    ca::i32     handlerInstruction = -1;
-    std::string type;
-    std::string startLabel;
-    std::string endLabel;
-    std::string handlerLabel;
+    ca::i32             startInstruction   = -1;
+    ca::i32             endInstruction     = -1;
+    ca::i32             handlerInstruction = -1;
+    ca::str::Utf8String type;
+    ca::str::Utf8String startLabel;
+    ca::str::Utf8String endLabel;
+    ca::str::Utf8String handlerLabel;
+
+    /// @brief 深拷贝（同 MemberSelector）。
+    TryCatchSpec clone() const
+    {
+        return {startInstruction,
+                endInstruction,
+                handlerInstruction,
+                type.clone(),
+                startLabel.clone(),
+                endLabel.clone(),
+                handlerLabel.clone()};
+    }
 };
 
 /// @brief 将请求内符号 label 绑定到现有方法的代码指令序号（指令前置边界）。
 struct LabelBindingSpec final
 {
-    std::string id;
-    ca::i32     instructionIndex = -1;
+    ca::str::Utf8String id;
+    ca::i32             instructionIndex = -1;
+
+    /// @brief 深拷贝（同 MemberSelector）。
+    LabelBindingSpec clone() const { return {id.clone(), instructionIndex}; }
 };
 
 /// @brief 整方法体替换时重建的局部变量调试信息。
 struct LocalVariableSpec final
 {
-    std::string name;
-    std::string descriptor;
-    std::string signature;
-    std::string startLabel;
-    std::string endLabel;
-    ca::i32     index = -1;
+    ca::str::Utf8String name;
+    ca::str::Utf8String descriptor;
+    ca::str::Utf8String signature;
+    ca::str::Utf8String startLabel;
+    ca::str::Utf8String endLabel;
+    ca::i32             index = -1;
+
+    /// @brief 深拷贝（同 MemberSelector）。
+    LocalVariableSpec clone() const
+    {
+        return {name.clone(),
+                descriptor.clone(),
+                signature.clone(),
+                startLabel.clone(),
+                endLabel.clone(),
+                index};
+    }
 };
 
 /// @brief ClassMutationService 支持的便利编辑操作。
@@ -193,31 +284,59 @@ enum class AnnotationTarget : ca::u8
 ///   未知 flag 名报错并列出 class 目标合法 flag 全集。
 struct ClassMutation final
 {
-    std::string                    classUri;
+    ca::str::Utf8String            classUri;
     ClassMutationKind              kind = ClassMutationKind::SetClassAccess;
     MemberSelector                 member;
     ca::i32                        access           = 0;
     /// @brief ChangeClassAccess：置位 flag 名单（JVM 小写助记，如 "public"）。
-    std::vector<std::string>       setFlags;
+    std::vector<ca::str::Utf8String> setFlags;
     /// @brief ChangeClassAccess：清位 flag 名单；两组都未提及的位保留原值。
-    std::vector<std::string>       clearFlags;
+    std::vector<ca::str::Utf8String> clearFlags;
     ca::i32                        instructionIndex = -1;
     bool                           insertAfter      = false;
     ca::i32                        localIndex       = -1;
-    std::string                    localName;
-    std::string                    replacementLocalName;
+    ca::str::Utf8String            localName;
+    ca::str::Utf8String            replacementLocalName;
     AnnotationTarget               annotationTarget  = AnnotationTarget::Class;
     bool                           annotationVisible = true;
-    std::string                    annotationDescriptor;
+    ca::str::Utf8String            annotationDescriptor;
     InstructionSpec                instruction;
-    std::string                    signature;
-    std::vector<std::string>       exceptions;
+    ca::str::Utf8String            signature;
+    std::vector<ca::str::Utf8String> exceptions;
     bool                           hasFieldValue = false;
     ConstantSpec                   fieldValue;
     std::vector<LabelBindingSpec>  existingLabels;
     std::vector<InstructionSpec>   initialInstructions;
     std::vector<TryCatchSpec>      tryCatchBlocks;
     std::vector<LocalVariableSpec> localVariables;
+
+    /// @brief 深拷贝（候选事务要对请求改写字段时的复制面；逐字段 clone）。
+    ClassMutation clone() const
+    {
+        return {classUri.clone(),
+                kind,
+                member.clone(),
+                access,
+                cloneList(setFlags),
+                cloneList(clearFlags),
+                instructionIndex,
+                insertAfter,
+                localIndex,
+                localName.clone(),
+                replacementLocalName.clone(),
+                annotationTarget,
+                annotationVisible,
+                annotationDescriptor.clone(),
+                instruction.clone(),
+                signature.clone(),
+                cloneList(exceptions),
+                hasFieldValue,
+                fieldValue.clone(),
+                cloneList(existingLabels),
+                cloneList(initialInstructions),
+                cloneList(tryCatchBlocks),
+                cloneList(localVariables)};
+    }
 };
 
 /// @brief 候选 class 修改的底层结果；Workspace 将其包装为统一 MutationResult。
@@ -250,10 +369,10 @@ public:
     /// @brief 汇编完整 Jasm 并事务替换候选容器中的目标 class。
     ///        validationMode 同时控制重建管线自带的字节码校验门：off 时重建
     ///        后不再做 validate（汇编本身仍必须成功）。
-    jasm::Result<jasm::JvmJasmClass> applyJasm(const std::string&      uri,
-                                               ca::str::Utf16StringRef sourceName,
-                                               ca::str::Utf16StringRef source,
-                                               jasm::ValidationMode    validationMode
+    jasm::Result<jasm::JvmJasmClass> applyJasm(const ca::str::Utf8StringRef& uri,
+                                               ca::str::Utf16StringRef       sourceName,
+                                               ca::str::Utf16StringRef       source,
+                                               jasm::ValidationMode          validationMode
                                                    = jasm::ValidationMode::Relaxed);
 
     /// @brief 应用一项结构化修改；失败时不会替换目标 ClassResource 的字节。

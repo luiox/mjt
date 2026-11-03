@@ -56,6 +56,12 @@ Utf8String utf8(const std::string& value)
                                            value.size());
 }
 
+/// @brief Utf8String 域文本 → 拥有型 Utf8String（reference_scan 切片字段直通）。
+Utf8String utf8(const ca::str::Utf8StringRef& value)
+{
+    return Utf8String::from_data_unchecked(value.data(), value.byte_length());
+}
+
 ca::str::Utf8StringRef utf8Ref(const std::string& value)
 {
     return ca::str::Utf8StringRef::from_data(reinterpret_cast<const ca::u8*>(value.data()),
@@ -223,7 +229,8 @@ int main(int argc, char** argv)
     Stopwatch refScanWatch;
     auto      scan = workspace.referenceScan();
     if (scan.is_err()) die("referenceScan failed");
-    const auto& references = scan.unwrap();
+    // ReferenceScan 持 Utf8String 域切片（禁拷贝）：unwrap 走移动重载。
+    const auto references = std::move(scan).unwrap();
 
     std::vector<mjbase::project::DbReferenceRecord> records;
     records.reserve(references.methodReferences().size() +
@@ -233,40 +240,43 @@ int main(int argc, char** argv)
         records.push_back(std::move(record));
     };
     for (const mjt::workspace::MethodReference& ref : references.methodReferences()) {
-        if (primaryClasses.find(ref.site.sourceClass) == primaryClasses.end()) continue;
+        if (primaryClasses.find(ref.site.sourceClass.to_std_string()) == primaryClasses.end())
+            continue;
         mjbase::project::DbReferenceRecord record;
-        record.sourceClass      = utf8(ref.site.sourceClass);
-        record.sourceMethod     = utf8(ref.site.sourceMethod);
-        record.sourceDescriptor = utf8(ref.site.sourceDescriptor);
+        record.sourceClass      = utf8(ref.site.sourceClass.ref());
+        record.sourceMethod     = utf8(ref.site.sourceMethod.ref());
+        record.sourceDescriptor = utf8(ref.site.sourceDescriptor.ref());
         record.insnIndex        = ref.site.insnIndex;
         record.kind             = mjbase::project::DbReferenceKind::Method;
-        record.targetClass      = utf8(ref.target.owner);
-        record.targetName       = utf8(ref.target.name);
-        record.targetDescriptor = utf8(ref.target.descriptor);
+        record.targetClass      = utf8(ref.target.owner.ref());
+        record.targetName       = utf8(ref.target.name.ref());
+        record.targetDescriptor = utf8(ref.target.descriptor.ref());
         emitSite(std::move(record));
     }
     for (const mjt::workspace::FieldReference& ref : references.fieldReferences()) {
-        if (primaryClasses.find(ref.site.sourceClass) == primaryClasses.end()) continue;
+        if (primaryClasses.find(ref.site.sourceClass.to_std_string()) == primaryClasses.end())
+            continue;
         mjbase::project::DbReferenceRecord record;
-        record.sourceClass      = utf8(ref.site.sourceClass);
-        record.sourceMethod     = utf8(ref.site.sourceMethod);
-        record.sourceDescriptor = utf8(ref.site.sourceDescriptor);
+        record.sourceClass      = utf8(ref.site.sourceClass.ref());
+        record.sourceMethod     = utf8(ref.site.sourceMethod.ref());
+        record.sourceDescriptor = utf8(ref.site.sourceDescriptor.ref());
         record.insnIndex        = ref.site.insnIndex;
         record.kind             = mjbase::project::DbReferenceKind::Field;
-        record.targetClass      = utf8(ref.target.owner);
-        record.targetName       = utf8(ref.target.name);
-        record.targetDescriptor = utf8(ref.target.descriptor);
+        record.targetClass      = utf8(ref.target.owner.ref());
+        record.targetName       = utf8(ref.target.name.ref());
+        record.targetDescriptor = utf8(ref.target.descriptor.ref());
         emitSite(std::move(record));
     }
     for (const mjt::workspace::TypeReference& ref : references.typeReferences()) {
-        if (primaryClasses.find(ref.site.sourceClass) == primaryClasses.end()) continue;
+        if (primaryClasses.find(ref.site.sourceClass.to_std_string()) == primaryClasses.end())
+            continue;
         mjbase::project::DbReferenceRecord record;
-        record.sourceClass      = utf8(ref.site.sourceClass);
-        record.sourceMethod     = utf8(ref.site.sourceMethod);
-        record.sourceDescriptor = utf8(ref.site.sourceDescriptor);
+        record.sourceClass      = utf8(ref.site.sourceClass.ref());
+        record.sourceMethod     = utf8(ref.site.sourceMethod.ref());
+        record.sourceDescriptor = utf8(ref.site.sourceDescriptor.ref());
         record.insnIndex        = ref.site.insnIndex;
         record.kind             = mjbase::project::DbReferenceKind::Type;
-        record.targetClass      = utf8(ref.targetType);
+        record.targetClass      = utf8(ref.targetType.ref());
         emitSite(std::move(record));
     }
     const double       refScanMs  = refScanWatch.ms();

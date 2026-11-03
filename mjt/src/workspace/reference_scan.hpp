@@ -19,6 +19,8 @@
 #include <string>
 #include <vector>
 
+#include "libca/str/utf8_string.hpp"
+
 #include "mjbase/model/resource_container.hpp"
 #include "workspace_types.hpp"
 
@@ -27,26 +29,38 @@ namespace mjt::workspace {
 /// @brief 稳定的 JVM 方法引用标识（自持拷贝，build 返回后独立于扫描中间态）。
 struct MethodRefKey
 {
-    std::string owner;
-    std::string name;
-    std::string descriptor;
+    ca::str::Utf8String owner;
+    ca::str::Utf8String name;
+    ca::str::Utf8String descriptor;
+
+    /// @brief 深拷贝（Utf8String 禁拷贝；查询结果逐元素复制走这里）。
+    MethodRefKey clone() const { return {owner.clone(), name.clone(), descriptor.clone()}; }
 };
 
 /// @brief 稳定的 JVM 字段引用标识。
 struct FieldRefKey
 {
-    std::string owner;
-    std::string name;
-    std::string descriptor;
+    ca::str::Utf8String owner;
+    ca::str::Utf8String name;
+    ca::str::Utf8String descriptor;
+
+    /// @brief 深拷贝（同 MethodRefKey）。
+    FieldRefKey clone() const { return {owner.clone(), name.clone(), descriptor.clone()}; }
 };
 
 /// @brief 引用位置（方法级引用带指令序号；class 级引用 method/desc 为空、index 为 -1）。
 struct ReferenceSite
 {
-    std::string sourceClass;
-    std::string sourceMethod;
-    std::string sourceDescriptor;
-    ca::i32     insnIndex = -1;
+    ca::str::Utf8String sourceClass;
+    ca::str::Utf8String sourceMethod;
+    ca::str::Utf8String sourceDescriptor;
+    ca::i32             insnIndex = -1;
+
+    /// @brief 深拷贝（site 在扫描与查询间按值复用走这里）。
+    ReferenceSite clone() const
+    {
+        return {sourceClass.clone(), sourceMethod.clone(), sourceDescriptor.clone(), insnIndex};
+    }
 };
 
 /// @brief 方法引用种类。本切片只产出 Direct（编码事实）。
@@ -67,6 +81,9 @@ struct MethodReference
     MethodRefKey        target;
     ReferenceSite       site;
     MethodReferenceKind kind = MethodReferenceKind::Direct;
+
+    /// @brief 深拷贝（查询返回值按元素重建走这里）。
+    MethodReference clone() const { return {target.clone(), site.clone(), kind}; }
 };
 
 /// @brief 一条字段引用事实。
@@ -75,13 +92,19 @@ struct FieldReference
     FieldRefKey        target;
     ReferenceSite      site;
     FieldReferenceKind kind = FieldReferenceKind::Direct;
+
+    /// @brief 深拷贝（同 MethodReference）。
+    FieldReference clone() const { return {target.clone(), site.clone(), kind}; }
 };
 
 /// @brief 一条类型引用事实。
 struct TypeReference
 {
-    std::string   targetType;
-    ReferenceSite site;
+    ca::str::Utf8String targetType;
+    ReferenceSite       site;
+
+    /// @brief 深拷贝（同 MethodReference）。
+    TypeReference clone() const { return {targetType.clone(), site.clone()}; }
 };
 
 /// @brief 引用扫描结果与查询面（值语义；build 可重复调用全量重建）。
@@ -92,8 +115,9 @@ public:
     void build(const model::ResourceContainer& container);
 
     /// 精确目标查询：编码目标为 owner/name/descriptor 的方法引用。
-    std::vector<MethodReference> methodReferencesTo(const std::string& owner, const std::string& name,
-                                                    const std::string& descriptor) const;
+    std::vector<MethodReference> methodReferencesTo(const ca::str::Utf8StringRef& owner,
+                                                    const ca::str::Utf8StringRef& name,
+                                                    const ca::str::Utf8StringRef& descriptor) const;
     /// 全部方法引用（扫描顺序：class 遍历序 + 方法体程序顺序）。
     const std::vector<MethodReference>& methodReferences() const noexcept { return methods_; }
     /// 全部字段引用。
@@ -101,19 +125,21 @@ public:
     /// 全部类型引用。
     const std::vector<TypeReference>& typeReferences() const noexcept { return types_; }
     /// 来源方法查询：owner.name(descriptor) 方法体发出的全部方法引用。
-    std::vector<MethodReference> methodReferencesFrom(const std::string& owner, const std::string& name,
-                                                      const std::string& descriptor) const;
+    std::vector<MethodReference> methodReferencesFrom(const ca::str::Utf8StringRef& owner,
+                                                      const ca::str::Utf8StringRef& name,
+                                                      const ca::str::Utf8StringRef& descriptor) const;
     /// 来源类查询：class 声明的全部方法发出的方法引用。
-    std::vector<MethodReference> methodReferencesFromClass(const std::string& owner) const;
+    std::vector<MethodReference> methodReferencesFromClass(const ca::str::Utf8StringRef& owner) const;
     /// 精确目标查询：编码目标为 owner/name/descriptor 的字段访问。
-    std::vector<FieldReference> fieldReferencesTo(const std::string& owner, const std::string& name,
-                                                  const std::string& descriptor) const;
+    std::vector<FieldReference> fieldReferencesTo(const ca::str::Utf8StringRef& owner,
+                                                  const ca::str::Utf8StringRef& name,
+                                                  const ca::str::Utf8StringRef& descriptor) const;
     /// 来源类查询：class 声明的全部方法发出的字段访问。
-    std::vector<FieldReference> fieldReferencesFromClass(const std::string& owner) const;
+    std::vector<FieldReference> fieldReferencesFromClass(const ca::str::Utf8StringRef& owner) const;
     /// 精确目标查询：编码引用 targetType 的全部位置（指令级 + class 头声明）。
-    std::vector<TypeReference> typeReferencesTo(const std::string& targetType) const;
+    std::vector<TypeReference> typeReferencesTo(const ca::str::Utf8StringRef& targetType) const;
     /// 来源类查询：class 发出的全部类型引用。
-    std::vector<TypeReference> typeReferencesFromClass(const std::string& owner) const;
+    std::vector<TypeReference> typeReferencesFromClass(const ca::str::Utf8StringRef& owner) const;
 
 private:
     std::vector<MethodReference> methods_;
@@ -127,8 +153,10 @@ std::string methodReferenceKind(MethodReferenceKind kind);
 /// @brief FieldReferenceKind → DTO kind 文本（本切片恒 "direct"）。
 std::string fieldReferenceKind(FieldReferenceKind kind);
 
-/// @brief ReferenceInfo 组装与稳定排序（xref 查询共用）。
-ReferenceInfo referenceInfo(const ReferenceSite& site, const std::string& target, const std::string& kind);
+/// @brief ReferenceInfo 组装与稳定排序（xref 查询共用）。site 已是 Utf8String
+///        域，此处按 DTO（std::string）投影。
+ReferenceInfo referenceInfo(const ReferenceSite& site, std::string_view target,
+                            std::string_view kind);
 void sortReferences(std::vector<ReferenceInfo>& references);
 
 }   // namespace mjt::workspace
