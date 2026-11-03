@@ -2006,7 +2006,9 @@ void bindFacade(py::module_& m)
             py::dict   out;
             out["class_census"]     = report.classCensusFile;
             out["container_census"] = report.containerCensusFile;
+            out["member_census"]    = report.memberCensusFile;
             out["classes"]          = report.classes;
+            out["members"]          = report.members;
             out["methods"]          = report.methods;
             out["fields"]           = report.fields;
             out["native_methods"]   = report.nativeMethods;
@@ -2018,15 +2020,17 @@ void bindFacade(py::module_& m)
         py::arg("path"), py::arg("out_dir") = "",
         "class_census：jar 全量类普查导出（deobf 工作流 S0 量化基线，#39）。\n\n"
         "一行一实体的 class_census.tsv（列序版本化、行序按内部名字节序、\n"
-        "\\uXXXX 转义与 mapping 格式同一套），附 container_census.tsv 汇总面。\n"
+        "\\uXXXX 转义与 mapping 格式同一套），附 container_census.tsv 汇总面\n"
+        "与 member_census.tsv 成员面（一行一成员，#148）。\n"
         "数据一律来自分析库投影（临时库整库导入后即弃），输入 jar 只读。\n\n"
         "Args:\n"
         "    path: jar 路径。\n"
         "    out_dir: 输出目录；缺省 `<jar>.census`，目录不存在则创建。\n"
         "Returns:\n"
-        "    报告 dict：{class_census, container_census, classes, methods,\n"
-        "    fields, native_methods, references, entries_active,\n"
-        "    entries_irregular}；数字与导出同库序同口径，S0 基线简报直引。\n"
+        "    报告 dict：{class_census, container_census, member_census,\n"
+        "    classes, members, methods, fields, native_methods, references,\n"
+        "    entries_active, entries_irregular}；数字与导出同库序同口径，\n"
+        "    members = member_census 行数 = Σ 类行 method_count + field_count。\n"
         "Raises:\n"
         "    RuntimeError: jar 缺失、导入或导出失败。");
 }

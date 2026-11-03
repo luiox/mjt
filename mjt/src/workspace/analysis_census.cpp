@@ -15,6 +15,7 @@ namespace {
 
 using mjbase::project::DbClassCensusRow;
 using mjbase::project::DbContainerCensus;
+using mjbase::project::DbMemberCensusRow;
 
 CensusExportError databaseError(mjbase::project::AnalysisDbError error)
 {
@@ -103,6 +104,14 @@ std::string renderAccessFlags(ca::i32 access)
 const char* zipEntryCell(bool regular)
 {
     return regular ? "regular" : "irregular";
+}
+
+/// @brief member kind 列 token：field/method 小写单 token——classKindName
+///        同款风格（mjbase 0.0.15 无 memberKindName 命名面，枚举编码序
+///        Field < Method 与投影键序一致）。
+const char* memberKindName(mjbase::project::DbMemberKind kind)
+{
+    return kind == mjbase::project::DbMemberKind::Field ? "field" : "method";
 }
 
 /// @brief binary 写出（禁 CRT 文本模式翻译，LF 原样落盘）。
@@ -197,6 +206,38 @@ std::string renderContainerCensusTsv(const DbContainerCensus& summary)
     return out;
 }
 
+std::string renderMemberCensusTsv(const std::vector<DbMemberCensusRow>& rows)
+{
+    // 表头：版本行 + 列名行（列序变更递增 kMemberCensusSchemaVersion）。
+    // 列契约（#148 批 2，schema v1）：member_class / kind / name /
+    // descriptor / access / native / entry。
+    std::string out = "# member-census v" +
+                      std::to_string(kMemberCensusSchemaVersion) + "\n"
+                      "member_class\tkind\tname\tdescriptor\taccess\tnative\tentry\n";
+    for (const DbMemberCensusRow& row : rows) {
+        out += censusCell(row.ownerInternalName.ref());
+        out += '\t';
+        out += memberKindName(row.kind);
+        out += '\t';
+        out += censusCell(row.name.ref());
+        out += '\t';
+        out += censusCell(row.descriptor.ref());
+        out += '\t';
+        // access：原始访问旗标十进制。mjbase 0.0.15 无成员旗标命名面
+        // （类级 renderAccessFlags 词表不含成员位 static/private/volatile/
+        // bridge/varargs 等），v1 不在 mjt 侧另起词表——口径披露进 PR。
+        out += std::to_string(row.access);
+        out += '\t';
+        out += row.native ? "1" : "0";
+        out += '\t';
+        // entry：所属类条目身份（censusMembers 关联事实；成员行不携带条目
+        // 形态旗标，类级 regular/irregular 不外推，故出 entryId 十进制）。
+        out += std::to_string(row.entryId);
+        out += '\n';
+    }
+    return out;
+}
+
 ca::Result<CensusExportText, CensusExportError> renderCensus(
     const mjbase::project::AnalysisDb& db, ca::i64 inputId)
 {
@@ -222,6 +263,14 @@ ca::Result<CensusExportText, CensusExportError> renderCensus(
     if (classes.is_err()) {
         return ca::Err(databaseError(std::move(classes).unwrap_err()));
     }
+    // 成员普查（#148 批 2）：与 censusClasses 同门禁（上方登记判定）同错误
+    // 面（查询失败走 Database 通道）。行向量 move-out（行含 Utf8String，
+    // 不可拷贝），渲染与计数共用同一份。
+    auto members = db.censusMembers(inputId);
+    if (members.is_err()) {
+        return ca::Err(databaseError(std::move(members).unwrap_err()));
+    }
+    auto memberRows = std::move(members).unwrap();
     auto summary = db.censusContainer(inputId);
     if (summary.is_err()) {
         return ca::Err(databaseError(std::move(summary).unwrap_err()));
@@ -229,7 +278,9 @@ ca::Result<CensusExportText, CensusExportError> renderCensus(
 
     CensusExportText text;
     text.classCensusTsv     = renderClassCensusTsv(std::move(classes).unwrap());
+    text.memberCensusTsv    = renderMemberCensusTsv(memberRows);
     text.containerCensusTsv = renderContainerCensusTsv(std::move(summary).unwrap());
+    text.members            = memberRows.size();
     return ca::Ok(std::move(text));
 }
 
@@ -251,6 +302,7 @@ ca::Result<CensusExportPaths, CensusExportError> exportCensus(
     CensusExportPaths paths;
     paths.classCensus     = (dir / "class_census.tsv").string();
     paths.containerCensus = (dir / "container_census.tsv").string();
+    paths.memberCensus    = (dir / "member_census.tsv").string();
 
     auto rendered = std::move(text).unwrap();
     if (auto written = writeBytes(paths.classCensus, rendered.classCensusTsv);
@@ -261,6 +313,13 @@ ca::Result<CensusExportPaths, CensusExportError> exportCensus(
         written.is_err()) {
         return ca::Err(std::move(written).unwrap_err());
     }
+    // member_census.tsv 与 class_census.tsv 配套（#148 设计稿推荐口径）：
+    // 同一次导出、同临时库生命周期，不存在独立入口。
+    if (auto written = writeBytes(paths.memberCensus, rendered.memberCensusTsv);
+        written.is_err()) {
+        return ca::Err(std::move(written).unwrap_err());
+    }
+    paths.members = rendered.members;
     return ca::Ok(std::move(paths));
 }
 

@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <fstream>
 #include <sstream>
@@ -404,4 +405,164 @@ TEST(MjtAnalysisCensusTest, UnregisteredInputFailsInvalid)
                                  test::getTempOutPath("mjt_census_bad").string());
     ASSERT_TRUE(exported.is_err());
     EXPECT_EQ(exported.unwrap_err().kind, CensusExportErrorKind::Invalid);
+}
+
+TEST(MjtAnalysisCensusTest, MemberCensusRowOrderAndReconciliationFollowProjection)
+{
+    // #148 批 2：member_census.tsv 与 class_census.tsv 配套落盘（同一次导出
+    // 同临时库生命周期）；行序 = censusMembers 复合键 BINARY 序直接落盘不重
+    // 排；对账不变式 members = 数据行数 = Σ 类行 method_count + field_count。
+    const auto fixture = writeCensusFixture();
+    auto       session = ingestFixture(fixture);
+    ASSERT_GT(session.inputId, 0);
+
+    const auto outDir = test::getTempOutPath("mjt_member_census_export");
+    std::error_code ec;
+    std::filesystem::remove_all(outDir, ec);
+
+    auto first = exportCensus(session.db, session.inputId, outDir.string());
+    ASSERT_TRUE(first.is_ok()) << first.unwrap_err().message;
+    ASSERT_TRUE(std::filesystem::is_regular_file(first.unwrap().memberCensus));
+
+    // 双跑逐字节一致（确定性契约随类级同款）。
+    auto second = exportCensus(session.db, session.inputId, outDir.string());
+    ASSERT_TRUE(second.is_ok());
+    const auto firstBytes  = readFileBytes(first.unwrap().memberCensus);
+    const auto secondBytes = readFileBytes(second.unwrap().memberCensus);
+    EXPECT_EQ(firstBytes, secondBytes);
+    ASSERT_FALSE(firstBytes.empty());
+    EXPECT_EQ(firstBytes.find('\r'), std::string::npos);   // LF 行尾，无 CRT 翻译
+
+    // 版本化表头 + 列名行（schema v1 契约）。
+    const auto lines = splitLines(firstBytes);
+    ASSERT_EQ(lines.size(), 7U);   // 版本行 + 列名行 + 5 成员
+    EXPECT_EQ(lines[0], "# member-census v1");
+    EXPECT_EQ(lines[1],
+              "member_class\tkind\tname\tdescriptor\taccess\tnative\tentry");
+
+    // 行序 = 投影复合键（owner → kind Field 在前 → 名字 → 描述符）：
+    // Alpha 的字段 state 先于方法 act/probe；owner 序 Alpha < Api < Color。
+    struct ExpectedRow
+    {
+        const char* owner;
+        const char* kind;
+        const char* name;
+        const char* descriptor;
+        int         access;   // 十进制原始旗标（mjbase 无成员命名面）
+        const char* native;
+    };
+    const ExpectedRow expected[] = {
+        {"census/Alpha", "field",  "state", "I",  2,   "0"},
+        {"census/Alpha", "method", "act",   "()V", 9,  "0"},
+        {"census/Alpha", "method", "probe", "()J", 265, "1"},   // ACC_NATIVE
+        {"census/Api",   "method", "act",   "()V", 1025, "0"},  // abstract
+        {"census/Color", "method", "values", "()[Lcensus/Color;", 9, "0"},
+    };
+    // entry 列对账：成员行 entryId = 所属类条目身份（censusClasses 同名行）。
+    auto classRows = session.db.censusClasses(session.inputId);
+    ASSERT_TRUE(classRows.is_ok());
+    std::map<std::string, ca::i64, std::less<>> entryByOwner;
+    for (const mjbase::project::DbClassCensusRow& row : std::move(classRows).unwrap()) {
+        entryByOwner[row.internalName.to_std_string()] = row.entryId;
+    }
+    for (std::size_t i = 0; i < std::size(expected); ++i) {
+        std::vector<std::string> cells;
+        std::istringstream       row(lines[i + 2]);
+        std::string              cell;
+        while (std::getline(row, cell, '\t')) cells.push_back(cell);
+        ASSERT_EQ(cells.size(), 7U) << lines[i + 2];
+        EXPECT_EQ(cells[0], expected[i].owner) << lines[i + 2];
+        EXPECT_EQ(cells[1], expected[i].kind) << lines[i + 2];
+        EXPECT_EQ(cells[2], expected[i].name) << lines[i + 2];
+        EXPECT_EQ(cells[3], expected[i].descriptor) << lines[i + 2];
+        EXPECT_EQ(cells[4], std::to_string(expected[i].access)) << lines[i + 2];
+        EXPECT_EQ(cells[5], expected[i].native) << lines[i + 2];
+        const auto entry = entryByOwner.find(expected[i].owner);
+        ASSERT_NE(entry, entryByOwner.end());
+        EXPECT_EQ(cells[6], std::to_string(entry->second)) << lines[i + 2];
+    }
+
+    // 对账不变式：报告 members 计数 = member_census 数据行数 =
+    // Σ 类行 method_count + field_count（container 汇总口径）。
+    EXPECT_EQ(first.unwrap().members, 5U);
+    auto summary = session.db.censusContainer(session.inputId);
+    ASSERT_TRUE(summary.is_ok());
+    const auto census = std::move(summary).unwrap();
+    EXPECT_EQ(static_cast<ca::usize>(census.methods + census.fields), 5U);
+}
+
+TEST(MjtAnalysisCensusTest, MemberCellsEscapeFoldAndStayTabular)
+{
+    // 转义/折叠契约随类级同款：\uXXXX 转义（TSV 结构不被语料破坏）、
+    // 折叠边界 4096 保字面 / 4097 折叠、21845 字节混淆风名字折叠为
+    // #folded:len=<原始字节数>:sha256=<原始字节摘要> 确定形。
+    std::vector<mjbase::project::DbMemberCensusRow> rows;
+    mjbase::project::DbMemberCensusRow weird;
+    weird.ownerInternalName = Utf8String::from_data_unchecked(
+        reinterpret_cast<const ca::u8*>("weird\tOwner"), 11);
+    weird.name = Utf8String::from_data_unchecked(
+        reinterpret_cast<const ca::u8*>("weird\tname\x01"), 11);
+    weird.descriptor = Utf8String::from_data_unchecked(
+        reinterpret_cast<const ca::u8*>("back\\slash"), 10);
+    weird.kind     = mjbase::project::DbMemberKind::Method;
+    weird.access   = 9;
+    weird.entryId  = 7;
+    rows.push_back(std::move(weird));
+
+    const auto rendered = renderMemberCensusTsv(rows);
+    const auto lines    = splitLines(rendered);
+    ASSERT_EQ(lines.size(), 3U);   // 版本行 + 列名行 + 1 数据行
+    EXPECT_NE(lines[2].find("weird\\u0009name\\u0001"), std::string::npos);
+    EXPECT_NE(lines[2].find("back\\u005Cslash"), std::string::npos);
+    EXPECT_NE(lines[2].find("weird\\u0009Owner"), std::string::npos);
+    // 表格结构完好：数据行仍 7 列（6 个制表位），native/entry 十进制直出。
+    EXPECT_EQ(std::count(lines[2].begin(), lines[2].end(), '\t'), 6);
+    EXPECT_NE(lines[2].find("\t9\t0\t7"), std::string::npos);
+
+    // 折叠边界（ASCII 名转义不变长）：恰 4096（≤ 阈值）保字面，4097 折叠。
+    const std::string edgeKept(4096, 'b');
+    const std::string edgeFolded(4097, 'b');
+    std::vector<mjbase::project::DbMemberCensusRow> keptRows;
+    mjbase::project::DbMemberCensusRow kept;
+    kept.ownerInternalName = Utf8String::from_data_unchecked(
+        reinterpret_cast<const ca::u8*>("owner/Kept"), 10);
+    kept.name = Utf8String::from_data_unchecked(
+        reinterpret_cast<const ca::u8*>(edgeKept.data()), edgeKept.size());
+    keptRows.push_back(std::move(kept));
+    EXPECT_NE(renderMemberCensusTsv(keptRows).find(edgeKept), std::string::npos);
+
+    std::vector<mjbase::project::DbMemberCensusRow> foldedRows;
+    mjbase::project::DbMemberCensusRow folded;
+    folded.ownerInternalName = Utf8String::from_data_unchecked(
+        reinterpret_cast<const ca::u8*>("owner/Folded"), 12);
+    folded.name = Utf8String::from_data_unchecked(
+        reinterpret_cast<const ca::u8*>(edgeFolded.data()), edgeFolded.size());
+    foldedRows.push_back(std::move(folded));
+    const auto foldedOut = renderMemberCensusTsv(foldedRows);
+    EXPECT_EQ(foldedOut.find(edgeFolded), std::string::npos);
+    EXPECT_NE(foldedOut.find("#folded:len=4097:sha256="), std::string::npos);
+
+    // 混淆风语料（空格名 jar 实测 21845 字节名）：折叠为确定形，保身份
+    // （len + 原始字节 SHA-256）丢字面，双渲染逐字节一致，行结构完好。
+    const std::string fatName(21845, 'a');
+    const std::string expectedDigest = ca::crypto::sha256_hex(
+        ca::core::ByteSlice(reinterpret_cast<const ca::u8*>(fatName.data()),
+                            fatName.size()));
+    const std::string expectedCell =
+        "#folded:len=21845:sha256=" + expectedDigest;
+    std::vector<mjbase::project::DbMemberCensusRow> fatRows;
+    mjbase::project::DbMemberCensusRow fat;
+    fat.ownerInternalName = Utf8String::from_data_unchecked(
+        reinterpret_cast<const ca::u8*>("obf/Fat"), 7);
+    fat.name = Utf8String::from_data_unchecked(
+        reinterpret_cast<const ca::u8*>(fatName.data()), fatName.size());
+    fat.kind    = mjbase::project::DbMemberKind::Field;
+    fatRows.push_back(std::move(fat));
+    const auto fatFirst  = renderMemberCensusTsv(fatRows);
+    const auto fatSecond = renderMemberCensusTsv(fatRows);
+    EXPECT_EQ(fatFirst, fatSecond);
+    const auto fatLines = splitLines(fatFirst);
+    ASSERT_EQ(fatLines.size(), 3U);
+    EXPECT_NE(fatLines[2].find(expectedCell), std::string::npos);
+    EXPECT_EQ(std::count(fatLines[2].begin(), fatLines[2].end(), '\t'), 6);
 }

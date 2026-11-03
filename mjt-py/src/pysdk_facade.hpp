@@ -697,7 +697,10 @@ struct ClassCensusFileReport
 {
     std::string classCensusFile;     ///< class_census.tsv 落盘路径
     std::string containerCensusFile; ///< container_census.tsv 落盘路径
+    std::string memberCensusFile;    ///< member_census.tsv 落盘路径（#148 批 2）
     ca::usize   classes       = 0;   ///< 普查类数（class_census 行数）
+    ca::usize   members       = 0;   ///< 普查成员数（member_census 行数；对账
+                                     ///< 不变式：= Σ 类行 method_count + field_count）
     ca::usize   methods       = 0;
     ca::usize   fields        = 0;
     ca::usize   nativeMethods = 0;
@@ -709,9 +712,9 @@ struct ClassCensusFileReport
 /// class_census：jar 全量类普查导出（文件面，不依赖打开容器；#39 deobf
 /// 工作流 S0 基线 artifact）。jar → 临时分析库整库导入 → 普查投影（数据
 /// 一律来自 AnalysisDb，不重扫容器）→ `class_census.tsv` +
-/// `container_census.tsv` 落 @p outDir。临时库在系统临时目录即弃，输出
-/// 目录缺省 `<jar>.census`。TSV 转义/行序/表头版本契约见
-/// workspace/analysis_census。
+/// `container_census.tsv` + `member_census.tsv` 落 @p outDir。临时库在系统
+/// 临时目录即弃，输出目录缺省 `<jar>.census`。TSV 转义/行序/表头版本契约
+/// 见 workspace/analysis_census。
 ///
 /// @param jarPath 输入 jar（必须存在；只读，永不改动输入）。
 /// @param outDir  输出目录；空 = `<jar>.census`。目录不存在则创建。

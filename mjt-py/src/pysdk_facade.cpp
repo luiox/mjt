@@ -3198,7 +3198,9 @@ ClassCensusFileReport facadeClassCensusFile(const std::string& jarPath,
     ClassCensusFileReport report;
     report.classCensusFile     = paths.classCensus;
     report.containerCensusFile = paths.containerCensus;
+    report.memberCensusFile    = paths.memberCensus;
     report.classes       = static_cast<ca::usize>(census.classes);
+    report.members       = paths.members;
     report.methods       = static_cast<ca::usize>(census.methods);
     report.fields        = static_cast<ca::usize>(census.fields);
     report.nativeMethods = static_cast<ca::usize>(census.nativeMethods);

@@ -44,6 +44,11 @@ inline constexpr ca::u32 kClassCensusSchemaVersion = 3;
 ///        v2 与 class 面同步引入折叠。
 inline constexpr ca::u32 kContainerCensusSchemaVersion = 2;
 
+/// @brief member_census.tsv schema 版本（`# member-census v<N>`；#148 批 2，
+///        行 = 一成员，行序 = censusMembers 复合键 BINARY 升序（owner → kind
+///        编码序 → 名字 → 描述符），键序定死在投影层、渲染层不重排）。
+inline constexpr ca::u32 kMemberCensusSchemaVersion = 1;
+
 /// @brief 单元格折叠阈值：转义后字节数超过此值的单元格渲染为
 ///        `#folded:len=<原始字节数>:sha256=<原始字节摘要>`。
 inline constexpr ca::usize kCensusCellFoldBytes = 4096;
@@ -63,11 +68,15 @@ struct CensusExportError
     std::string           message;
 };
 
-/// @brief 一次 census 导出的两表文本（不落盘；测试与自定义出口可直取）。
+/// @brief 一次 census 导出的三表文本（不落盘；测试与自定义出口可直取）。
 struct CensusExportText
 {
     std::string classCensusTsv;     ///< class_census.tsv 内容（含版本化表头）
     std::string containerCensusTsv; ///< container_census.tsv 内容
+    std::string memberCensusTsv;    ///< member_census.tsv 内容（#148 批 2）
+    ca::usize   members = 0;        ///< 成员普查行数（censusMembers 投影行数；
+                                    ///< 对账不变式：= member_census 数据行数
+                                    ///< = Σ 类行 method_count + field_count）
 };
 
 /// @brief 一次 census 导出的落盘位置。
@@ -75,6 +84,8 @@ struct CensusExportPaths
 {
     std::string classCensus;     ///< class_census.tsv 路径（directory 拼接）
     std::string containerCensus; ///< container_census.tsv 路径
+    std::string memberCensus;    ///< member_census.tsv 路径（#148 批 2）
+    ca::usize   members = 0;     ///< 成员普查行数（同 CensusExportText.members）
 };
 
 /// @brief 渲染 class census TSV（纯函数面，#39 列契约）。
@@ -93,15 +104,27 @@ std::string renderClassCensusTsv(
 /// 分布行只含非零 facet，kind 按名升序、形态按枚举声明序。
 std::string renderContainerCensusTsv(const mjbase::project::DbContainerCensus& summary);
 
-/// @brief 一次普查导出：投影（censusClasses + censusContainer）+ 两表渲染。
+/// @brief 渲染 member census TSV（纯函数面，#148 批 2 列契约）。
+///
+/// 行序按传入序渲染（库序 = censusMembers 复合键 BINARY 升序，不重排）；
+/// 列 = member_class / kind / name / descriptor / access / native / entry。
+/// kind 取 field/method 小写 token（classKindName 同款风格）；access 为
+/// 原始访问旗标十进制（mjbase 无成员旗标命名面，v1 不做 mjt 侧词表）；
+/// native 取 0/1；entry 取所属类条目身份（entryId 十进制；成员行不携带
+/// 条目形态旗标，类级 regular/irregular 不外推）。
+std::string renderMemberCensusTsv(
+    const std::vector<mjbase::project::DbMemberCensusRow>& rows);
+
+/// @brief 一次普查导出：投影（censusClasses + censusMembers +
+///        censusContainer）+ 三表渲染。
 ///
 /// 连接未打开或 @p inputId 未登记 → `Invalid`；查询失败 → `Database`。
 ca::Result<CensusExportText, CensusExportError> renderCensus(
     const mjbase::project::AnalysisDb& db, ca::i64 inputId);
 
-/// @brief 一次普查导出并落盘：directory 下写 class_census.tsv 与
-///        container_census.tsv（目录不存在则创建；binary + LF，见文件头
-///        确定性契约）。
+/// @brief 一次普查导出并落盘：directory 下写 class_census.tsv、
+///        container_census.tsv 与 member_census.tsv（同一次导出、同临时库
+///        生命周期；目录不存在则创建；binary + LF，见文件头确定性契约）。
 ca::Result<CensusExportPaths, CensusExportError> exportCensus(
     const mjbase::project::AnalysisDb& db, ca::i64 inputId, const std::string& directory);
 

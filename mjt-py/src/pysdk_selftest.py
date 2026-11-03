@@ -1047,6 +1047,28 @@ def run_all():
     check("census summary classes", summary27.get("classes") == "5", str(summary27))
     check("census summary shapes",
           summary27.get("entry_shape_trailing_slash") == "2", str(summary27))
+    # member_census.tsv（#148 批 2）：一行一成员，行序 = 投影复合键 BINARY 序
+    # （owner → kind Field 在前 → 名字 → 描述符）直接落盘不重排；members 计数
+    # 与数据行数、类级 Σ method_count + field_count 三方对账。
+    with open(report27["member_census"], "r", encoding="utf-8", newline="") as f27m:
+        memberRows27 = f27m.read().splitlines()
+    check("census member header",
+          memberRows27[0] == "# member-census v1"
+          and memberRows27[1] == "member_class\tkind\tname\tdescriptor"
+                                 "\taccess\tnative\tentry",
+          str(memberRows27[:2]))
+    check("census member count",
+          len(memberRows27) == 14 and report27["members"] == 12
+          and report27["members"]
+          == int(summary27["methods"]) + int(summary27["fields"]),
+          str({"rows": len(memberRows27), "report": str(report27)}))
+    check("census member order",
+          memberRows27[2].startswith("me/demo/Api\tmethod\tid"
+                                     "\t(Ljava/lang/Object;)Ljava/lang/Object;"
+                                     "\t1025\t0\t")
+          and "me/demo/Color\tfield\t$VALUES\t[Lme/demo/Color;\t26\t0\t"
+          in "\n".join(memberRows27),
+          str(memberRows27[2]))
     # 缺省输出目录约定：<jar>.census（报告字段是 tsv 文件路径，取其目录比对）。
     report27b = mjt.class_census(p27)
     check("census default outdir",
@@ -1056,6 +1078,10 @@ def run_all():
         bytes27c = f27c.read()
     with open(report27["class_census"], "rb") as f27d:
         check("census deterministic", bytes27c == f27d.read(), "byte mismatch")
+    with open(report27b["member_census"], "rb") as f27e:
+        bytes27e = f27e.read()
+    with open(report27["member_census"], "rb") as f27f:
+        check("census member deterministic", bytes27e == f27f.read(), "byte mismatch")
     try:
         mjt.class_census(os.path.join(tmp, "mjt_pysdk_census_missing.jar"))
         check("census missing jar throws", False, "no exception")

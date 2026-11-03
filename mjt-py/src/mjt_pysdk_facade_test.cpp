@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <filesystem>
@@ -1387,10 +1388,15 @@ TEST(FacadeCensus, ExportsVersionedDeterministicTables)
 
     const auto report = facadeClassCensusFile(jar, outDir);
     EXPECT_EQ(report.classes, 5U);
+    // 成员面（#148 批 2）：11 方法 + 1 字段（$VALUES），对账不变式
+    // members = member_census 行数 = Σ 类行 method_count + field_count。
+    EXPECT_EQ(report.members, 12U);
+    EXPECT_EQ(report.members, report.methods + report.fields);
     EXPECT_EQ(report.entriesActive, 7U);   // 5 class 条目 + jar 写入器两级目录占位
     EXPECT_EQ(report.entriesIrregular, 2U);
     ASSERT_TRUE(std::filesystem::is_regular_file(report.classCensusFile));
     ASSERT_TRUE(std::filesystem::is_regular_file(report.containerCensusFile));
+    ASSERT_TRUE(std::filesystem::is_regular_file(report.memberCensusFile));
 
     const auto classTsv = readFileBytes(report.classCensusFile);
     const std::string classText(classTsv.begin(), classTsv.end());
@@ -1459,6 +1465,33 @@ TEST(FacadeCensus, ExportsVersionedDeterministicTables)
     const auto again = facadeClassCensusFile(jar, outDirAgain);
     EXPECT_EQ(readFileBytes(again.classCensusFile), classTsv);
     EXPECT_EQ(readFileBytes(again.containerCensusFile), containerTsv);
+
+    // member_census.tsv：版本化表头 + 复合键行序直接落盘（owner → kind
+    // Field 在前 → 名字 → 描述符）；Api 的抽象方法 id 首行，Color 的
+    // $VALUES 字段（Field 先于 Method）带 26 = PRIVATE|STATIC|FINAL。
+    const auto memberTsv = readFileBytes(report.memberCensusFile);
+    const std::string memberText(memberTsv.begin(), memberTsv.end());
+    EXPECT_EQ(memberText.substr(0, memberText.find('\n') + 1), "# member-census v1\n");
+    EXPECT_NE(memberText.find("member_class\tkind\tname\tdescriptor\taccess"
+                             "\tnative\tentry\n"),
+              std::string::npos);
+    // 行数对账：文件数据行 = 版本行 + 列名行 + report.members（转义契约
+    // 保证列内无裸换行，换行数即行数）。
+    const auto memberLineCount =
+        static_cast<std::size_t>(std::count(memberText.begin(), memberText.end(), '\n'));
+    EXPECT_EQ(memberLineCount, report.members + 2);
+    EXPECT_EQ(memberLineCount, 14U);   // 版本行 + 列名行 + 12 成员
+    EXPECT_NE(memberText.find("me/demo/Api\tmethod\tid"
+                             "\t(Ljava/lang/Object;)Ljava/lang/Object;\t1025\t0\t"),
+              std::string::npos);
+    EXPECT_NE(memberText.find("me/demo/Color\tfield\t$VALUES"
+                             "\t[Lme/demo/Color;\t26\t0\t"),
+              std::string::npos);
+    EXPECT_NE(memberText.find("me/demo/Color\tmethod\tvalues"), std::string::npos);
+    // access 列十进制（mjbase 无成员旗标命名面，v1 口径）。
+    EXPECT_EQ(memberText.find("me/demo/Util\tmethod\tadd\tpublic"), std::string::npos);
+    const auto memberAgain = readFileBytes(again.memberCensusFile);
+    EXPECT_EQ(memberAgain, memberTsv);
 }
 
 TEST(FacadeCensus, MissingJarFailsClosed)
