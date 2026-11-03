@@ -164,6 +164,30 @@ struct ReferenceImpact final
     ca::str::Utf8String target;
 };
 
+/// @brief 单方法编辑的聚焦成员（analysis_edit 桥的 recordMethodVersion 单方法面
+///        寻址）；不适用时 ownerInternalName 为空。
+struct EditedMethodFocus final
+{
+    std::string ownerInternalName;
+    std::string memberName;
+    std::string memberDescriptor;
+    bool        isMethod = false;
+};
+
+/// @brief 方法指纹版本的落库侧账（MutationResult::methodVersions）。
+///
+/// 绑定分析库（bindAnalysisDb）的编辑在提交锚点按受影响类落 method_versions；
+/// 未绑定或本次没有类字节变化时全零。落库失败不回滚编辑（台账已先行提交），
+/// failed 只作披露——指纹记录幂等，重放同一编辑即可补齐。
+struct MethodVersionRecordStats final
+{
+    ca::usize recorded  = 0;  ///< 新落版本行数（语义有变化的成员）
+    ca::usize unchanged = 0;  ///< 与当前行同指纹、幂等跳过的成员数
+    ca::usize skipped   = 0;  ///< 无 db 身份（类/方法未登记）、指纹计算失败或
+                              ///< class 字节解析失败而跳过的条目数
+    bool      failed    = false; ///< 分析库写失败（编辑不受影响，可幂等补录）
+};
+
 /// @brief 所有修改操作共用的稳定结果协议。
 ///
 /// status 为 Ok 时 committed/exportable/revision 才有意义；失败路径仍回填
@@ -178,6 +202,7 @@ struct MutationResult final
     std::vector<ByteDiff>              byteDiffs;
     std::vector<ca::str::Utf8String>   affectedClasses;
     std::vector<ReferenceImpact>       affectedReferences;
+    MethodVersionRecordStats           methodVersions;
 
     bool is_ok() const noexcept { return status.is_ok(); }
 };

@@ -53,6 +53,7 @@
 #include "mjbase/spi/pass_registry.hpp"
 #include "mjbase/spi/pipeline_builder.hpp"
 #include "mjbase/spi/strict_type_resolver.hpp"
+#include "analysis_edit.hpp"
 #include "class_mutation_service.hpp"
 #include "classfile_support.hpp"
 #include "reference_scan.hpp"
@@ -911,6 +912,36 @@ std::vector<std::string> changedClassNames(const model::ResourceContainer& conta
     std::sort(result.begin(), result.end());
     result.erase(std::unique(result.begin(), result.end()), result.end());
     return result;
+}
+
+/// @brief 结构化 mutation 是否聚焦单个方法（指纹落库单方法面判据，#132）。
+///
+/// 换体/指令级/try-catch/局部名/方法访问位 kind 的 member 选择器就是方法本体；
+/// annotation kind 按附着位置判。类级与字段级 kind 不聚焦（批量面兜底——
+/// 类头/字段变化不进方法语义面，全方法 unchanged）。AddMethod/RemoveMethod
+/// 也聚焦：落库面按「库内未登记/字节已不存在」如实跳过。
+EditedMethodFocus focusedMethodOfEdit(const ClassMutation& mutation)
+{
+    using K = ClassMutationKind;
+    const bool methodKind =
+        mutation.kind == K::SetMethodAccess || mutation.kind == K::ReplaceMethodBody ||
+        mutation.kind == K::InsertInstruction || mutation.kind == K::ReplaceInstruction ||
+        mutation.kind == K::RemoveInstruction || mutation.kind == K::ReplaceTryCatchBlocks ||
+        mutation.kind == K::RenameLocal || mutation.kind == K::AddMethod ||
+        mutation.kind == K::RemoveMethod;
+    const bool annotationMethod =
+        (mutation.kind == K::AddMarkerAnnotation || mutation.kind == K::RemoveAnnotation) &&
+        mutation.annotationTarget == AnnotationTarget::Method;
+    if (!methodKind && !annotationMethod) return {};
+    const std::string owner =
+        mjbase::model::internalNameFromClassUri(mutation.classUri.to_std_string());
+    if (owner.empty() || mutation.member.name.to_std_string().empty()) return {};
+    EditedMethodFocus focus;
+    focus.ownerInternalName = owner;
+    focus.memberName        = mutation.member.name.to_std_string();
+    focus.memberDescriptor  = mutation.member.descriptor.to_std_string();
+    focus.isMethod          = true;
+    return focus;
 }
 
 void appendUniqueImpact(std::vector<ReferenceImpact>&    impacts,
@@ -3023,7 +3054,8 @@ MutationResult WorkspaceBase::validateJasm(ca::str::Utf8StringRef uriRef,
 
 MutationResult WorkspaceBase::commit(std::unique_ptr<model::ResourceContainer> candidate,
                                      std::vector<jasm::Diagnostic> diagnostics,
-                                     const MutationRequest&        request)
+                                     const MutationRequest&        request,
+                                     const EditedMethodFocus*      focus)
 {
     if (!accepts(request)) return revisionConflict();
     auto diffs = diffContainers(*working_, *candidate);
@@ -3101,11 +3133,24 @@ MutationResult WorkspaceBase::commit(std::unique_ptr<model::ResourceContainer> c
         ++revision_;
         result.revision  = revision_;
         result.committed = true;
+        // 提交锚点的指纹落库（#132 编辑流）：台账事务先行成功，落库失败不
+        // 回滚编辑，计数披露在 methodVersions。
+        recordMethodVersionsForEdit(result, focus);
         return result;
     }
     catch (const std::exception& exception) {
         return stateFailure(error(WorkspaceError::Internal, "commit", exception.what()));
     }
+}
+
+void WorkspaceBase::recordMethodVersionsForEdit(MutationResult&          result,
+                                                const EditedMethodFocus* focus)
+{
+    if (analysisDb_ == nullptr || result.byteDiffs.empty()) return;
+    std::vector<ca::str::Utf8String> classUris;
+    classUris.reserve(result.byteDiffs.size());
+    for (const ByteDiff& diff : result.byteDiffs) classUris.push_back(diff.uri.clone());
+    result.methodVersions = recordMethodVersionsAfterEdit(*analysisDb_, *working_, classUris, focus);
 }
 
 MutationResult WorkspaceBase::applyJasm(ca::str::Utf8StringRef uriRef,
@@ -3282,7 +3327,11 @@ MutationResult WorkspaceBase::applyClassMutation(const ClassMutation&   mutation
             result.diagnostics = std::move(outcome.diagnostics);
             return result;
         }
-        return commit(std::move(candidate), std::move(outcome.diagnostics), request);
+        // 单方法寻址 kind 的指纹落库走聚焦单方法面（recordMethodVersion）；
+        // 其余 kind 聚焦为空，commit 锚点按整类批量面兜底。
+        EditedMethodFocus focus = focusedMethodOfEdit(resolvedMutation);
+        return commit(std::move(candidate), std::move(outcome.diagnostics), request,
+                      focus.ownerInternalName.empty() ? nullptr : &focus);
     }
     catch (const std::exception& exception) {
         return stateFailure(
@@ -4552,6 +4601,8 @@ MutationResult WorkspaceBase::undo(const MutationRequest& request)
         result.byteDiffs          = std::move(diffs);
         result.affectedClasses    = utf8List(changedClassNames(*working_, result.byteDiffs));
         result.affectedReferences = collectImpacts(*working_, result.affectedClasses);
+        // undo 也改方法体：指纹按恢复后的字节落库（整类批量面）。
+        recordMethodVersionsForEdit(result, nullptr);
         return result;
     }
     catch (const std::exception& exception) {
@@ -4591,6 +4642,8 @@ MutationResult WorkspaceBase::redo(const MutationRequest& request)
         result.byteDiffs          = std::move(diffs);
         result.affectedClasses    = utf8List(changedClassNames(*working_, result.byteDiffs));
         result.affectedReferences = collectImpacts(*working_, result.affectedClasses);
+        // redo 同 undo：指纹按重放后的字节落库（整类批量面）。
+        recordMethodVersionsForEdit(result, nullptr);
         return result;
     }
     catch (const std::exception& exception) {

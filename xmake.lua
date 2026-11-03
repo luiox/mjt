@@ -166,7 +166,10 @@ includes("xmake/libca_rules.lua")
 -- 0.0.16 = producer 注册表批 1-3（schema v6：producers/batches/batch_scopes +
 -- renames 行级 producer_id，写入口批次参数化，#151；旧 v5 库 fail-loud 属预期，
 -- 临时库重建即愈）。
-add_requires("mjbase 0.0.16")
+-- 0.0.17 = method_versions 方法版本指纹表（schema v8：32 字节 BLOB +
+-- fp_version 算法版本列 + is_current 部分唯一索引当前指针，#154；旧 v7 库
+-- fail-loud 属预期，临时库重建即愈）。
+add_requires("mjbase 0.0.17")
 
 includes("test_helper")
 includes("mjt")

@@ -20,6 +20,10 @@ namespace hierarchy {
 class ClassHierarchy;   ///< 层次图（hierarchy 模块；此处仅前置声明）
 }   // namespace hierarchy
 
+namespace project {
+class AnalysisDb;   ///< 分析数据库连接（analysis_db.hpp；此处仅前置声明）
+}   // namespace project
+
 }   // namespace mjbase
 
 // 本模块（mjt::workspace）自 mjbase workspace 引擎移交而来：兄弟域仍走 ::mjbase，
@@ -357,6 +361,15 @@ public:
     /// @brief 返回已附加的 supporting JAR 摘要。
     std::vector<SupportingResourceInfo> supportingResources() const override;
 
+    /// @brief 绑定可选分析库：编辑提交后按受影响类落方法指纹版本
+    ///        （method_versions，#132 编辑流接线）。
+    ///
+    /// 非拥有指针：db 会话生命周期归调用方（未传即解绑）。未绑定时编辑行为
+    /// 与旧版完全一致（零开销直通）；绑定时提交锚点（commit/undo/redo）在
+    /// 台账事务成功后调 recordMethodVersionsAfterEdit，落库失败不回滚编辑，
+    /// 计数披露在 MutationResult::methodVersions。
+    void bindAnalysisDb(mjbase::project::AnalysisDb* db) noexcept { analysisDb_ = db; }
+
 private:
     struct SupportingResource;
     struct AnalysisGraph;
@@ -365,9 +378,15 @@ private:
     bool           accepts(const MutationRequest& request) const;
     MutationResult revisionConflict() const;
     MutationResult stateFailure(WorkspaceErrorInfo status) const;
+    /// @brief 提交候选容器并进台账；@p focus 非空时（applyClassMutation 的
+    ///        单方法寻址 kind）指纹落库走 recordMethodVersion 单方法面。
     MutationResult commit(std::unique_ptr<model::ResourceContainer> candidate,
                           std::vector<jasm::Diagnostic> diagnostics,
-                          const MutationRequest& request);
+                          const MutationRequest& request,
+                          const EditedMethodFocus* focus = nullptr);
+    /// @brief 提交锚点的指纹落库挂点（绑定了分析库才落；结果回填
+    ///        @p result.methodVersions）。台账先行、落库失败不回滚编辑。
+    void recordMethodVersionsForEdit(MutationResult& result, const EditedMethodFocus* focus);
     /// @brief 台账错误 → workspace 错误面（kind 映射 + operation 前缀）。
     WorkspaceErrorInfo ledgerFailure(const std::string& operation,
                                      const project::ProjectStoreError& cause) const;
@@ -447,6 +466,10 @@ private:
 
     model::ResourceContainer* workingContainer() noexcept;
     const model::ResourceContainer* workingContainer() const noexcept;
+
+    /// 分析库会话（编辑落指纹版本；非拥有，bindAnalysisDb 接线；nullptr =
+    /// 未绑定，编辑路径零行为变化）。
+    mjbase::project::AnalysisDb* analysisDb_ = nullptr;
 
     std::unique_ptr<model::ResourceContainer> original_;
     std::unique_ptr<model::ResourceContainer> working_;
