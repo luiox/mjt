@@ -1,6 +1,7 @@
 #include "service.hpp"
 
 #include <algorithm>
+#include <deque>
 #include <cctype>
 #include <exception>
 #include <filesystem>
@@ -708,8 +709,10 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         //结构性标识符（类名/描述符/成员名），不在内容遮蔽域（命名呈现归
         //B3 LVT 策略）。老 bundle（无 analysis.mjdb）直通零漂移。
         //SearchHit::value 换型 Utf8String（禁址取 std::string*）：遮蔽面经
-        //std::string 副本弹跳，遮蔽结果回写 DTO 字段（字节保真直通）。
-        std::vector<std::string> maskValues;
+        //std::string 副本弹跳，遮蔽结果回写 DTO 字段（字节保真直通）。副本
+        //容器必须用 deque——vector push_back 会重分配使 maskTargets 持有的
+        //元素地址全部悬垂（applyMaskExit 经悬垂指针写入 = 堆破坏）。
+        std::deque<std::string> maskValues;
         std::vector<std::string*> maskTargets;
         if (op == "search_strings") {
             for (auto& hit : hitList) {
