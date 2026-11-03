@@ -323,10 +323,13 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         //support 为缺省遗留值），不再叠挂载栈第二张表；id 只在 workspace 侧
         //稳定，工程登记面（project.json）的对应条目由 container_mount 维护。
         for (const auto& item : current->supportingResources())
-            containers.push_back({{"role", item.role.empty() ? "support" : item.role},
-                                  {"id", item.id},
-                                  {"path", item.path},
-                                  {"fingerprint", item.fingerprint}});
+            //DTO 文本字段换型 Utf8String：Json 投影显式 to_std_string（nlohmann
+            //会把带 begin/end 的类型吃成码点数组，禁止隐式直通）。
+            containers.push_back({{"role", item.role.is_empty() ? "support"
+                                                                : item.role.to_std_string()},
+                                  {"id", item.id.to_std_string()},
+                                  {"path", item.path.to_std_string()},
+                                  {"fingerprint", item.fingerprint.to_std_string()}});
 
         Json ledgerJson = {{"bound", true}, {"generation", snapshot.generation}};
         ca::u64 base    = 0;
@@ -452,12 +455,16 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         if (modified.is_err())
             { const auto err = shared::toCaStatus(modified.unwrap_err()); return toolError("list modified classes failed", &err); }
         Json values = Json::array();
-        for (const auto& item : modified.unwrap()) {
-            values.push_back({{"resource_uri", item.resourceUri},
-                              {"original_internal_name", item.originalInternalName},
-                              {"current_internal_name", item.currentInternalName},
-                              {"original_fingerprint", item.originalFingerprint},
-                              {"current_fingerprint", item.currentFingerprint},
+        // ModifiedClassInfo 携 move-only Utf8String：unwrap 走移动重载，投影
+        // 显式 to_std_string（nlohmann 码点数组陷阱）。
+        for (const auto& item : std::move(modified).unwrap()) {
+            values.push_back({{"resource_uri", item.resourceUri.to_std_string()},
+                              {"original_internal_name",
+                               item.originalInternalName.to_std_string()},
+                              {"current_internal_name",
+                               item.currentInternalName.to_std_string()},
+                              {"original_fingerprint", item.originalFingerprint.to_std_string()},
+                              {"current_fingerprint", item.currentFingerprint.to_std_string()},
                               {"original_size", item.originalSize},
                               {"current_size", item.currentSize}});
         }
@@ -473,7 +480,8 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
     if (name == "workspace_add_support") {
         auto result = current->addSupportingJar(arguments.value("path", std::string{}));
         if (result.is_err()) { const auto err = shared::toCaStatus(result.unwrap_err()); return toolError("add supporting resource failed", &err); }
-        return toolResult({{"supporting_resource", supportingResourceJson(result.unwrap())}});
+        // SupportingResourceInfo 携 move-only Utf8String：unwrap 走移动重载。
+        return toolResult({{"supporting_resource", supportingResourceJson(std::move(result).unwrap())}});
     }
     if (name == "workspace_list_support") {
         Json values = Json::array();
@@ -489,7 +497,8 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
     if (name == "workspace_remove_support") {
         auto result = current->removeSupportingJar(arguments.value("support_id", std::string{}));
         if (result.is_err()) { const auto err = shared::toCaStatus(result.unwrap_err()); return toolError("remove supporting resource failed", &err); }
-        return toolResult({{"removed", supportingResourceJson(result.unwrap())}});
+        // SupportingResourceInfo 携 move-only Utf8String：unwrap 走移动重载。
+        return toolResult({{"removed", supportingResourceJson(std::move(result).unwrap())}});
     }
     if (op == "workspace_resources") {
         auto resources = current->listResources(arguments.value("include_classes", true));
@@ -501,9 +510,12 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         if (!makeResourceTextMatcher(arguments, matchesText, matcherError))
             return matcherError;
         Json values = Json::array();
-        for (const auto& item : resources.unwrap()) {
-            if (!matchesText(item.uri)) continue;
-            values.push_back({{"uri", item.uri}, {"type", item.type}, {"size", item.size}});
+        // ResourceSummary 携 move-only Utf8String：unwrap 走移动重载。
+        for (const auto& item : std::move(resources).unwrap()) {
+            if (!matchesText(item.uri.to_std_string())) continue;
+            values.push_back({{"uri", item.uri.to_std_string()},
+                              {"type", item.type.to_std_string()},
+                              {"size", item.size}});
         }
         Json paged;
         std::string pageError;
@@ -526,8 +538,8 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         const auto end = std::min(value.bytes.size(), offset + limit);
         std::vector<ca::u8> chunk(value.bytes.begin() + static_cast<std::ptrdiff_t>(offset),
                                   value.bytes.begin() + static_cast<std::ptrdiff_t>(end));
-        Json result = {{"uri", value.summary.uri},
-                       {"type", value.summary.type},
+        Json result = {{"uri", value.summary.uri.to_std_string()},
+                       {"type", value.summary.type.to_std_string()},
                        {"size", value.summary.size},
                        {"offset", offset},
                        {"encoding", "base64"},
@@ -551,15 +563,21 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         auto attributes = current->manifestAttributes();
         if (attributes.is_err()) { const auto err = shared::toCaStatus(attributes.unwrap_err()); return toolError("read manifest failed", &err); }
         Json values = Json::array();
-        for (const auto& item : attributes.unwrap()) values.push_back({{"key", item.key}, {"value", item.value}});
+        // ManifestAttribute 携 move-only Utf8String：unwrap 走移动重载。
+        for (const auto& item : std::move(attributes).unwrap())
+            values.push_back({{"key", item.key.to_std_string()},
+                              {"value", item.value.to_std_string()}});
         return toolResult({{"attributes", std::move(values)}});
     }
     if (name == "resource_strings") {
         auto strings = current->resourceStrings(arguments.value("minimum_length", static_cast<ca::usize>(4)));
         if (strings.is_err()) { const auto err = shared::toCaStatus(strings.unwrap_err()); return toolError("extract resource strings failed", &err); }
         Json values = Json::array();
-        for (const auto& item : strings.unwrap())
-            values.push_back({{"uri", item.uri}, {"offset", item.offset}, {"value", item.value}});
+        // ResourceStringInfo 携 move-only Utf8String：unwrap 走移动重载。
+        for (const auto& item : std::move(strings).unwrap())
+            values.push_back({{"uri", item.uri.to_std_string()},
+                              {"offset", item.offset},
+                              {"value", item.value.to_std_string()}});
         Json paged;
         std::string pageError;
         if (!page(std::move(values), arguments, paged, pageError, {"offset", "uri", "value"}))
@@ -624,15 +642,17 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
                                              //判别文本面与 mjbase 的匹配面同源：
                                              //类行=内部名/URI，成员行=owner/name/
                                              //descriptor/value，其余=拼接 value。
+                                             //SearchHit 文本字段换型 Utf8String：
+                                             //判别面显式 to_std_string。
                                              if (hit.kind == "class")
-                                                 return !hasPrefix(hit.owner) &&
-                                                        !hasPrefix(hit.resourceUri);
+                                                 return !hasPrefix(hit.owner.to_std_string()) &&
+                                                        !hasPrefix(hit.resourceUri.to_std_string());
                                              if (hit.kind == "field" || hit.kind == "method")
-                                                 return !hasPrefix(hit.owner) &&
-                                                        !hasPrefix(hit.name) &&
-                                                        !hasPrefix(hit.descriptor) &&
-                                                        !hasPrefix(hit.value);
-                                             return !hasPrefix(hit.value);
+                                                 return !hasPrefix(hit.owner.to_std_string()) &&
+                                                        !hasPrefix(hit.name.to_std_string()) &&
+                                                        !hasPrefix(hit.descriptor.to_std_string()) &&
+                                                        !hasPrefix(hit.value.to_std_string());
+                                             return !hasPrefix(hit.value.to_std_string());
                                          }),
                         hitList.end());
         }
@@ -648,7 +668,8 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
                                                  return hit.kind != "constant_pool_string" &&
                                                         hit.kind != "resource_string";
                                              if (hit.kind != "constant_pool_utf8") return true;
-                                             return detail::utf8StringKind(hit.value) !=
+                                             return detail::utf8StringKind(
+                                                        hit.value.to_std_string()) !=
                                                     stringKindFilter;
                                          }),
                         hitList.end());
@@ -665,7 +686,8 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
                                          hitList.end(),
                                          [&](const mjt::workspace::SearchHit& hit) {
                                              detail::InstructionHitParts parts;
-                                             if (!detail::parseInstructionHitValue(hit.value, parts))
+                                             if (!detail::parseInstructionHitValue(
+                                                     hit.value.to_std_string(), parts))
                                                  return true;
                                              //mnemonic 精确（区分大小写）；operand/cst
                                              //按 case_sensitive 子串；cst 只看常量/
@@ -685,17 +707,31 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         //串，不可信 jar 的对抗内容主通道）走统一求值器；utf8_* 形态行是
         //结构性标识符（类名/描述符/成员名），不在内容遮蔽域（命名呈现归
         //B3 LVT 策略）。老 bundle（无 analysis.mjdb）直通零漂移。
+        //SearchHit::value 换型 Utf8String（禁址取 std::string*）：遮蔽面经
+        //std::string 副本弹跳，遮蔽结果回写 DTO 字段（字节保真直通）。
+        std::vector<std::string> maskValues;
         std::vector<std::string*> maskTargets;
         if (op == "search_strings") {
             for (auto& hit : hitList) {
-                if (hit.kind == "constant_pool_string" || hit.kind == "resource_string")
-                    maskTargets.push_back(&hit.value);
+                if (hit.kind == "constant_pool_string" || hit.kind == "resource_string") {
+                    maskValues.push_back(hit.value.to_std_string());
+                    maskTargets.push_back(&maskValues.back());
+                }
             }
         }
         MaskExitSummary maskSummary;
         if (!maskTargets.empty()) {
             auto maskStatus = applyMaskExit(session, maskTargets, maskSummary);
             if (maskStatus.is_err()) return toolError("mask exit failed", &maskStatus);
+            std::size_t masked = 0;
+            for (auto& hit : hitList) {
+                if (hit.kind == "constant_pool_string" || hit.kind == "resource_string") {
+                    hit.value = ca::str::Utf8String::from_data_unchecked(
+                        reinterpret_cast<const ca::u8*>(maskValues[masked].data()),
+                        maskValues[masked].size());
+                    ++masked;
+                }
+            }
         }
         Json values = Json::array();
         for (const auto& hit : hitList) values.push_back(searchHitJson(hit));
@@ -711,7 +747,8 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         if (classes.is_err()) { const auto err = shared::toCaStatus(classes.unwrap_err()); return toolError("list classes failed", &err); }
         Json paged;
         std::string pageError;
-        if (!classSummaryPage(classes.unwrap(), arguments, paged, pageError))
+        // ClassSummary 携 move-only Utf8String：unwrap 走移动重载。
+        if (!classSummaryPage(std::move(classes).unwrap(), arguments, paged, pageError))
             return toolError(pageError);
         return toolResult(std::move(paged));
     }
@@ -725,7 +762,8 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
             return slotError;
         auto value = current->classInfo(className);
         if (value.is_err()) { const auto err = shared::toCaStatus(value.unwrap_err()); return toolError("get class failed", &err); }
-        return toolResult(classJson(value.unwrap()));
+        // ClassInfo 携 move-only Utf8String：unwrap 走移动重载。
+        return toolResult(classJson(std::move(value).unwrap()));
     }
     if (op == "class_bytes") {
         std::string className;
@@ -746,9 +784,9 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         const auto end = std::min(value.bytes.size(), offset + limit);
         std::vector<ca::u8> chunk(value.bytes.begin() + static_cast<std::ptrdiff_t>(offset),
                                   value.bytes.begin() + static_cast<std::ptrdiff_t>(end));
-        Json result = {{"resource_uri", value.resourceUri},
-                       {"class", value.internalName},
-                       {"fingerprint", value.fingerprint},
+        Json result = {{"resource_uri", value.resourceUri.to_std_string()},
+                       {"class", value.internalName.to_std_string()},
+                       {"fingerprint", value.fingerprint.to_std_string()},
                        {"size", value.bytes.size()},
                        {"offset", offset},
                        {"encoding", "base64"},
@@ -773,7 +811,8 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         auto selected = current->classInfo(className);
         if (selected.is_err())
             { const auto err = shared::toCaStatus(selected.unwrap_err()); return toolError("select class for Jasm failed", &err); }
-        auto value = current->getJasm(selected.unwrap().resourceUri);
+        const std::string classUri = std::move(selected).unwrap().resourceUri.to_std_string();
+        auto value = current->getJasm(classUri);
         if (!value.isOk()) {
             Json diagnostics = Json::array();
             for (const auto& item : value.diagnostics) diagnostics.push_back(diagnosticJson(item));
@@ -808,23 +847,26 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         if (op == "method_get") {
             auto value = current->methodInfo(ownerRaw, memberName, descriptor);
             if (value.is_err()) { const auto err = shared::toCaStatus(value.unwrap_err()); return toolError("get method failed", &err); }
-            return toolResult(methodJson(value.unwrap()));
+            // MethodInfo 携 move-only Utf8String：unwrap 走移动重载。
+            return toolResult(methodJson(std::move(value).unwrap()));
         }
         if (op == "method_bytecode") {
             auto value = current->methodBytecode(ownerRaw, memberName, descriptor);
             if (value.is_err()) { const auto err = shared::toCaStatus(value.unwrap_err()); return toolError("get method bytecode failed", &err); }
+            // MethodBytecode 携 move-only Utf8String：unwrap 走移动重载。
+            auto info = std::move(value).unwrap();
             Json instructions = Json::array();
-            for (const auto& item : value.unwrap().instructions)
+            for (const auto& item : info.instructions)
                 instructions.push_back({{"index", item.index},
                                         {"opcode", item.opcode},
-                                        {"mnemonic", item.mnemonic},
+                                        {"mnemonic", item.mnemonic.to_std_string()},
                                         //mjbase instructionNodeType 语义归类
                                         //（invoke/field/ldc/cp_ref/…），单一
                                         //事实源在基座，此处直取不再本地重建。
-                                        {"node_type", item.nodeType}});
+                                        {"node_type", item.nodeType.to_std_string()}});
             //指令摘要只有 index/opcode/mnemonic/node_type,操作数级证据在
             //jasm 全文;两份一次取齐,调用方不必退回自写解析器。
-            Json payload{{"method", methodJson(value.unwrap().method)},
+            Json payload{{"method", methodJson(std::move(info.method))},
                          {"instructions", std::move(instructions)}};
             auto jasm = current->getMethodJasm(ownerRaw, memberName, descriptor);
             if (jasm.isOk()) {

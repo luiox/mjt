@@ -7,6 +7,7 @@
 
 #include "libca/core/datatype.hpp"
 #include "libca/core/result.hpp"
+#include "libca/str/utf8_string.hpp"
 
 #include "mjbase/asm/remapper/member_remap_plan.hpp"
 #include "mjbase/asm/remapper/member_remapper.hpp"
@@ -44,6 +45,9 @@ namespace spi          = ::mjbase::spi;
 /// - 错误通道：ca::Status/StatusOr → WorkspaceError + WorkspaceResult<T>
 ///   （mjbase 错误走 Result 值语义的总约定）；DTO 内嵌的 ca::Status 字段
 ///   同步改 WorkspaceErrorInfo；
+/// - 文本存储：DTO 文本字段统一落 ca::str::Utf8String（move-only，禁隐式拷贝，
+///   复制须显式 clone()）；禁拷贝例外仅 WorkspaceErrorInfo——错误通道要求
+///   可拷贝，诊断文本落在 std::string；
 /// - 诊断：jasm::Diagnostic 即 mjbase::jasm::Diagnostic；
 /// - 重映射契约类型：RemapPolicy/MemberRemapPlan 取 mjbase::asm_remapper 域
 ///   （KeyPool 驻留 + MemberKey 建键版）。
@@ -130,7 +134,7 @@ struct MutationRequest final
 {
     ca::u64     expectedRevision = kAnyRevision;
     bool        dryRun           = false;
-    std::string label;
+    ca::str::Utf8String label;
     /// @brief 编辑校验门模式：默认 relaxed（JVM 赋值兼容语义）；上层
     ///        可透传 strict（原精确匹配）或 off（跳过门禁）。无参调用点零改动。
     jasm::ValidationMode validationMode = jasm::ValidationMode::Relaxed;
@@ -147,7 +151,7 @@ struct ByteRange final
 /// @brief 单个资源的紧凑字节级 diff 摘要。
 struct ByteDiff final
 {
-    std::string            uri;
+    ca::str::Utf8String    uri;
     ca::usize              beforeSize = 0;
     ca::usize              afterSize  = 0;
     std::vector<ByteRange> ranges;
@@ -156,8 +160,8 @@ struct ByteDiff final
 /// @brief 修改 class 后重新索引到的直接引用事实。
 struct ReferenceImpact final
 {
-    std::string kind;
-    std::string target;
+    ca::str::Utf8String kind;
+    ca::str::Utf8String target;
 };
 
 /// @brief 所有修改操作共用的稳定结果协议。
@@ -172,7 +176,7 @@ struct MutationResult final
     bool                               exportable = false;
     std::vector<jasm::Diagnostic>      diagnostics;
     std::vector<ByteDiff>              byteDiffs;
-    std::vector<std::string>           affectedClasses;
+    std::vector<ca::str::Utf8String>   affectedClasses;
     std::vector<ReferenceImpact>       affectedReferences;
 
     bool is_ok() const noexcept { return status.is_ok(); }
@@ -181,8 +185,8 @@ struct MutationResult final
 /// @brief JAR 内资源的稳定摘要。
 struct ResourceSummary final
 {
-    std::string uri;
-    std::string type;
+    ca::str::Utf8String uri;
+    ca::str::Utf8String type;
     ca::usize   size = 0;
 };
 
@@ -198,20 +202,20 @@ struct ResourceContent final
 /// internalName 在 class header 损坏时为空；调用方仍可通过精确资源 URI 读取原始字节用于诊断。
 struct ClassBytesInfo final
 {
-    std::string         resourceUri;
-    std::string         internalName;
-    std::string         fingerprint;
+    ca::str::Utf8String resourceUri;
+    ca::str::Utf8String internalName;
+    ca::str::Utf8String fingerprint;
     std::vector<ca::u8> bytes;
 };
 
 /// @brief 当前工作副本中一个相对原始 JAR 已变化的 class 摘要。
 struct ModifiedClassInfo final
 {
-    std::string resourceUri;
-    std::string originalInternalName;
-    std::string currentInternalName;
-    std::string originalFingerprint;
-    std::string currentFingerprint;
+    ca::str::Utf8String resourceUri;
+    ca::str::Utf8String originalInternalName;
+    ca::str::Utf8String currentInternalName;
+    ca::str::Utf8String originalFingerprint;
+    ca::str::Utf8String currentFingerprint;
     ca::usize   originalSize = 0;
     ca::usize   currentSize = 0;
 };
@@ -219,17 +223,17 @@ struct ModifiedClassInfo final
 /// @brief 注解元素的完整值树。
 struct AnnotationElement final
 {
-    std::string                    name;
+    ca::str::Utf8String            name;
     char                           tag = 's';
-    std::string                    value;
-    std::string                    annotationDescriptor;
+    ca::str::Utf8String            value;
+    ca::str::Utf8String            annotationDescriptor;
     std::vector<AnnotationElement> children;
 };
 
 /// @brief 一个运行时可见或不可见注解。
 struct AnnotationInfo final
 {
-    std::string                    descriptor;
+    ca::str::Utf8String            descriptor;
     bool                           visible = false;
     std::vector<AnnotationElement> elements;
 };
@@ -237,9 +241,9 @@ struct AnnotationInfo final
 /// @brief 局部变量调试表条目。
 struct LocalVariableInfo final
 {
-    std::string name;
-    std::string descriptor;
-    std::string signature;
+    ca::str::Utf8String name;
+    ca::str::Utf8String descriptor;
+    ca::str::Utf8String signature;
     ca::i32     index = 0;
 };
 
@@ -258,8 +262,8 @@ struct InstructionInfo final
 {
     ca::i32      index  = -1;
     ca::i32      opcode = -1;
-    std::string  mnemonic;
-    std::string  nodeType;
+    ca::str::Utf8String mnemonic;
+    ca::str::Utf8String nodeType;
 };
 
 /// @brief switch 指令的一个跳转分支（key 与绝对目标 PC）。
@@ -279,10 +283,10 @@ struct InstructionDetailInfo final
 {
     ca::i32                          pc             = -1;
     ca::i32                          opcode         = -1;
-    std::string                      mnemonic;
+    ca::str::Utf8String              mnemonic;
     ca::i32                          cpIndex        = -1;
-    std::string                      operandText;
-    std::string                      operandComment;
+    ca::str::Utf8String              operandText;
+    ca::str::Utf8String              operandComment;
     bool                             isSwitch       = false;
     ca::i32                          switchDefaultPc = -1;
     std::vector<SwitchCaseInfo>      switchCases;
@@ -304,8 +308,8 @@ struct MethodInstructions final
 struct ConstantPoolEntryInfo final
 {
     ca::usize   index = 0;
-    std::string tag;
-    std::string text;
+    ca::str::Utf8String tag;
+    ca::str::Utf8String text;
     bool        malformed = false;
 };
 
@@ -322,15 +326,15 @@ struct ConstantValueInfo final
         String
     };
     Kind        kind = Kind::Integer;
-    std::string text;
+    ca::str::Utf8String text;
 };
 
 /// @brief 字段的结构化元数据。
 struct FieldInfo final
 {
-    std::string                          name;
-    std::string                          descriptor;
-    std::string                          signature;
+    ca::str::Utf8String                  name;
+    ca::str::Utf8String                  descriptor;
+    ca::str::Utf8String                  signature;
     ca::i32                              access = 0;
     std::vector<AnnotationInfo>          annotations;
     /// ConstantValue 属性；无该属性则为 nullopt。
@@ -340,15 +344,15 @@ struct FieldInfo final
 /// @brief 方法的结构化元数据。
 struct MethodInfo final
 {
-    std::string                    name;
-    std::string                    descriptor;
-    std::string                    signature;
+    ca::str::Utf8String            name;
+    ca::str::Utf8String            descriptor;
+    ca::str::Utf8String            signature;
     ca::i32                        access = 0;
     ca::i32                        maxStack = 0;
     ca::i32                        maxLocals = 0;
     ca::usize                      instructionCount = 0;
     ca::usize                      tryCatchCount = 0;
-    std::vector<std::string>       exceptions;
+    std::vector<ca::str::Utf8String> exceptions;
     std::vector<LocalVariableInfo> localVariables;
     std::vector<LineNumberInfo>    lineNumbers;
     std::vector<AnnotationInfo>    annotations;
@@ -365,9 +369,9 @@ struct MethodBytecode final
 /// @details 不保留 signature、annotation、成员详情或方法体；详细查询使用 ClassInfo。
 struct ClassSummary final
 {
-    std::string resourceUri;
-    std::string internalName;
-    std::string superName;
+    ca::str::Utf8String resourceUri;
+    ca::str::Utf8String internalName;
+    ca::str::Utf8String superName;
     ca::i32     access         = 0;
     ca::i32     version        = 0;
     ca::usize   interfaceCount = 0;
@@ -378,32 +382,32 @@ struct ClassSummary final
 /// @brief class 的结构化元数据。
 struct ClassInfo final
 {
-    std::string                 resourceUri;
-    std::string                 internalName;
-    std::string                 superName;
-    std::string                 signature;
+    ca::str::Utf8String         resourceUri;
+    ca::str::Utf8String         internalName;
+    ca::str::Utf8String         superName;
+    ca::str::Utf8String         signature;
     ca::i32                     access = 0;
     ca::i32                     version = 0;
-    std::vector<std::string>    interfaces;
+    std::vector<ca::str::Utf8String> interfaces;
     std::vector<FieldInfo>      fields;
     std::vector<MethodInfo>     methods;
-    std::vector<std::string>    innerClasses;
+    std::vector<ca::str::Utf8String> innerClasses;
     std::vector<AnnotationInfo> annotations;
 };
 
 /// @brief MANIFEST 主属性的稳定键值条目。
 struct ManifestAttribute final
 {
-    std::string key;
-    std::string value;
+    ca::str::Utf8String key;
+    ca::str::Utf8String value;
 };
 
 /// @brief 非 class 资源中提取出的可打印字符串。
 struct ResourceStringInfo final
 {
-    std::string uri;
+    ca::str::Utf8String uri;
     ca::usize   offset = 0;
-    std::string value;
+    ca::str::Utf8String value;
 };
 
 /// @brief 一个可分页传输的结构化搜索命中。
@@ -413,13 +417,13 @@ struct ResourceStringInfo final
 /// 命中时有效（代码指令序号）；其余命中为 -1。
 struct SearchHit final
 {
-    std::string resourceUri;
-    std::string kind;
-    std::string owner;
-    std::string name;
-    std::string descriptor;
+    ca::str::Utf8String resourceUri;
+    ca::str::Utf8String kind;
+    ca::str::Utf8String owner;
+    ca::str::Utf8String name;
+    ca::str::Utf8String descriptor;
     ca::i32     instructionIndex = -1;
-    std::string value;
+    ca::str::Utf8String value;
 };
 
 /// @brief 文本搜索的匹配模式。
@@ -438,35 +442,35 @@ struct SearchOptions final
 {
     SearchMatchMode matchMode = SearchMatchMode::Contains;
     bool            caseSensitive = false;
-    std::string     owner;
-    std::string     packagePrefix;
-    std::string     memberKind;
+    ca::str::Utf8String owner;
+    ca::str::Utf8String packagePrefix;
+    ca::str::Utf8String memberKind;
     ca::i32         opcode = -1;
 };
 
 /// @brief 方法覆盖组件中的一个声明。
 struct MethodOverrideInfo final
 {
-    std::string owner;
-    std::string name;
-    std::string descriptor;
+    ca::str::Utf8String owner;
+    ca::str::Utf8String name;
+    ca::str::Utf8String descriptor;
     bool        primary = false;
     bool        supporting = false;
-    std::string supportId;
+    ca::str::Utf8String supportId;
 };
 
 /// @brief 支持库的只读描述。
 struct SupportingResourceInfo final
 {
-    std::string id;
-    std::string path;
-    std::string fingerprint;
+    ca::str::Utf8String id;
+    ca::str::Utf8String path;
+    ca::str::Utf8String fingerprint;
     ca::usize   resourceCount = 0;
     ca::usize   classCount = 0;
     /// @brief 注册角色标签："support"（缺省遗留值）/"library"/"runtime"
     ///        （model::to_string(ContainerRole) 口径）。同一容器只产生一条记录，
     ///        改变的是本标签而不是追加新条目。
-    std::string role = "support";
+    ca::str::Utf8String role = ca::str::Utf8String::from_cstr("support");
 };
 
 /// @brief 精确 xref 查询返回的引用位置和目标。
@@ -474,41 +478,41 @@ struct SupportingResourceInfo final
 /// instructionIndex 为方法体内代码指令序号；class 级引用（头/结构元数据）为 -1。
 struct ReferenceInfo final
 {
-    std::string sourceClass;
-    std::string sourceMethod;
-    std::string sourceDescriptor;
+    ca::str::Utf8String sourceClass;
+    ca::str::Utf8String sourceMethod;
+    ca::str::Utf8String sourceDescriptor;
     ca::i32     instructionIndex = -1;
-    std::string target;
-    std::string kind;
+    ca::str::Utf8String target;
+    ca::str::Utf8String kind;
     bool        supporting = false;
-    std::string supportId;
+    ca::str::Utf8String supportId;
 };
 
 /// @brief 继承关系结果中一个 class 的来源。
 struct ClassRelationSource final
 {
-    std::string internalName;
+    ca::str::Utf8String internalName;
     bool        supporting = false;
-    std::string supportId;
+    ca::str::Utf8String supportId;
 };
 
 /// @brief 一个 class 的继承、接口和后代闭包。
 struct ClassRelations final
 {
-    std::vector<std::string> superclasses;
-    std::vector<std::string> interfaces;
-    std::vector<std::string> directSubclasses;
-    std::vector<std::string> allSubclasses;
-    std::vector<std::string> implementors;
+    std::vector<ca::str::Utf8String> superclasses;
+    std::vector<ca::str::Utf8String> interfaces;
+    std::vector<ca::str::Utf8String> directSubclasses;
+    std::vector<ca::str::Utf8String> allSubclasses;
+    std::vector<ca::str::Utf8String> implementors;
     std::vector<ClassRelationSource> sources;
 };
 
 /// @brief 影响分析中的一项预期或已应用映射。
 struct RenameMapping final
 {
-    std::string kind;
-    std::string before;
-    std::string after;
+    ca::str::Utf8String kind;
+    ca::str::Utf8String before;
+    ca::str::Utf8String after;
 };
 
 /// @brief 工作区重命名操作的目标种类。
@@ -525,11 +529,11 @@ enum class RenameKind : ca::u8
 struct RenameRequest final
 {
     RenameKind  kind = RenameKind::Class;
-    std::string owner;
-    std::string methodName;
-    std::string name;
-    std::string descriptor;
-    std::string newName;
+    ca::str::Utf8String owner;
+    ca::str::Utf8String methodName;
+    ca::str::Utf8String name;
+    ca::str::Utf8String descriptor;
+    ca::str::Utf8String newName;
     ca::i32     localIndex = -1;
     bool        cascadeOverrides = false;
     asm_remapper::RemapPolicy policy = asm_remapper::RemapPolicy::all();
@@ -544,7 +548,7 @@ struct ImpactAnalysis final
     std::vector<ReferenceImpact> afterReferences;
     std::vector<ByteDiff>        byteDiffs;
     std::vector<jasm::Diagnostic> diagnostics;
-    std::vector<std::string>     risks;
+    std::vector<ca::str::Utf8String> risks;
 };
 
 /// @brief 重命名预览，包括方法 override 组件和可供审阅的映射表。
@@ -561,16 +565,16 @@ struct RenameAnalysis final
 /// @brief 一个可由工作区执行的已注册 pass 摘要。
 struct PassDescription final
 {
-    std::string name;
-    std::string description;
-    std::string scope;
+    ca::str::Utf8String name;
+    ca::str::Utf8String description;
+    ca::str::Utf8String scope;
 };
 
 /// @brief 一个可由工作区执行的已注册 pipeline 摘要。
 struct PipelineDescription final
 {
-    std::string name;
-    std::string description;
+    ca::str::Utf8String name;
+    ca::str::Utf8String description;
 };
 
 /// @brief 在工作区候选副本上执行 pass 或 pipeline 的请求。
@@ -579,9 +583,9 @@ struct PipelineDescription final
 /// 扫描 JDK 类路径并以 COMPUTE_MAXS | COMPUTE_FRAMES 写回候选 class。
 struct PipelineRequest final
 {
-    std::vector<std::string> passNames;
-    std::string              pipeline;
-    std::string              jdkPath;
+    std::vector<ca::str::Utf8String> passNames;
+    ca::str::Utf8String              pipeline;
+    ca::str::Utf8String              jdkPath;
 };
 
 /// @brief 工作流中要在候选副本前后执行的精确引用查询种类。
@@ -596,9 +600,15 @@ enum class WorkflowReferenceKind : ca::u8
 struct WorkflowReferenceQuery final
 {
     WorkflowReferenceKind kind = WorkflowReferenceKind::Class;
-    std::string           owner;
-    std::string           name;
-    std::string           descriptor;
+    ca::str::Utf8String           owner;
+    ca::str::Utf8String           name;
+    ca::str::Utf8String           descriptor;
+
+    /// @brief 深拷贝（runWorkflow 装配 before/after 报告行时按值持有查询）。
+    WorkflowReferenceQuery clone() const
+    {
+        return {kind, owner.clone(), name.clone(), descriptor.clone()};
+    }
 };
 
 /// @brief 一个 xref 查询在工作流输入和候选输出中的稳定结果。
@@ -612,7 +622,7 @@ struct WorkflowReferenceReport final
 /// @brief 工作流中一个已执行阶段的状态。
 struct WorkflowStageResult final
 {
-    std::string        name;
+    ca::str::Utf8String name;
     WorkspaceErrorInfo status;
 };
 
@@ -629,11 +639,13 @@ struct WorkflowRequest final
     std::vector<WorkflowReferenceQuery>  referenceQueries;
     /// @brief 非空时将已验证的候选副本原子导出到此前不存在的 JAR 路径。
     /// @note dryRun 只校验导出目标，不创建输出文件。
-    std::string                          exportPath;
+    ca::str::Utf8String                  exportPath;
     /// @brief 在验证完成后接收一次性候选 JAR 快照的只读阶段。
     /// @note 回调返回前必须完成读取，快照会立刻删除；返回错误时不导出或提交 Workspace。
+    /// @note 路径形参保持 std::string：导出目标走文件系统字节路径面，不随 DTO 文本
+    ///       字段换型（与 long_path/file_io 字节边界除外条款同口径）。
     std::function<WorkspaceErrorInfo(const std::string&)> candidateJarConsumer;
-    std::string                          candidateJarStageName;
+    ca::str::Utf8String                  candidateJarStageName;
 };
 
 /// @brief 可重放工作流的机器可读报告。
@@ -644,9 +656,9 @@ struct WorkflowRequest final
 struct WorkflowResult final
 {
     MutationResult                       mutation;
-    std::string                          inputFingerprint;
-    std::string                          candidateFingerprint;
-    std::string                          exportPath;
+    ca::str::Utf8String                  inputFingerprint;
+    ca::str::Utf8String                  candidateFingerprint;
+    ca::str::Utf8String                  exportPath;
     bool                                 exported = false;
     std::vector<WorkflowStageResult>     stages;
     std::vector<WorkflowReferenceReport> references;
@@ -655,9 +667,9 @@ struct WorkflowResult final
 /// @brief 一项可由 JAR 修复事务处理的资源问题。
 struct JarRepairIssue final
 {
-    std::string uri;
-    std::string kind;
-    std::string message;
+    ca::str::Utf8String uri;
+    ca::str::Utf8String kind;
+    ca::str::Utf8String message;
     ca::usize   size = 0;
     bool        selectedForRemoval = false;
 };
@@ -682,7 +694,7 @@ struct JarRepairResult final
 struct JarDiffResult final
 {
     WorkspaceErrorInfo      status;
-    std::string             referencePath;
+    ca::str::Utf8String     referencePath;
     ca::usize               workspaceOnly = 0;
     ca::usize               referenceOnly = 0;
     ca::usize               modified = 0;
@@ -699,15 +711,15 @@ struct JarDiffResult final
 /// 导入-验证-导出-提交契约由本类型与 commitWorkflowCandidateJar 承载。
 struct WorkflowCandidateCommitRequest final
 {
-    std::string candidateJarPath;
-    std::string exportPath;
+    ca::str::Utf8String candidateJarPath;
+    ca::str::Utf8String exportPath;
 };
 
 /// @brief 工作流候选 JAR 导入、导出和提交的统一结果。
 struct WorkflowCandidateCommitResult final
 {
     MutationResult mutation;
-    std::string    exportPath;
+    ca::str::Utf8String    exportPath;
     bool           exported = false;
 };
 

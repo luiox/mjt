@@ -98,10 +98,12 @@ Json annotationElementJson(const AnnotationElement& element)
 {
     Json children = Json::array();
     for (const auto& child : element.children) children.push_back(annotationElementJson(child));
-    return {{"name", element.name},
+    //DTO 文本字段已换型 Utf8String：Json 投影显式 to_std_string（nlohmann
+    //会把带 begin/end 的类型吃成码点数组，禁止隐式直通）。
+    return {{"name", element.name.to_std_string()},
             {"tag", std::string(1, element.tag)},
-            {"value", element.value},
-            {"annotation_descriptor", element.annotationDescriptor},
+            {"value", element.value.to_std_string()},
+            {"annotation_descriptor", element.annotationDescriptor.to_std_string()},
             {"children", std::move(children)}};
 }
 
@@ -111,7 +113,7 @@ Json annotationsJson(const std::vector<AnnotationInfo>& annotations)
     for (const auto& annotation : annotations) {
         Json elements = Json::array();
         for (const auto& element : annotation.elements) elements.push_back(annotationElementJson(element));
-        result.push_back({{"descriptor", annotation.descriptor},
+        result.push_back({{"descriptor", annotation.descriptor.to_std_string()},
                           {"visible", annotation.visible},
                           {"elements", std::move(elements)}});
     }
@@ -120,9 +122,9 @@ Json annotationsJson(const std::vector<AnnotationInfo>& annotations)
 
 Json fieldJson(const FieldInfo& field)
 {
-    return {{"name", field.name},
-            {"descriptor", field.descriptor},
-            {"signature", field.signature},
+    return {{"name", field.name.to_std_string()},
+            {"descriptor", field.descriptor.to_std_string()},
+            {"signature", field.signature.to_std_string()},
             {"access", field.access},
             {"annotations", annotationsJson(field.annotations)}};
 }
@@ -130,20 +132,21 @@ Json fieldJson(const FieldInfo& field)
 Json methodJson(const MethodInfo& method)
 {
     Json exceptions = Json::array();
-    for (const auto& exception : method.exceptions) exceptions.push_back(exception);
+    for (const auto& exception : method.exceptions)
+        exceptions.push_back(exception.to_std_string());
     Json locals = Json::array();
     for (const auto& local : method.localVariables) {
-        locals.push_back({{"name", local.name},
-                          {"descriptor", local.descriptor},
-                          {"signature", local.signature},
+        locals.push_back({{"name", local.name.to_std_string()},
+                          {"descriptor", local.descriptor.to_std_string()},
+                          {"signature", local.signature.to_std_string()},
                           {"index", local.index}});
     }
     Json lines = Json::array();
     for (const auto& line : method.lineNumbers)
         lines.push_back({{"instruction_index", line.instructionIndex}, {"line", line.line}});
-    return {{"name", method.name},
-            {"descriptor", method.descriptor},
-            {"signature", method.signature},
+    return {{"name", method.name.to_std_string()},
+            {"descriptor", method.descriptor.to_std_string()},
+            {"signature", method.signature.to_std_string()},
             {"access", method.access},
             {"max_stack", method.maxStack},
             {"max_locals", method.maxLocals},
@@ -158,10 +161,10 @@ Json methodJson(const MethodInfo& method)
 Json supportingResourceJson(const SupportingResourceInfo& support)
 {
     //role 透传：support 是缺省遗留值，library/runtime 由角色化登记写入。
-    return {{"role", support.role.empty() ? "support" : support.role},
-            {"id", support.id},
-            {"path", support.path},
-            {"fingerprint", support.fingerprint},
+    return {{"role", support.role.is_empty() ? "support" : support.role.to_std_string()},
+            {"id", support.id.to_std_string()},
+            {"path", support.path.to_std_string()},
+            {"fingerprint", support.fingerprint.to_std_string()},
             {"resource_count", support.resourceCount},
             {"class_count", support.classCount}};
 }
@@ -172,14 +175,14 @@ Json classJson(const ClassInfo& clazz)
     Json fields = Json::array();
     Json methods = Json::array();
     Json innerClasses = Json::array();
-    for (const auto& item : clazz.interfaces) interfaces.push_back(item);
+    for (const auto& item : clazz.interfaces) interfaces.push_back(item.to_std_string());
     for (const auto& field : clazz.fields) fields.push_back(fieldJson(field));
     for (const auto& method : clazz.methods) methods.push_back(methodJson(method));
-    for (const auto& item : clazz.innerClasses) innerClasses.push_back(item);
-    return {{"resource_uri", clazz.resourceUri},
-            {"class", clazz.internalName},
-            {"super_name", clazz.superName},
-            {"signature", clazz.signature},
+    for (const auto& item : clazz.innerClasses) innerClasses.push_back(item.to_std_string());
+    return {{"resource_uri", clazz.resourceUri.to_std_string()},
+            {"class", clazz.internalName.to_std_string()},
+            {"super_name", clazz.superName.to_std_string()},
+            {"signature", clazz.signature.to_std_string()},
             {"access", clazz.access},
             {"version", clazz.version},
             {"interfaces", std::move(interfaces)},
@@ -192,9 +195,9 @@ Json classJson(const ClassInfo& clazz)
 Json classSummaryJson(const ClassSummary& clazz)
 {
     //键统一：类级响应行的类名键一律 class（内部名），不再用 internal_name。
-    return {{"resource_uri", clazz.resourceUri},
-            {"class", clazz.internalName},
-            {"super_name", clazz.superName},
+    return {{"resource_uri", clazz.resourceUri.to_std_string()},
+            {"class", clazz.internalName.to_std_string()},
+            {"super_name", clazz.superName.to_std_string()},
             {"access", clazz.access},
             {"version", clazz.version},
             {"interface_count", clazz.interfaceCount},
@@ -450,25 +453,26 @@ std::string selectorKeyError(const std::string& key,
 Json searchHitJson(const SearchHit& hit)
 {
     //键统一：类级行类名键 = class（内部名），成员级行宿主类键 = owner。
-    Json result = {{"resource_uri", hit.resourceUri}, {"kind", hit.kind}};
-    if (hit.kind == "class") result["class"] = hit.owner;
-    else result["owner"] = hit.owner;
-    result["name"] = hit.name;
-    result["descriptor"] = hit.descriptor;
+    Json result = {{"resource_uri", hit.resourceUri.to_std_string()},
+                   {"kind", hit.kind.to_std_string()}};
+    if (hit.kind == "class") result["class"] = hit.owner.to_std_string();
+    else result["owner"] = hit.owner.to_std_string();
+    result["name"] = hit.name.to_std_string();
+    result["descriptor"] = hit.descriptor.to_std_string();
     result["instruction_index"] = hit.instructionIndex;
-    result["value"] = hit.value;
+    result["value"] = hit.value.to_std_string();
     //strings 分面：string_literal = 串常量（ldc 加载的 constant_pool_string
     //与非 class 资源可打印串）；裸 UTF8 行按内容形态细分（classref/descriptor/
     //name）——属性名、方法名、字面量背书不再混进 classref。
     if (hit.kind == "constant_pool_string" || hit.kind == "resource_string")
         result["string_kind"] = "string_literal";
     else if (hit.kind == "constant_pool_utf8")
-        result["string_kind"] = utf8StringKind(hit.value);
+        result["string_kind"] = utf8StringKind(hit.value.to_std_string());
     //instructions 结构化摘要：从拼接文本 value 拆出 mnemonic/operand/cst，
     //替代拼接文本当唯一判别信息。
     if (hit.kind == "instruction") {
         InstructionHitParts parts;
-        if (parseInstructionHitValue(hit.value, parts)) {
+        if (parseInstructionHitValue(hit.value.to_std_string(), parts)) {
             result["mnemonic"] = parts.mnemonic;
             result["operand"]  = parts.operand;
             result["cst"]      = parts.cst;
@@ -491,14 +495,15 @@ Json mutationJson(const MutationResult& mutation)
                               {"before_length", range.beforeLength},
                               {"after_length", range.afterLength}});
         }
-        diffs.push_back({{"uri", diff.uri},
+        diffs.push_back({{"uri", diff.uri.to_std_string()},
                          {"before_size", diff.beforeSize},
                          {"after_size", diff.afterSize},
                          {"ranges", std::move(ranges)}});
     }
-    for (const auto& item : mutation.affectedClasses) classes.push_back(item);
+    for (const auto& item : mutation.affectedClasses) classes.push_back(item.to_std_string());
     for (const auto& reference : mutation.affectedReferences)
-        references.push_back({{"kind", reference.kind}, {"target", reference.target}});
+        references.push_back({{"kind", reference.kind.to_std_string()},
+                              {"target", reference.target.to_std_string()}});
     return {{"status", statusJson(shared::toCaStatus(mutation.status))},
             {"revision", mutation.revision},
             {"committed", mutation.committed},
@@ -514,9 +519,9 @@ Json jarRepairJson(const JarRepairResult& repair)
     Json result = mutationJson(repair.mutation);
     Json issues = Json::array();
     for (const auto& issue : repair.issues) {
-        issues.push_back({{"uri", issue.uri},
-                          {"kind", issue.kind},
-                          {"message", issue.message},
+        issues.push_back({{"uri", issue.uri.to_std_string()},
+                          {"kind", issue.kind.to_std_string()},
+                          {"message", issue.message.to_std_string()},
                           {"size", issue.size},
                           {"selected_for_removal", issue.selectedForRemoval}});
     }
@@ -528,14 +533,14 @@ Json jarRepairJson(const JarRepairResult& repair)
 
 Json referenceJson(const mjt::workspace::ReferenceInfo& reference)
 {
-    return {{"source", {{"class", reference.sourceClass},
-                         {"method", reference.sourceMethod},
-                         {"descriptor", reference.sourceDescriptor},
+    return {{"source", {{"class", reference.sourceClass.to_std_string()},
+                         {"method", reference.sourceMethod.to_std_string()},
+                         {"descriptor", reference.sourceDescriptor.to_std_string()},
                          {"instruction_index", reference.instructionIndex},
                          {"supporting", reference.supporting},
-                         {"support_id", reference.supportId}}},
-            {"target", reference.target},
-            {"kind", reference.kind}};
+                         {"support_id", reference.supportId.to_std_string()}}},
+            {"target", reference.target.to_std_string()},
+            {"kind", reference.kind.to_std_string()}};
 }
 
 const char* workflowReferenceKindName(WorkflowReferenceKind kind)
@@ -553,23 +558,24 @@ Json workflowJson(const WorkflowResult& workflow)
     Json stages = Json::array();
     Json references = Json::array();
     for (const auto& stage : workflow.stages)
-        stages.push_back({{"name", stage.name}, {"status", statusJson(shared::toCaStatus(stage.status))}});
+        stages.push_back({{"name", stage.name.to_std_string()},
+                          {"status", statusJson(shared::toCaStatus(stage.status))}});
     for (const auto& report : workflow.references) {
         Json before = Json::array();
         Json after = Json::array();
         for (const auto& reference : report.before) before.push_back(referenceJson(reference));
         for (const auto& reference : report.after) after.push_back(referenceJson(reference));
         references.push_back({{"query", {{"kind", workflowReferenceKindName(report.query.kind)},
-                                            {"owner", report.query.owner},
-                                            {"name", report.query.name},
-                                            {"descriptor", report.query.descriptor}}},
+                                            {"owner", report.query.owner.to_std_string()},
+                                            {"name", report.query.name.to_std_string()},
+                                            {"descriptor", report.query.descriptor.to_std_string()}}},
                               {"before", std::move(before)},
                               {"after", std::move(after)}});
     }
     return {{"mutation", mutationJson(workflow.mutation)},
-            {"input_fingerprint", workflow.inputFingerprint},
-            {"candidate_fingerprint", workflow.candidateFingerprint},
-            {"export_path", workflow.exportPath},
+            {"input_fingerprint", workflow.inputFingerprint.to_std_string()},
+            {"candidate_fingerprint", workflow.candidateFingerprint.to_std_string()},
+            {"export_path", workflow.exportPath.to_std_string()},
             {"exported", workflow.exported},
             {"stages", std::move(stages)},
             {"references", std::move(references)}};
@@ -833,14 +839,18 @@ Json impactJson(const ImpactAnalysis& impact)
     Json diagnostics = Json::array();
     Json risks = Json::array();
     for (const auto& item : impact.beforeReferences)
-        before.push_back({{"kind", item.kind}, {"target", item.target}});
+        before.push_back({{"kind", item.kind.to_std_string()},
+                          {"target", item.target.to_std_string()}});
     for (const auto& item : impact.afterReferences)
-        after.push_back({{"kind", item.kind}, {"target", item.target}});
+        after.push_back({{"kind", item.kind.to_std_string()},
+                         {"target", item.target.to_std_string()}});
     for (const auto& item : impact.diagnostics) diagnostics.push_back(diagnosticJson(item));
-    for (const auto& item : impact.risks) risks.push_back(item);
+    for (const auto& item : impact.risks) risks.push_back(item.to_std_string());
     Json diffs = Json::array();
     for (const auto& diff : impact.byteDiffs)
-        diffs.push_back({{"uri", diff.uri}, {"before_size", diff.beforeSize}, {"after_size", diff.afterSize}});
+        diffs.push_back({{"uri", diff.uri.to_std_string()},
+                         {"before_size", diff.beforeSize},
+                         {"after_size", diff.afterSize}});
     return {{"status", statusJson(shared::toCaStatus(impact.status))},
             {"exportable", impact.exportable},
             {"before_references", std::move(before)},

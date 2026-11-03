@@ -241,9 +241,13 @@ std::string fieldReferenceKind(FieldReferenceKind)
 
 ReferenceInfo referenceInfo(const ReferenceSite& site, std::string_view target, std::string_view kind)
 {
-    return {site.sourceClass.to_std_string(), site.sourceMethod.to_std_string(),
-            site.sourceDescriptor.to_std_string(), site.insnIndex, std::string(target),
-            std::string(kind)};
+    // ReferenceInfo DTO 文本字段换型 Utf8String：site 切片按 clone 复制，
+    // target/kind 视图按 from_data_unchecked 字节直通（analysis_ingest utf8() 同口径）。
+    return {site.sourceClass.clone(), site.sourceMethod.clone(), site.sourceDescriptor.clone(),
+            site.insnIndex, ca::str::Utf8String::from_data_unchecked(
+                                reinterpret_cast<const ca::u8*>(target.data()), target.size()),
+            ca::str::Utf8String::from_data_unchecked(reinterpret_cast<const ca::u8*>(kind.data()),
+                                            kind.size())};
 }
 
 void sortReferences(std::vector<ReferenceInfo>& references)

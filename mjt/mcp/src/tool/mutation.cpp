@@ -59,10 +59,14 @@ std::optional<Json> McpToolService::callMutationTool(
                 auto result = current->addSupportingJar(path);
                 if (result.is_err())
                     { const auto err = shared::toCaStatus(result.unwrap_err()); return toolError("mount container failed", &err); }
-                const auto registered =
-                    registerSupportInput(session.projectDir, result.unwrap().path, result.unwrap().fingerprint);
+                // SupportingResourceInfo 携 move-only Utf8String：unwrap 走移动
+                // 重载，path/fingerprint 落 std::string（登记目录字节路径面）。
+                const auto mounted = std::move(result).unwrap();
+                const auto registered = registerSupportInput(session.projectDir,
+                                                             mounted.path.to_std_string(),
+                                                             mounted.fingerprint.to_std_string());
                 if (registered.is_err()) return toolError("register container failed", &registered);
-                return toolResult({{"action", action}, {"container", supportingResourceJson(result.unwrap())}});
+                return toolResult({{"action", action}, {"container", supportingResourceJson(mounted)}});
             }
 
             //library/runtime：挂进角色化容器栈（id = 规范化登记 path）。栈 id
@@ -123,7 +127,9 @@ std::optional<Json> McpToolService::callMutationTool(
             record.role        = *mountedRole;
             record.path        = containerId;
             record.fingerprint = fingerprint;
-            record.supportId   = support.unwrap().id;
+            // SupportingResourceInfo 携 move-only Utf8String：unwrap 走移动
+            // 重载，id 落 std::string（会话登记面）。
+            record.supportId   = std::move(support).unwrap().id.to_std_string();
             record.container   = std::move(container);
             session.mountedContainers.push_back(std::move(record));
 
@@ -150,7 +156,8 @@ std::optional<Json> McpToolService::callMutationTool(
                                              {"id", containerId},
                                              {"path", containerId},
                                              {"fingerprint", fingerprint},
-                                             {"support_id", support.unwrap().id}}}};
+                                             {"support_id",
+                                              std::move(support).unwrap().id.to_std_string()}}}};
             if (!shadowed.empty()) payload["shadowed"] = std::move(shadowed);
             return toolResult(std::move(payload));
         }
@@ -160,9 +167,13 @@ std::optional<Json> McpToolService::callMutationTool(
             auto result = current->removeSupportingJar(supportId);
             if (result.is_err())
                 { const auto err = shared::toCaStatus(result.unwrap_err()); return toolError("detach container failed", &err); }
-            const auto deregistered = removeSupportInput(session.projectDir, result.unwrap().path);
+            // SupportingResourceInfo 携 move-only Utf8String：unwrap 走移动
+            // 重载，path 落 std::string（登记目录字节路径面）。
+            const auto removed = std::move(result).unwrap();
+            const auto deregistered =
+                removeSupportInput(session.projectDir, removed.path.to_std_string());
             if (deregistered.is_err()) return toolError("deregister container failed", &deregistered);
-            return toolResult({{"action", action}, {"removed", supportingResourceJson(result.unwrap())}});
+            return toolResult({{"action", action}, {"removed", supportingResourceJson(removed)}});
         }
 
         //library/runtime 卸载：workspace 支撑面先行（失败不动栈），随后栈
@@ -335,8 +346,8 @@ std::optional<Json> McpToolService::callMutationTool(
             PipelineRequest pipeline;
             std::string     parseError;
             if (!parsePipelineRequest(arguments, pipeline, parseError)) return toolError(parseError);
-            if (pipeline.pipeline.empty() && pipeline.passNames.empty())
-                pipeline.pipeline = "default-optimize";
+            if (pipeline.pipeline.is_empty() && pipeline.passNames.empty())
+                pipeline.pipeline = ca::str::Utf8String::from_cstr("default-optimize");
             auto request = mutationRequest(arguments);
             request.dryRun = dryRun || request.dryRun;
             const auto result = current->applyPipeline(pipeline, request);
@@ -513,12 +524,16 @@ std::optional<Json> McpToolService::callMutationTool(
                 return toolError("list modified classes failed", &err);
             }
             Json values = Json::array();
-            for (const auto& item : modified.unwrap()) {
-            values.push_back({{"resource_uri", item.resourceUri},
-                              {"original_internal_name", item.originalInternalName},
-                              {"current_internal_name", item.currentInternalName},
-                              {"original_fingerprint", item.originalFingerprint},
-                              {"current_fingerprint", item.currentFingerprint},
+            // ModifiedClassInfo 携 move-only Utf8String：unwrap 走移动重载，
+            // 投影显式 to_std_string（nlohmann 码点数组陷阱）。
+            for (const auto& item : std::move(modified).unwrap()) {
+            values.push_back({{"resource_uri", item.resourceUri.to_std_string()},
+                              {"original_internal_name",
+                               item.originalInternalName.to_std_string()},
+                              {"current_internal_name",
+                               item.currentInternalName.to_std_string()},
+                              {"original_fingerprint", item.originalFingerprint.to_std_string()},
+                              {"current_fingerprint", item.currentFingerprint.to_std_string()},
                               {"original_size", item.originalSize},
                               {"current_size", item.currentSize}});
             }
@@ -567,17 +582,19 @@ std::optional<Json> McpToolService::callMutationTool(
         if (name != "xref_class") {
             auto info = current->classInfo(owner);
             if (info.is_ok()) {
-                const auto& clazz = info.unwrap();
-                const auto addCandidate = [&](const std::string& candidate) {
+                // ClassInfo 携 move-only Utf8String：unwrap 走移动重载。
+                const auto& clazz = std::move(info).unwrap();
+                const auto addCandidate = [&](const ca::str::Utf8StringRef& candidate) {
+                    const auto text = candidate.to_std_string();
                     if (std::find(descriptorCandidates.begin(),
                                   descriptorCandidates.end(),
-                                  candidate) == descriptorCandidates.end())
-                        descriptorCandidates.push_back(candidate);
+                                  text) == descriptorCandidates.end())
+                        descriptorCandidates.push_back(text);
                 };
                 for (const auto& method : clazz.methods)
-                    if (method.name == member) addCandidate(method.descriptor);
+                    if (method.name == member) addCandidate(method.descriptor.ref());
                 for (const auto& field : clazz.fields)
-                    if (field.name == member) addCandidate(field.descriptor);
+                    if (field.name == member) addCandidate(field.descriptor.ref());
             }
         }
         //显式 if-else 分派替代原 3 层嵌套三元，避免重复读取 arguments 与拷贝；
@@ -618,10 +635,12 @@ std::optional<Json> McpToolService::callMutationTool(
                                        items.end(),
                                        [&](const mjt::workspace::ReferenceInfo& item) {
                                            //保留 = 站点在本角色容器内；其余全部剔除。
+                                           //DTO 文本字段换型 Utf8String：键比对显式
+                                           //to_std_string。
                                            if (!item.supporting) return true;
-                                           if (roleSupportIds.count(item.supportId) == 0)
+                                           if (roleSupportIds.count(item.supportId.to_std_string()) == 0)
                                                return true;
-                                           return inventory.find(item.sourceClass) ==
+                                           return inventory.find(item.sourceClass.to_std_string()) ==
                                                   inventory.end();
                                        }),
                         items.end());
@@ -639,7 +658,8 @@ std::optional<Json> McpToolService::callMutationTool(
                                        items.end(),
                                        [&](const mjt::workspace::ReferenceInfo& item) {
                                            if (!item.supporting) return false;
-                                           return findMountedContainer(session, item.supportId) ==
+                                           return findMountedContainer(
+                                                      session, item.supportId.to_std_string()) ==
                                                   nullptr;
                                        }),
                         items.end());
@@ -677,17 +697,19 @@ std::optional<Json> McpToolService::callMutationTool(
             const auto err = shared::toCaStatus(value.unwrap_err());
             return toolError("get class relations failed", &err);
         }
-        const auto array = [](const std::vector<std::string>& source) {
+        // ClassRelations 携 move-only Utf8String：array 收参与投影均显式
+        // to_std_string（nlohmann 会把带 begin/end 的类型吃成码点数组）。
+        const auto array = [](const std::vector<ca::str::Utf8String>& source) {
             Json result = Json::array();
-            for (const auto& item : source) result.push_back(item);
+            for (const auto& item : source) result.push_back(item.to_std_string());
             return result;
         };
-        const auto& relations = value.unwrap();
+        const auto& relations = std::move(value).unwrap();
         Json sources = Json::array();
         for (const auto& source : relations.sources) {
-            sources.push_back({{"class", source.internalName},
+            sources.push_back({{"class", source.internalName.to_std_string()},
                                {"supporting", source.supporting},
-                               {"support_id", source.supportId}});
+                               {"support_id", source.supportId.to_std_string()}});
         }
         return toolResult({{"superclasses", array(relations.superclasses)},
                            {"interfaces", array(relations.interfaces)},
@@ -710,13 +732,15 @@ std::optional<Json> McpToolService::callMutationTool(
             return toolError("get method overrides failed", &err);
         }
         Json values = Json::array();
-        for (const auto& item : value.unwrap())
-            values.push_back({{"owner", item.owner},
-                              {"name", item.name},
-                              {"descriptor", item.descriptor},
+        // MethodOverrideInfo 携 move-only Utf8String：unwrap 走移动重载，投影
+        // 显式 to_std_string（nlohmann 码点数组陷阱）。
+        for (const auto& item : std::move(value).unwrap())
+            values.push_back({{"owner", item.owner.to_std_string()},
+                              {"name", item.name.to_std_string()},
+                              {"descriptor", item.descriptor.to_std_string()},
                               {"primary", item.primary},
                               {"supporting", item.supporting},
-                              {"support_id", item.supportId}});
+                              {"support_id", item.supportId.to_std_string()}});
         return toolResult({{"overrides", std::move(values)}});
     }
     if (name == "patch_validate_jasm" || name == "patch_apply_jasm") {
@@ -812,7 +836,8 @@ std::optional<Json> McpToolService::callMutationTool(
             const auto err = shared::toCaStatus(classInfo.unwrap_err());
             return toolError("select class for method jasm failed", &err);
         }
-        auto jasm = current->getJasm(classInfo.unwrap().resourceUri);
+        const std::string classUri = std::move(classInfo).unwrap().resourceUri.to_std_string();
+        auto jasm = current->getJasm(classUri);
         if (!jasm.isOk()) {
             Json diagnostics = Json::array();
             for (const auto& item : jasm.diagnostics) diagnostics.push_back(diagnosticJson(item));
@@ -835,11 +860,11 @@ std::optional<Json> McpToolService::callMutationTool(
         newClassSource.replace(first, oldMethodSource.size(), newMethodSource);
         const auto result =
             name == "method_validate_jasm" || name == "method_validate_jasm_diff"
-                ? current->validateJasm(classInfo.unwrap().resourceUri,
+                ? current->validateJasm(classUri,
                                         utf16(sourceName).ref(),
                                         utf16(newClassSource).ref(),
                                         mutationRequest(arguments))
-                : current->applyJasm(classInfo.unwrap().resourceUri,
+                : current->applyJasm(classUri,
                                      utf16(sourceName).ref(),
                                      utf16(newClassSource).ref(),
                                      mutationRequest(arguments));
@@ -983,15 +1008,19 @@ std::optional<Json> McpToolService::callMutationTool(
         const auto analysis = current->analyzeRename(rename);
         Json mappings = Json::array();
         Json overrides = Json::array();
+        //RenameAnalysis 文本字段换型 Utf8String：投影显式 to_std_string
+        //（nlohmann 会把带 begin/end 的类型吃成码点数组，禁止隐式直通）。
         for (const auto& item : analysis.mappings)
-            mappings.push_back({{"kind", item.kind}, {"before", item.before}, {"after", item.after}});
+            mappings.push_back({{"kind", item.kind.to_std_string()},
+                                {"before", item.before.to_std_string()},
+                                {"after", item.after.to_std_string()}});
         for (const auto& item : analysis.overrideComponent)
-            overrides.push_back({{"owner", item.owner},
-                                 {"name", item.name},
-                                 {"descriptor", item.descriptor},
+            overrides.push_back({{"owner", item.owner.to_std_string()},
+                                 {"name", item.name.to_std_string()},
+                                 {"descriptor", item.descriptor.to_std_string()},
                                  {"primary", item.primary},
                                  {"supporting", item.supporting},
-                                 {"support_id", item.supportId}});
+                                 {"support_id", item.supportId.to_std_string()}});
         return toolResult({{"status", statusJson(shared::toCaStatus(analysis.status))},
                            {"ready_to_apply", analysis.readyToApply},
                            {"requires_override_review", analysis.requiresOverrideReview},

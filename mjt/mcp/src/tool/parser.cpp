@@ -54,9 +54,9 @@ bool parseSearchOptions(const Json& arguments, SearchOptions& output, std::strin
         return false;
     }
     output.caseSensitive = arguments.value("case_sensitive", false);
-    output.owner = arguments.value("owner", std::string{});
-    output.packagePrefix = arguments.value("package_prefix", std::string{});
-    output.memberKind = arguments.value("member_kind", std::string{});
+    output.owner = utf8(arguments.value("owner", std::string{}));
+    output.packagePrefix = utf8(arguments.value("package_prefix", std::string{}));
+    output.memberKind = utf8(arguments.value("member_kind", std::string{}));
     output.opcode = arguments.value("opcode", -1);
     return true;
 }
@@ -82,7 +82,7 @@ MutationRequest mutationRequest(const Json& arguments)
         request.expectedRevision = revision.get<ca::u64>();
     }
     request.dryRun = arguments.value("dry_run", false);
-    request.label = arguments.value("label", std::string{});
+    request.label = utf8(arguments.value("label", std::string{}));
     //validation 三档：relaxed（默认，JVM 赋值协变 + 只校验受影响类）/
     //strict（精确匹配）/ off（跳过门禁）。非法值走与 expected_revision 相同的
     //Json type_error 通道，由 service.call 统一映射 INVALID_ARGUMENT。
@@ -534,11 +534,11 @@ bool parseRename(const Json& arguments, RenameRequest& output, std::string& erro
         error = "unsupported rename kind: " + kind;
         return false;
     }
-    output.owner = arguments.value("owner", std::string{});
-    output.methodName = arguments.value("method_name", std::string{});
-    output.name = arguments.value("name", std::string{});
-    output.descriptor = arguments.value("descriptor", std::string{});
-    output.newName = arguments.value("new_name", std::string{});
+    output.owner = utf8(arguments.value("owner", std::string{}));
+    output.methodName = utf8(arguments.value("method_name", std::string{}));
+    output.name = utf8(arguments.value("name", std::string{}));
+    output.descriptor = utf8(arguments.value("descriptor", std::string{}));
+    output.newName = utf8(arguments.value("new_name", std::string{}));
     output.localIndex = arguments.value("local_index", -1);
     output.cascadeOverrides = arguments.value("cascade_overrides", false);
     const auto policy = arguments.value("policy", std::string("all"));
@@ -555,8 +555,8 @@ bool parseRename(const Json& arguments, RenameRequest& output, std::string& erro
 
 bool parsePipelineRequest(const Json& arguments, PipelineRequest& output, std::string& error)
 {
-    output.pipeline = arguments.value("pipeline", std::string{});
-    output.jdkPath  = arguments.value("jdk_path", std::string{});
+    output.pipeline = utf8(arguments.value("pipeline", std::string{}));
+    output.jdkPath  = utf8(arguments.value("jdk_path", std::string{}));
     if (arguments.contains("passes")) {
         const auto& passes = arguments.at("passes");
         if (!passes.is_array()) {
@@ -568,10 +568,10 @@ bool parsePipelineRequest(const Json& arguments, PipelineRequest& output, std::s
                 error = "each passes item must be a string";
                 return false;
             }
-            output.passNames.push_back(value.get<std::string>());
+            output.passNames.push_back(utf8(value.get<std::string>()));
         }
     }
-    if (!output.pipeline.empty() && !output.passNames.empty()) {
+    if (!output.pipeline.is_empty() && !output.passNames.empty()) {
         error = "pipeline and passes are mutually exclusive";
         return false;
     }
@@ -601,9 +601,9 @@ bool parseWorkflowReferences(const Json& arguments, std::vector<WorkflowReferenc
             error = "unsupported workflow reference kind: " + kind;
             return false;
         }
-        query.owner = value.value("owner", std::string{});
-        query.name = value.value("name", std::string{});
-        query.descriptor = value.value("descriptor", std::string{});
+        query.owner = utf8(value.value("owner", std::string{}));
+        query.name = utf8(value.value("name", std::string{}));
+        query.descriptor = utf8(value.value("descriptor", std::string{}));
         output.push_back(std::move(query));
     }
     return true;

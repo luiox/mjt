@@ -12,6 +12,14 @@ using jbc::core::AnnotationsAttr;
 using jbc::core::ConstantPool;
 using jbc::core::CpTag;
 
+/// @brief std::string → 拥有型 Utf8String（DTO 文本字段赋值口径，与
+///        analysis_ingest 的 utf8() 同款：cp modified UTF-8 字节保真，不二次校验）。
+ca::str::Utf8String utf8(const std::string& value)
+{
+    return ca::str::Utf8String::from_data_unchecked(
+        reinterpret_cast<const ca::u8*>(value.data()), value.size());
+}
+
 /// @brief u2 大端读取（Raw 载荷解析）。
 ca::u32 readU2(const std::vector<ca::u8>& bytes, ca::usize at)
 {
@@ -77,11 +85,11 @@ std::string annotationValueText(const jbc::core::ClassFile& cf,
 void collectAnnotationElement(const jbc::core::ClassFile& cf, std::string_view name,
                               const AnnotationsAttr::ElemValue& value, AnnotationElement& out)
 {
-    out.name  = std::string(name);
+    out.name  = utf8(std::string(name));
     out.tag   = static_cast<char>(value.tag);
-    out.value = annotationValueText(cf, value);
+    out.value = utf8(annotationValueText(cf, value));
     if (value.tag == '@' && value.nested != nullptr) {
-        out.annotationDescriptor = utf8Text(cf, value.nested->typeCp);
+        out.annotationDescriptor = utf8(utf8Text(cf, value.nested->typeCp));
         for (const auto& [nameCp, nested] : value.nested->values) {
             AnnotationElement child;
             collectAnnotationElement(cf, utf8Of(cf, nameCp), nested, child);
@@ -110,7 +118,7 @@ void collectAnnotations(jbc::core::ClassFile& cf, std::vector<jbc::core::AttrSlo
         if (body == nullptr) continue;
         for (const AnnotationsAttr::Annotation& anno : body->annos) {
             AnnotationInfo info;
-            info.descriptor = utf8Text(cf, anno.typeCp);
+            info.descriptor = utf8(utf8Text(cf, anno.typeCp));
             info.visible    = visible;
             for (const auto& [nameCp, elem] : anno.values) {
                 AnnotationElement element;
@@ -135,8 +143,8 @@ void collectLocalVariables(jbc::core::ClassFile& cf, jbc::core::CodeAttr& code,
         if (body == nullptr) continue;
         for (const jbc::core::LocalVariableTableAttr::Row& row : body->rows) {
             LocalVariableInfo info;
-            info.name       = utf8Text(cf, row.nameCp);
-            info.descriptor = utf8Text(cf, row.descCp);
+            info.name       = utf8(utf8Text(cf, row.nameCp));
+            info.descriptor = utf8(utf8Text(cf, row.descCp));
             info.index      = static_cast<ca::i32>(row.slot);
             out.push_back(std::move(info));
         }
@@ -169,23 +177,23 @@ std::optional<ConstantValueInfo> fieldConstantValue(jbc::core::ClassFile& cf,
     switch (entry.tag) {
     case CpTag::Integer:
         info.kind = ConstantValueInfo::Kind::Integer;
-        info.text = std::to_string(entry.ival);
+        info.text = utf8(std::to_string(entry.ival));
         break;
     case CpTag::Long:
         info.kind = ConstantValueInfo::Kind::Long;
-        info.text = std::to_string(entry.lval);
+        info.text = utf8(std::to_string(entry.lval));
         break;
     case CpTag::Float:
         info.kind = ConstantValueInfo::Kind::Float;
-        info.text = renderFloatBits(static_cast<ca::u32>(entry.ival));
+        info.text = utf8(renderFloatBits(static_cast<ca::u32>(entry.ival)));
         break;
     case CpTag::Double:
         info.kind = ConstantValueInfo::Kind::Double;
-        info.text = renderDoubleBits(static_cast<ca::u64>(entry.lval));
+        info.text = utf8(renderDoubleBits(static_cast<ca::u64>(entry.lval)));
         break;
     case CpTag::String:
         info.kind = ConstantValueInfo::Kind::String;
-        info.text = utf8Text(cf, entry.a);
+        info.text = utf8(utf8Text(cf, entry.a));
         break;
     default:
         return std::nullopt;
@@ -198,47 +206,49 @@ ConstantPoolEntryInfo constantPoolEntry(const jbc::core::ClassFile& cf, ca::u32 
     ConstantPoolEntryInfo info;
     info.index = index;
     if (!cf.cp.valid(index)) {
-        info.tag       = "";
-        info.text      = "";
+        info.tag       = ca::str::Utf8String{};
+        info.text      = ca::str::Utf8String{};
         info.malformed = true;
         return info;
     }
     const ConstantPool::Entry& entry = cf.cp.at(index);
     switch (entry.tag) {
     case CpTag::Utf8:
-        info.tag  = "Utf8";
-        info.text = utf8Text(cf, index);
+        info.tag  = ca::str::Utf8String::from_cstr("Utf8");
+        info.text = utf8(utf8Text(cf, index));
         break;
     case CpTag::Integer:
-        info.tag  = "Integer";
-        info.text = std::to_string(entry.ival);
+        info.tag  = ca::str::Utf8String::from_cstr("Integer");
+        info.text = utf8(std::to_string(entry.ival));
         break;
     case CpTag::Float:
-        info.tag  = "Float";
-        info.text = renderFloatBits(static_cast<ca::u32>(entry.ival));
+        info.tag  = ca::str::Utf8String::from_cstr("Float");
+        info.text = utf8(renderFloatBits(static_cast<ca::u32>(entry.ival)));
         break;
     case CpTag::Long:
-        info.tag  = "Long";
-        info.text = std::to_string(entry.lval);
+        info.tag  = ca::str::Utf8String::from_cstr("Long");
+        info.text = utf8(std::to_string(entry.lval));
         break;
     case CpTag::Double:
-        info.tag  = "Double";
-        info.text = renderDoubleBits(static_cast<ca::u64>(entry.lval));
+        info.tag  = ca::str::Utf8String::from_cstr("Double");
+        info.text = utf8(renderDoubleBits(static_cast<ca::u64>(entry.lval)));
         break;
     case CpTag::Class:
-        info.tag  = "Class";
-        info.text = utf8Text(cf, entry.a);
+        info.tag  = ca::str::Utf8String::from_cstr("Class");
+        info.text = utf8(utf8Text(cf, entry.a));
         break;
     case CpTag::String:
-        info.tag  = "String";
-        info.text = utf8Text(cf, entry.a);
+        info.tag  = ca::str::Utf8String::from_cstr("String");
+        info.text = utf8(utf8Text(cf, entry.a));
         break;
     case CpTag::Fieldref:
     case CpTag::Methodref:
     case CpTag::InterfaceMethodref: {
-        info.tag = entry.tag == CpTag::Fieldref       ? "Fieldref"
-                   : entry.tag == CpTag::Methodref    ? "Methodref"
-                                                      : "InterfaceMethodref";
+        info.tag = entry.tag == CpTag::Fieldref
+                       ? ca::str::Utf8String::from_cstr("Fieldref")
+                   : entry.tag == CpTag::Methodref
+                       ? ca::str::Utf8String::from_cstr("Methodref")
+                       : ca::str::Utf8String::from_cstr("InterfaceMethodref");
         if (!resolve) break;
         // 引用条目：class_index → Class，name_and_type_index → name + desc。
         const std::string owner = classNameOf(cf, entry.a);
@@ -251,29 +261,30 @@ ConstantPoolEntryInfo constantPoolEntry(const jbc::core::ClassFile& cf, ca::u32 
                 desc = utf8Text(cf, nt.b);
             }
         }
-        info.text = owner + "." + name + ":" + desc;
+        info.text = utf8(owner + "." + name + ":" + desc);
         break;
     }
     case CpTag::NameAndType:
-        info.tag = "NameAndType";
+        info.tag = ca::str::Utf8String::from_cstr("NameAndType");
         // 引用类条目与 workspace_types.hpp 的 resolve 契约对齐：仅 resolve 时给文本。
-        if (resolve) info.text = utf8Text(cf, entry.a) + ":" + utf8Text(cf, entry.b);
+        if (resolve) info.text = utf8(utf8Text(cf, entry.a) + ":" + utf8Text(cf, entry.b));
         break;
     case CpTag::MethodHandle:
-        info.tag = "MethodHandle";
+        info.tag = ca::str::Utf8String::from_cstr("MethodHandle");
         // a = reference_kind，b = 引用条目；文本仅 resolve 时给。
         if (resolve) {
-            info.text = "kind " + std::to_string(entry.a) + " -> " +
-                        constantPoolEntry(cf, entry.b, true).text;
+            info.text = utf8("kind " + std::to_string(entry.a) + " -> " +
+                        constantPoolEntry(cf, entry.b, true).text.to_std_string());
         }
         break;
     case CpTag::MethodType:
-        info.tag  = "MethodType";
-        info.text = utf8Text(cf, entry.a);
+        info.tag  = ca::str::Utf8String::from_cstr("MethodType");
+        info.text = utf8(utf8Text(cf, entry.a));
         break;
     case CpTag::Dynamic:
     case CpTag::InvokeDynamic:
-        info.tag = entry.tag == CpTag::Dynamic ? "Dynamic" : "InvokeDynamic";
+        info.tag = entry.tag == CpTag::Dynamic ? ca::str::Utf8String::from_cstr("Dynamic")
+                                                : ca::str::Utf8String::from_cstr("InvokeDynamic");
         if (resolve) {
             std::string nameAndDesc;
             if (cf.cp.valid(entry.b)) {
@@ -281,16 +292,16 @@ ConstantPoolEntryInfo constantPoolEntry(const jbc::core::ClassFile& cf, ca::u32 
                 if (nt.tag == CpTag::NameAndType)
                     nameAndDesc = utf8Text(cf, nt.a) + ":" + utf8Text(cf, nt.b);
             }
-            info.text = nameAndDesc + " @bsm " + std::to_string(entry.a);
+            info.text = utf8(nameAndDesc + " @bsm " + std::to_string(entry.a));
         }
         break;
     case CpTag::Module:
-        info.tag  = "Module";
-        info.text = utf8Text(cf, entry.a);
+        info.tag  = ca::str::Utf8String::from_cstr("Module");
+        info.text = utf8(utf8Text(cf, entry.a));
         break;
     case CpTag::Package:
-        info.tag  = "Package";
-        info.text = utf8Text(cf, entry.a);
+        info.tag  = ca::str::Utf8String::from_cstr("Package");
+        info.text = utf8(utf8Text(cf, entry.a));
         break;
     }
     return info;

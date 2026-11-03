@@ -270,7 +270,9 @@ ca::StatusOr<DecompiledSource> decompileWorkspaceClass(IWorkspace& workspace,
 {
     auto info = workspace.classInfo(className);
     if (info.is_err()) return ca::Err(shared::toCaStatus(info.unwrap_err()));
-    const auto internalName = info.unwrap().internalName;
+    // ClassInfo 携 move-only Utf8String：unwrap 走移动重载；内名落 std::string
+    // 供快照反编译路径面（文件系统字节路径口径）。
+    const std::string internalName = std::move(info).unwrap().internalName.to_std_string();
 
     auto temporary = createDecompilerTemporaryDirectory();
     if (temporary.is_err()) return ca::Err(temporary.unwrap_err());

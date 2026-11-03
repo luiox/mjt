@@ -88,7 +88,7 @@ ca::Result<AnalysisIngestStats, AnalysisIngestError> ingestIntoAnalysisDb(
     };
 
     for (const ResourceSummary& resource : resourceList) {
-        auto content = workspace.readResource(resource.uri);
+        auto content = workspace.readResource(resource.uri.to_std_string());
         if (content.is_err()) {
             return ca::core::Err(workspaceError(std::move(content).unwrap_err()));
         }
@@ -96,19 +96,19 @@ ca::Result<AnalysisIngestStats, AnalysisIngestError> ingestIntoAnalysisDb(
 
         // 容器 canonical 序列化（analysis-project-schema-v2 §1.6）：
         // len(uri, u64 小端) + uri + len(payload, u64 小端) + payload。
-        feedU64(resource.uri.size());
-        containerHasher.add(resource.uri.data(), resource.uri.size());
+        feedU64(resource.uri.byte_length());
+        containerHasher.add(resource.uri.data(), resource.uri.byte_length());
         feedU64(bytes.size());
         containerHasher.add(bytes.data(), bytes.size());
-        canonicalSize += 2 * sizeof(ca::u64) + resource.uri.size() + bytes.size();
+        canonicalSize += 2 * sizeof(ca::u64) + resource.uri.byte_length() + bytes.size();
 
         mjbase::project::DbEntryInput input;
-        input.path    = utf8(resource.uri);
-        input.kind    = entryKind(resource.type);
+        input.path    = utf8(resource.uri.ref());
+        input.kind    = entryKind(resource.type.to_std_string());
         input.size    = static_cast<ca::i64>(bytes.size());
         input.sha256 =
             utf8(ca::crypto::sha256_hex(ca::core::ByteSlice(bytes.data(), bytes.size())));
-        input.regular = mjbase::project::isRegularEntryPath(resource.uri);
+        input.regular = mjbase::project::isRegularEntryPath(resource.uri.ref());
         entryInputs.push_back(std::move(input));
     }
 
@@ -154,34 +154,34 @@ ca::Result<AnalysisIngestStats, AnalysisIngestError> ingestIntoAnalysisDb(
     classes.reserve(classList.size());
     for (const ClassInfo& info : classList) {
         mjbase::project::DbClassInput input;
-        input.internalName = utf8(info.internalName);
-        input.superName    = utf8(info.superName);
+        input.internalName = utf8(info.internalName.ref());
+        input.superName    = utf8(info.superName.ref());
         input.access       = info.access;
         input.version      = info.version;
-        const auto entry   = entryIdByPath.find(info.resourceUri);
+        const auto entry   = entryIdByPath.find(info.resourceUri.to_std_string());
         input.entryId      = entry != entryIdByPath.end() ? entry->second : 0;
         input.interfaces.reserve(info.interfaces.size());
-        for (const std::string& interfaceName : info.interfaces) {
-            input.interfaces.push_back(utf8(interfaceName));
+        for (const ca::str::Utf8String& interfaceName : info.interfaces) {
+            input.interfaces.push_back(utf8(interfaceName.ref()));
         }
         input.members.reserve(info.fields.size() + info.methods.size());
         for (const FieldInfo& field : info.fields) {
             mjbase::project::DbMemberInput member;
             member.kind       = mjbase::project::DbMemberKind::Field;
-            member.name       = utf8(field.name);
-            member.descriptor = utf8(field.descriptor);
+            member.name       = utf8(field.name.ref());
+            member.descriptor = utf8(field.descriptor.ref());
             member.access     = field.access;
             input.members.push_back(std::move(member));
         }
         for (const MethodInfo& method : info.methods) {
             mjbase::project::DbMemberInput member;
             member.kind       = mjbase::project::DbMemberKind::Method;
-            member.name       = utf8(method.name);
-            member.descriptor = utf8(method.descriptor);
+            member.name       = utf8(method.name.ref());
+            member.descriptor = utf8(method.descriptor.ref());
             member.access     = method.access;
             input.members.push_back(std::move(member));
         }
-        primaryClasses.insert(info.internalName);
+        primaryClasses.insert(info.internalName.to_std_string());
         classes.push_back(std::move(input));
     }
 

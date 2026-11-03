@@ -125,19 +125,23 @@ int main(int argc, char** argv)
     };
     ca::usize containerBytes = 0;
     for (const mjt::workspace::ResourceSummary& resource : resourceList) {
-        auto content = workspace.readResource(resource.uri);
-        if (content.is_err()) die("readResource failed: " + resource.uri);
+        // ResourceSummary.uri 换型 Utf8String：字节长度走 byte_length()（.size()
+        // 是码点语义），data() 直接给 u8* 字节；接口面参数显式 to_std_string。
+        auto content = workspace.readResource(resource.uri.to_std_string());
+        if (content.is_err())
+            die("readResource failed: " + resource.uri.to_std_string());
         auto bytes = std::move(content).unwrap().bytes;
         containerBytes += bytes.size();
-        feedU64(resource.uri.size());
-        containerHasher.add(resource.uri.data(), resource.uri.size());
+        feedU64(resource.uri.byte_length());
+        containerHasher.add(resource.uri.data(), resource.uri.byte_length());
         feedU64(bytes.size());
         containerHasher.add(bytes.data(), bytes.size());
-        canonicalSize += 2 * sizeof(ca::u64) + resource.uri.size() + bytes.size();
+        canonicalSize +=
+            2 * sizeof(ca::u64) + resource.uri.byte_length() + bytes.size();
 
         mjbase::project::DbEntryInput input;
-        input.path    = utf8(resource.uri);
-        input.kind    = entryKind(resource.type);
+        input.path    = utf8(resource.uri.ref());
+        input.kind    = entryKind(resource.type.to_std_string());
         input.size    = static_cast<ca::i64>(bytes.size());
         input.sha256 =
             utf8(ca::crypto::sha256_hex(ca::core::ByteSlice(bytes.data(), bytes.size())));
@@ -185,33 +189,33 @@ int main(int argc, char** argv)
     ca::usize memberCount = 0;
     for (const mjt::workspace::ClassInfo& info : classList) {
         mjbase::project::DbClassInput input;
-        input.internalName = utf8(info.internalName);
-        input.superName    = utf8(info.superName);
+        input.internalName = utf8(info.internalName.ref());
+        input.superName    = utf8(info.superName.ref());
         input.access       = info.access;
         input.version      = info.version;
-        const auto entry   = entryIdByPath.find(info.resourceUri);
+        const auto entry   = entryIdByPath.find(info.resourceUri.to_std_string());
         input.entryId      = entry != entryIdByPath.end() ? entry->second : 0;
         input.interfaces.reserve(info.interfaces.size());
-        for (const std::string& name : info.interfaces) input.interfaces.push_back(utf8(name));
+        for (const auto& name : info.interfaces) input.interfaces.push_back(utf8(name.ref()));
         input.members.reserve(info.fields.size() + info.methods.size());
         for (const mjt::workspace::FieldInfo& field : info.fields) {
             mjbase::project::DbMemberInput member;
             member.kind       = mjbase::project::DbMemberKind::Field;
-            member.name       = utf8(field.name);
-            member.descriptor = utf8(field.descriptor);
+            member.name       = utf8(field.name.ref());
+            member.descriptor = utf8(field.descriptor.ref());
             member.access     = field.access;
             input.members.push_back(std::move(member));
         }
         for (const mjt::workspace::MethodInfo& method : info.methods) {
             mjbase::project::DbMemberInput member;
             member.kind       = mjbase::project::DbMemberKind::Method;
-            member.name       = utf8(method.name);
-            member.descriptor = utf8(method.descriptor);
+            member.name       = utf8(method.name.ref());
+            member.descriptor = utf8(method.descriptor.ref());
             member.access     = method.access;
             input.members.push_back(std::move(member));
         }
         memberCount += input.members.size();
-        primaryClasses.insert(info.internalName);
+        primaryClasses.insert(info.internalName.to_std_string());
         classes.push_back(std::move(input));
     }
     const double classScanMs = classScanWatch.ms();

@@ -80,7 +80,8 @@ DecompileCacheLookup prepareDecompileCacheLookup(ProjectSession&    session,
     if (digest.empty() || !session.cacheStore) return lookup;
     auto bytes = session.workspace->readClassBytes(className);
     if (bytes.is_err()) return lookup;
-    const auto& value = bytes.unwrap();
+    // ClassBytesInfo 携 move-only Utf8String：unwrap 走移动重载。
+    const auto& value = std::move(bytes).unwrap();
     const auto hash =
         mjbase::project::sectionContentHash(value.bytes.data(), value.bytes.size());
     lookup.entryDigest = hash.clone();
@@ -234,7 +235,9 @@ std::optional<Json> McpToolService::callDecompilerTool(
                 const auto err = shared::toCaStatus(classInfo.unwrap_err());
                 return toolError("get decompile class failed", &err);
             }
-            const auto internalName = classInfo.unwrap().internalName;
+            // ClassInfo 携 move-only Utf8String：unwrap 走移动重载；内名落
+            // std::string 供快照反编译路径面。
+            const std::string internalName = std::move(classInfo).unwrap().internalName.to_std_string();
 
             auto temporary = createDecompilerTemporaryDirectory();
             if (temporary.is_err()) { const auto err = temporary.unwrap_err(); return toolError("create decompiler snapshot failed", &err); }
@@ -381,7 +384,7 @@ std::optional<Json> McpToolService::callDecompilerTool(
             if (info.is_err())
                 { const auto err = shared::toCaStatus(info.unwrap_err()); return toolError("get decompile class failed", &err); }
             detail::DecompiledSource result;
-            result.internalName  = info.unwrap().internalName;
+            result.internalName = std::move(info).unwrap().internalName.to_std_string();
             result.backend       = decompilerKindId(options.kind);
             result.decompilerJar = options.decompilerJar;
             result.source        = cachedSource;

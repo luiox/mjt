@@ -93,7 +93,8 @@ bool resourceUriOfResolved(mjt::workspace::IWorkspace& workspace,
                           info.unwrap_err().message);
         return false;
     }
-    uri = info.unwrap().resourceUri;
+    // ClassInfo 携 move-only Utf8String：unwrap 走移动重载。
+    uri = std::move(info).unwrap().resourceUri.to_std_string();
     return true;
 }
 
@@ -177,18 +178,21 @@ bool backfillMemberDescriptor(mjt::workspace::IWorkspace& workspace,
     //保持为空，由下游查询给出 canonical 错误/空集。
     auto info = workspace.classInfo(ownerRaw);
     if (info.is_err()) return true;
-    const auto& clazz = info.unwrap();
+    const auto& clazz = std::move(info).unwrap();
     //候选枚举机（同源复用）：该名字在目标池的全部去重描述符；另一池的同名
-    //命中用于零命中提示（方法/字段名互串是高频笔误）。
+    //命中用于零命中提示（方法/字段名互串是高频笔误）。DTO 文本字段为
+    //Utf8String：visit 以借用视图收参，候选表落 std::string。
     const auto collect = [&](bool inFieldPool, std::vector<std::string>& out) {
-        const auto visit = [&](const std::string& name, const std::string& desc) {
+        const auto visit = [&](const ca::str::Utf8StringRef& name, const ca::str::Utf8StringRef& desc) {
             if (name != memberName) return;
-            if (std::find(out.begin(), out.end(), desc) == out.end()) out.push_back(desc);
+            const auto descText = desc.to_std_string();
+            if (std::find(out.begin(), out.end(), descText) == out.end())
+                out.push_back(descText);
         };
         if (inFieldPool)
-            for (const auto& item : clazz.fields) visit(item.name, item.descriptor);
+            for (const auto& item : clazz.fields) visit(item.name.ref(), item.descriptor.ref());
         else
-            for (const auto& item : clazz.methods) visit(item.name, item.descriptor);
+            for (const auto& item : clazz.methods) visit(item.name.ref(), item.descriptor.ref());
     };
     std::vector<std::string> candidates;
     collect(field, candidates);
@@ -238,19 +242,20 @@ bool memberDescriptorMismatch(mjt::workspace::IWorkspace& workspace,
     if (memberName.empty() || descriptor.empty()) return true;
     auto info = workspace.classInfo(ownerRaw);
     if (info.is_err()) return true;
-    const auto& clazz = info.unwrap();
+    const auto& clazz = std::move(info).unwrap();
     //同名候选枚举（与 backfill 同一收集面）；描述符命中其一说明失败另有
-    //其因（如 owner 解析错位），不适配。
+    //其因（如 owner 解析错位），不适配。visit 以借用视图收参（同 backfill）。
     std::vector<std::string> candidates;
-    const auto visit = [&](const std::string& name, const std::string& desc) {
+    const auto visit = [&](const ca::str::Utf8StringRef& name, const ca::str::Utf8StringRef& desc) {
+        const auto descText = desc.to_std_string();
         if (name == memberName &&
-            std::find(candidates.begin(), candidates.end(), desc) == candidates.end())
-            candidates.push_back(desc);
+            std::find(candidates.begin(), candidates.end(), descText) == candidates.end())
+            candidates.push_back(descText);
     };
     if (field)
-        for (const auto& item : clazz.fields) visit(item.name, item.descriptor);
+        for (const auto& item : clazz.fields) visit(item.name.ref(), item.descriptor.ref());
     else
-        for (const auto& item : clazz.methods) visit(item.name, item.descriptor);
+        for (const auto& item : clazz.methods) visit(item.name.ref(), item.descriptor.ref());
     if (candidates.empty()) return true;
     if (std::find(candidates.begin(), candidates.end(), descriptor) != candidates.end())
         return true;

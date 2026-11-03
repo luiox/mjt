@@ -178,7 +178,9 @@ std::vector<std::string> classNames(const mjt::workspace::IWorkspace&         wo
         status = std::move(classes).unwrap_err();
         return names;
     }
-    for (const auto& clazz : classes.unwrap()) names.push_back(clazz.internalName);
+    // ClassInfo 携 move-only Utf8String：unwrap 走移动重载（左值 unwrap 按值拷贝）。
+    for (const auto& clazz : std::move(classes).unwrap())
+        names.push_back(clazz.internalName.to_std_string());
     return names;
 }
 
