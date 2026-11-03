@@ -305,7 +305,7 @@ Json McpToolService::openProjectBody(const Json& arguments, const std::string& r
                    {"persistence", instance->temporary ? "temporary" : "project"},
                    {"created", created},
                    {"container", {{"role", "primary"},
-                                  {"path", instance->workspace->sourcePath()},
+                                  {"path", instance->workspace->sourcePath().to_std_string()},
                                   {"fingerprint", fingerprint}}}};
     if (instance->temporary)
         result["persistence_hint"] =

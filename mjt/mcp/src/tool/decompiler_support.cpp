@@ -15,6 +15,18 @@ namespace fs = std::filesystem;
 
 using mjt::workspace::IWorkspace;
 
+namespace {
+
+///std::string → 借用视图（B3 接口面 Utf8StringRef 参数化适配；克隆前提：
+///源串在调用期内存活）。
+ca::str::Utf8StringRef utf8Ref(const std::string& value) noexcept
+{
+    return ca::str::Utf8StringRef::from_data(
+        value.empty() ? nullptr : reinterpret_cast<const ca::u8*>(value.data()), value.size());
+}
+
+}   //namespace
+
 ScopedTemporaryDirectory::ScopedTemporaryDirectory(fs::path path)
     : path_(std::move(path))
 {}
@@ -268,7 +280,7 @@ ca::StatusOr<DecompiledSource> decompileWorkspaceClass(IWorkspace& workspace,
                                                         const std::string& className,
                                                         const DecompilerOptions& options)
 {
-    auto info = workspace.classInfo(className);
+    auto info = workspace.classInfo(utf8Ref(className));
     if (info.is_err()) return ca::Err(shared::toCaStatus(info.unwrap_err()));
     // ClassInfo 携 move-only Utf8String：unwrap 走移动重载；内名落 std::string
     // 供快照反编译路径面（文件系统字节路径口径）。
@@ -279,7 +291,7 @@ ca::StatusOr<DecompiledSource> decompileWorkspaceClass(IWorkspace& workspace,
     ScopedTemporaryDirectory directory(std::move(temporary).unwrap());
 
     const auto snapshot = directory.path() / "workspace.jar";
-    auto exportStatus = workspace.exportJar(snapshot.string());
+    auto exportStatus = workspace.exportJar(utf8Ref(snapshot.string()));
     if (exportStatus.is_err()) return ca::Err(shared::toCaStatus(std::move(exportStatus).unwrap_err()));
     return decompileSnapshotClass(snapshot, internalName, options);
 }

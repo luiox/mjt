@@ -60,37 +60,37 @@ public:
     static std::vector<PipelineDescription> availablePipelines();
 
     /// @brief 打开主 JAR 并建立不可变原始快照与可修改工作副本。
-    WorkspaceResult<void> openJar(const std::string& path) override;
+    WorkspaceResult<void> openJar(ca::str::Utf8StringRef path) override;
 
     /// @brief 打开主 JAR（#1110 族：可注入条目名宽容解码回调；缺省空 = 原始
     /// 字节直通零漂移）。非虚重载：decoder 只贯通本实现的主 JAR 导入面
     /// （importFromJar），接口层 IWorkspace::openJar 维持单形参不动。
     /// @param decoder 条目名宽容解码回调（同 mjbase::jar::IJarReader::setEntryNameDecoder；
     /// 与 listJarEntries/资源 URI 消费面保持同一解码口径）。
-    WorkspaceResult<void> openJar(const std::string& path,
+    WorkspaceResult<void> openJar(ca::str::Utf8StringRef path,
                                   const mjbase::jar::IJarReader::EntryNameDecoder& decoder);
 
     /// @brief 打开单个 classfile，并以其 JVM internal name 建立稳定资源 URI。
-    WorkspaceResult<void> openClass(const std::string& path) override;
+    WorkspaceResult<void> openClass(ca::str::Utf8StringRef path) override;
 
     /// @brief 添加只读 supporting JAR，用于后续层次和调用解析。
     /// @return 返回当前 Workspace 内稳定的 support ID 和内容 fingerprint；重复路径或内容被拒绝。
-    WorkspaceResult<SupportingResourceInfo> addSupportingJar(const std::string& path) override;
+    WorkspaceResult<SupportingResourceInfo> addSupportingJar(ca::str::Utf8StringRef path) override;
 
     /// @brief 带角色注册 supporting 容器：library/runtime 挂载只产生一条
     ///        容器记录（与 support 共表，路径/内容唯一约束跨角色生效）；support
     ///        ID 是该容器全部角色注册的唯一 detach 句柄。
     WorkspaceResult<SupportingResourceInfo> addSupportingContainer(
-        const std::string& path, model::ContainerRole role) override;
+        ca::str::Utf8StringRef path, model::ContainerRole role) override;
 
     /// @brief 角色标签化的在册表登记内核（addSupportingJar/Container 共用；
     ///        一容器一记录，role 只是记录标签）。
-    WorkspaceResult<SupportingResourceInfo> addSupportingRole(const std::string& path,
-                                                              const std::string& roleLabel);
+    WorkspaceResult<SupportingResourceInfo> addSupportingRole(ca::str::Utf8StringRef path,
+                                                              ca::str::Utf8StringRef roleLabel);
 
     /// @brief 按 support ID 移除只读 supporting JAR，并失效依赖 classpath 的分析缓存。
     /// @return 返回被移除的 supporting resource 描述；ID 不存在时返回 NotFound。
-    WorkspaceResult<SupportingResourceInfo> removeSupportingJar(const std::string& id) override;
+    WorkspaceResult<SupportingResourceInfo> removeSupportingJar(ca::str::Utf8StringRef id) override;
 
     /// @brief 工作区是否已加载主 class 或 JAR。
     bool isLoaded() const noexcept override;
@@ -99,10 +99,10 @@ public:
     ArtifactKind artifactKind() const noexcept override;
 
     /// @brief 当前主资源的来源路径。
-    const std::string& sourcePath() const noexcept override;
+    const ca::str::Utf8String& sourcePath() const noexcept override;
 
     /// @brief 单 class 工作区的稳定资源 URI；其他 kind 返回空字符串。
-    const std::string& primaryClassUri() const noexcept override;
+    const ca::str::Utf8String& primaryClassUri() const noexcept override;
 
     /// @brief 当前工作区 revision；只在已提交变更、undo、redo 或 restore 后递增。
     ca::u64 revision() const noexcept override;
@@ -117,11 +117,11 @@ public:
     WorkspaceResult<std::vector<ResourceSummary>> listResources(bool includeClasses = true) const override;
 
     /// @brief 读取一个主资源的原始字节。
-    WorkspaceResult<ResourceContent> readResource(const std::string& uri) const override;
+    WorkspaceResult<ResourceContent> readResource(ca::str::Utf8StringRef uri) const override;
 
     /// @brief 按资源 URI 或 internal name 读取 class 原始字节和内容 fingerprint。
     /// @note 精确 URI 指向损坏 class 时仍返回 bytes，此时 internalName 为空。
-    WorkspaceResult<ClassBytesInfo> readClassBytes(const std::string& uriOrInternalName) const override;
+    WorkspaceResult<ClassBytesInfo> readClassBytes(ca::str::Utf8StringRef uriOrInternalName) const override;
 
     /// @brief 返回所有主 class 的轻量结构摘要。
     WorkspaceResult<std::vector<ClassSummary>> listClassSummaries() const override;
@@ -130,34 +130,34 @@ public:
     WorkspaceResult<std::vector<ClassInfo>> listClasses() const override;
 
     /// @brief 通过资源 URI 或 JVM internal name 查询 class 详情。
-    WorkspaceResult<ClassInfo> classInfo(const std::string& uriOrInternalName) const override;
+    WorkspaceResult<ClassInfo> classInfo(ca::str::Utf8StringRef uriOrInternalName) const override;
 
     /// @brief 枚举 class 常量池条目。
-    WorkspaceResult<std::vector<ConstantPoolEntryInfo>> constantPool(const std::string& uriOrInternalName,
+    WorkspaceResult<std::vector<ConstantPoolEntryInfo>> constantPool(ca::str::Utf8StringRef uriOrInternalName,
                                                                      bool               resolve) const override;
 
     /// @brief 以 owner/name/descriptor 精确查询方法详情。
-    WorkspaceResult<MethodInfo> methodInfo(const std::string& owner, const std::string& name,
-                                           const std::string& descriptor) const override;
+    WorkspaceResult<MethodInfo> methodInfo(ca::str::Utf8StringRef owner, ca::str::Utf8StringRef name,
+                                           ca::str::Utf8StringRef descriptor) const override;
 
     /// @brief 以 owner/name/descriptor 精确查询字段详情。
-    WorkspaceResult<FieldInfo> fieldInfo(const std::string& owner, const std::string& name,
-                                         const std::string& descriptor) const override;
+    WorkspaceResult<FieldInfo> fieldInfo(ca::str::Utf8StringRef owner, ca::str::Utf8StringRef name,
+                                         ca::str::Utf8StringRef descriptor) const override;
 
     /// @brief 返回精确选择方法的逐指令摘要及行号元数据。
-    WorkspaceResult<MethodBytecode> methodBytecode(const std::string& owner,
-                                                   const std::string& name,
-                                                   const std::string& descriptor) const override;
+    WorkspaceResult<MethodBytecode> methodBytecode(ca::str::Utf8StringRef owner,
+                                                   ca::str::Utf8StringRef name,
+                                                   ca::str::Utf8StringRef descriptor) const override;
 
     /// @brief 返回精确选择方法的完整指令渲染（保留 CP 索引与字节 PC）。
-    WorkspaceResult<MethodInstructions> methodInstructions(const std::string& owner,
-                                                           const std::string& name,
-                                                           const std::string& descriptor,
+    WorkspaceResult<MethodInstructions> methodInstructions(ca::str::Utf8StringRef owner,
+                                                           ca::str::Utf8StringRef name,
+                                                           ca::str::Utf8StringRef descriptor,
                                                            bool               resolve) const override;
 
     /// @brief 返回精确选择方法的规范化 Jasm 声明。
     jasm::Result<jasm::JvmJasmMethodDisassembly> getMethodJasm(
-        const std::string& owner, const std::string& name, const std::string& descriptor) const override;
+        ca::str::Utf8StringRef owner, ca::str::Utf8StringRef name, ca::str::Utf8StringRef descriptor) const override;
 
     /// @brief 返回主资源 MANIFEST 的稳定排序主属性。
     WorkspaceResult<std::vector<ManifestAttribute>> manifestAttributes() const override;
@@ -167,36 +167,36 @@ public:
 
     /// @brief 按 class 内部名或资源 URI 查询 class；损坏 class 会被跳过。
     WorkspaceResult<std::vector<SearchHit>> searchClasses(
-        const std::string& query, const SearchOptions& options = {}) const override;
+        ca::str::Utf8StringRef query, const SearchOptions& options = {}) const override;
 
     /// @brief 按 owner/name/descriptor/signature 查询字段和方法；损坏 class 会被跳过。
     WorkspaceResult<std::vector<SearchHit>> searchMembers(
-        const std::string& query, const SearchOptions& options = {}) const override;
+        ca::str::Utf8StringRef query, const SearchOptions& options = {}) const override;
 
     /// @brief 查询 class 常量池字符串和非 class 可打印资源字符串；损坏 class 会被跳过。
     WorkspaceResult<std::vector<SearchHit>> searchStrings(
-        const std::string& query, const SearchOptions& options = {}) const override;
+        ca::str::Utf8StringRef query, const SearchOptions& options = {}) const override;
 
     /// @brief 精确查询常量池及即时数值字面量；数值文本支持等价的标准数值写法。
     WorkspaceResult<std::vector<SearchHit>> searchNumbers(
-        const std::string& query, const SearchOptions& options = {}) const override;
+        ca::str::Utf8StringRef query, const SearchOptions& options = {}) const override;
 
     /// @brief 按 mnemonic、opcode、节点类型和指令操作数查询方法指令；损坏 class 会被跳过。
     WorkspaceResult<std::vector<SearchHit>> searchInstructions(
-        const std::string& query, const SearchOptions& options = {}) const override;
+        ca::str::Utf8StringRef query, const SearchOptions& options = {}) const override;
 
     /// @brief 精确返回所有编码目标为 owner/name/descriptor 的方法引用。
-    WorkspaceResult<std::vector<ReferenceInfo>> xrefsToMethod(const std::string& owner,
-                                                              const std::string& name,
-                                                              const std::string& descriptor) const override;
+    WorkspaceResult<std::vector<ReferenceInfo>> xrefsToMethod(ca::str::Utf8StringRef owner,
+                                                              ca::str::Utf8StringRef name,
+                                                              ca::str::Utf8StringRef descriptor) const override;
 
     /// @brief 精确返回所有编码目标为 owner/name/descriptor 的字段引用。
-    WorkspaceResult<std::vector<ReferenceInfo>> xrefsToField(const std::string& owner,
-                                                             const std::string& name,
-                                                             const std::string& descriptor) const override;
+    WorkspaceResult<std::vector<ReferenceInfo>> xrefsToField(ca::str::Utf8StringRef owner,
+                                                             ca::str::Utf8StringRef name,
+                                                             ca::str::Utf8StringRef descriptor) const override;
 
     /// @brief 返回所有直接或结构性引用 internalName 的位置。
-    WorkspaceResult<std::vector<ReferenceInfo>> xrefsToClass(const std::string& internalName) const override;
+    WorkspaceResult<std::vector<ReferenceInfo>> xrefsToClass(ca::str::Utf8StringRef internalName) const override;
 
     /// @brief 构建全量直接引用索引（主容器 + supporting JAR；畸形 class 跳过）。
     ///
@@ -204,38 +204,38 @@ public:
     WorkspaceResult<ReferenceScan> referenceScan() const;
 
     /// @brief 返回方法的直接调用目标；resolved 为 true 时扩展虚调用和接口调用。
-    WorkspaceResult<std::vector<ReferenceInfo>> calleesOfMethod(const std::string& owner,
-                                                                const std::string& name,
-                                                                const std::string& descriptor,
+    WorkspaceResult<std::vector<ReferenceInfo>> calleesOfMethod(ca::str::Utf8StringRef owner,
+                                                                ca::str::Utf8StringRef name,
+                                                                ca::str::Utf8StringRef descriptor,
                                                                 bool resolved = false) const override;
 
     /// @brief 返回目标 class 的超类、接口、直接/全部子类和实现者。
-    WorkspaceResult<ClassRelations> classRelations(const std::string& internalName) const override;
+    WorkspaceResult<ClassRelations> classRelations(ca::str::Utf8StringRef internalName) const override;
 
     /// @brief 返回精确方法所在的继承/实现覆盖组件。
     WorkspaceResult<std::vector<MethodOverrideInfo>> overridesOfMethod(
-        const std::string& owner, const std::string& name, const std::string& descriptor) const override;
+        ca::str::Utf8StringRef owner, ca::str::Utf8StringRef name, ca::str::Utf8StringRef descriptor) const override;
 
     /// @brief 返回可供 MCP/CLI 直接传输的完整 class JASM。
-    jasm::Result<jasm::JvmJasmDisassembly> getJasm(const std::string& uri) const override;
+    jasm::Result<jasm::JvmJasmDisassembly> getJasm(ca::str::Utf8StringRef uri) const override;
 
     /// @brief 在不提交的候选副本中汇编并验证完整 class JASM。
-    MutationResult validateJasm(const std::string& uri, ca::str::Utf16StringRef sourceName,
+    MutationResult validateJasm(ca::str::Utf8StringRef uri, ca::str::Utf16StringRef sourceName,
                                 ca::str::Utf16StringRef source,
                                 const MutationRequest& request = {}) override;
 
     /// @brief 原子应用完整 class JASM，成功后产生一个新的 revision。
-    MutationResult applyJasm(const std::string& uri, ca::str::Utf16StringRef sourceName,
+    MutationResult applyJasm(ca::str::Utf8StringRef uri, ca::str::Utf16StringRef sourceName,
                              ca::str::Utf16StringRef source,
                              const MutationRequest& request = {}) override;
 
     /// @brief 验证由专用 classfile adapter 生成的完整 class 候选字节，不提交工作区。
-    MutationResult validateClassBytes(const std::string& uri,
+    MutationResult validateClassBytes(ca::str::Utf8StringRef uri,
                                       const std::vector<ca::u8>& classBytes,
                                       const MutationRequest& request = {}) override;
 
     /// @brief 原子应用已由专用 classfile adapter 生成的完整 class 候选字节。
-    MutationResult applyClassBytes(const std::string& uri,
+    MutationResult applyClassBytes(ca::str::Utf8StringRef uri,
                                    const std::vector<ca::u8>& classBytes,
                                    const MutationRequest& request = {}) override;
 
@@ -254,7 +254,7 @@ public:
     /// 其它条目（versions/&lt;N&gt; 变体）字节不动、不传播——族员字节本就随
     /// release 各自独立，逐条 URI 调用即完整族语义；本层不提供族批量替换面。
     /// 候选字节内名必须与目标 URI 推导内名一致（版本化目标按 JEP 238 ≥ 9 口径）。
-    MutationResult replaceClassBytes(const std::string& uriOrInternalName,
+    MutationResult replaceClassBytes(ca::str::Utf8StringRef uriOrInternalName,
                                      const std::vector<ca::u8>& bytes,
                                      const MutationRequest& request = {}) override;
 
@@ -296,7 +296,7 @@ public:
         const MutationRequest& request = {}) override;
 
     /// @brief 比较当前工作副本与一个外部 JAR 的全部可读取资源，不修改工作区。
-    JarDiffResult diffJar(const std::string& referencePath) const override;
+    JarDiffResult diffJar(ca::str::Utf8StringRef referencePath) const override;
 
     /// @brief 扫描并预览当前工作副本的 JAR 修复候选，不提交变更。
     JarRepairResult analyzeJarRepair(const JarRepairRequest& repair,
@@ -307,17 +307,17 @@ public:
                                    const MutationRequest& request = {}) override;
 
     /// @brief 将指定 class 恢复到打开工作区时的原始字节。
-    MutationResult revertClass(const std::string& uri, const MutationRequest& request = {}) override;
+    MutationResult revertClass(ca::str::Utf8StringRef uri, const MutationRequest& request = {}) override;
 
     /// @brief 保存当前工作副本的具名快照，不改变 revision。
     ///
     /// 台账换底后快照 = 台账书签（命名指针指向当前头事务），零字节代价；
     /// flush 后以书签行持久（跨 flush 存活是相对旧克隆实现的已声明语义变化，
     /// 见 doc_ai/analysis-project-schema-v2.md §4）。
-    WorkspaceResult<void> createSavepoint(const std::string& name) override;
+    WorkspaceResult<void> createSavepoint(ca::str::Utf8StringRef name) override;
 
     /// @brief 恢复具名快照，产生新 revision。
-    MutationResult restoreSavepoint(const std::string& name,
+    MutationResult restoreSavepoint(ca::str::Utf8StringRef name,
                                     const MutationRequest& request = {}) override;
 
     /// @brief 撤销上一次已提交的事务。
@@ -333,7 +333,7 @@ public:
     /// 物化为「基线 ⊕ 重放」（基线 = 压缩基线 section 或本会话原始快照）。持有
     /// bundle 单写者锁至对象销毁；revision 从 0 重计（会话内乐观控制语义不变，
     /// 台账事务号独立单调）。失败 = LedgerOpen 族错误（WorkspaceErrorInfo）。
-    WorkspaceResult<void> bindLedgerStore(const std::string& bundleDir);
+    WorkspaceResult<void> bindLedgerStore(ca::str::Utf8StringRef bundleDir);
 
     /// @brief 把 pending overlay 与台账事务落盘到绑定 bundle（无绑定 = no-op）。
     ///
@@ -349,10 +349,10 @@ public:
         const project::LedgerCompactRequest& request);
 
     /// @brief 将当前工作副本原子写入一个此前不存在的输出 JAR。
-    WorkspaceResult<void> exportJar(const std::string& outputPath) const override;
+    WorkspaceResult<void> exportJar(ca::str::Utf8StringRef outputPath) const override;
 
     /// @brief 将单 class 工作副本原子写入一个此前不存在的输出 classfile。
-    WorkspaceResult<void> exportClass(const std::string& outputPath) const override;
+    WorkspaceResult<void> exportClass(ca::str::Utf8StringRef outputPath) const override;
 
     /// @brief 返回已附加的 supporting JAR 摘要。
     std::vector<SupportingResourceInfo> supportingResources() const override;
@@ -458,8 +458,8 @@ private:
     /// redo 目标栈（undo 压入、redo 弹出、commit 清空——对齐旧 redo_ 语义）。
     std::vector<ca::u64> redoHint_;
     ArtifactKind artifactKind_ = ArtifactKind::None;
-    std::string  sourcePath_;
-    std::string  primaryClassUri_;
+    ca::str::Utf8String sourcePath_;
+    ca::str::Utf8String primaryClassUri_;
     ca::u64      revision_ = 0;
     ca::u64      nextSupportingId_ = 1;
     /// LVT 显示名策略 jar 级兜底旗标缓存（revision 键控懒算；打开新主资源

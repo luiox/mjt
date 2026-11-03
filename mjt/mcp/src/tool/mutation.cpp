@@ -27,6 +27,18 @@ using mjt::workspace::PipelineRequest;
 using mjt::workspace::RenameRequest;
 using mjt::workspace::IWorkspace;
 
+namespace {
+
+///std::string → 借用视图（B3 接口面 Utf8StringRef 参数化适配；克隆前提：
+///源串在调用期内存活）。
+ca::str::Utf8StringRef utf8Ref(const std::string& value) noexcept
+{
+    return ca::str::Utf8StringRef::from_data(
+        value.empty() ? nullptr : reinterpret_cast<const ca::u8*>(value.data()), value.size());
+}
+
+}   //namespace
+
 std::optional<Json> McpToolService::callMutationTool(
     const std::string& name, const Json& arguments, ProjectSession& session)
 {
@@ -56,7 +68,7 @@ std::optional<Json> McpToolService::callMutationTool(
             if (!mountedRole.has_value()) {
                 if (role != "support")
                     return toolError("container role '" + role + "' is reserved for a later iteration");
-                auto result = current->addSupportingJar(path);
+                auto result = current->addSupportingJar(utf8Ref(path));
                 if (result.is_err())
                     { const auto err = shared::toCaStatus(result.unwrap_err()); return toolError("mount container failed", &err); }
                 // SupportingResourceInfo 携 move-only Utf8String：unwrap 走移动
@@ -105,7 +117,7 @@ std::optional<Json> McpToolService::callMutationTool(
             //workspace 支撑面附加（xref/关系跨容器参与）；失败回滚栈挂载。
             //library/runtime 走角色化登记（一条在册记录，role 只是标签），
             //不再经 addSupportingJar 产生第二套 support 记录。
-            auto support = current->addSupportingContainer(containerId, *mountedRole);
+            auto support = current->addSupportingContainer(utf8Ref(containerId), *mountedRole);
             if (support.is_err()) {
                 session.containerStack->unmount(containerId);
                 const auto err = shared::toCaStatus(support.unwrap_err());
@@ -119,7 +131,7 @@ std::optional<Json> McpToolService::callMutationTool(
                                                       *mountedRole == mjbase::model::ContainerRole::Library
                                                           ? mjbase::project::AnalysisInputRole::Library
                                                           : mjbase::project::AnalysisInputRole::Runtime,
-                                                      current->sourcePath());
+                                                      current->sourcePath().to_std_string());
             if (registered.is_err()) return toolError("register container failed", &registered);
 
             ProjectSession::MountedContainerRecord record;
@@ -164,7 +176,7 @@ std::optional<Json> McpToolService::callMutationTool(
         const auto supportId = arguments.value("support_id", std::string{});
         if (supportId.empty()) return toolError("support_id is required");
         if (!mountedRole.has_value()) {
-            auto result = current->removeSupportingJar(supportId);
+            auto result = current->removeSupportingJar(utf8Ref(supportId));
             if (result.is_err())
                 { const auto err = shared::toCaStatus(result.unwrap_err()); return toolError("detach container failed", &err); }
             // SupportingResourceInfo 携 move-only Utf8String：unwrap 走移动
@@ -188,7 +200,7 @@ std::optional<Json> McpToolService::callMutationTool(
         const auto mountRole        = record->role;
         const auto mountFingerprint = record->fingerprint;
         const auto supportRefId     = record->supportId;
-        const auto removed = current->removeSupportingJar(supportRefId);
+        const auto removed = current->removeSupportingJar(utf8Ref(supportRefId));
         if (removed.is_err())
             { const auto err = shared::toCaStatus(removed.unwrap_err()); return toolError("detach container failed", &err); }
         //卸载前遮蔽快照（同 mount 分支：引用不可跨 rebuild 持有）。
@@ -378,7 +390,7 @@ std::optional<Json> McpToolService::callMutationTool(
             //savepoint = 台账书签：零字节代价、不动 revision；flush 后以书签行
             //落盘（跨会话存活是相对旧克隆实现的已声明语义变化）。
             const auto bookmarkName = arguments.value("name", std::string{});
-            const auto status = current->createSavepoint(bookmarkName);
+            const auto status = current->createSavepoint(utf8Ref(bookmarkName));
             if (status.is_err()) {
                 const auto err = shared::toCaStatus(status.unwrap_err());
                 return toolError("create savepoint failed", &err);
@@ -391,7 +403,7 @@ std::optional<Json> McpToolService::callMutationTool(
         if (action == "restore" || action == "undo" || action == "redo") {
             const auto request = mutationRequest(arguments);
             const auto result = action == "restore"
-                                    ? current->restoreSavepoint(arguments.value("name", std::string{}), request)
+                                    ? current->restoreSavepoint(utf8Ref(arguments.value("name", std::string{})), request)
                                     : action == "undo" ? current->undo(request)
                                                        : current->redo(request);
             return toolResult(mutationJson(result), result.status.is_err());
@@ -401,7 +413,7 @@ std::optional<Json> McpToolService::callMutationTool(
             Json        slotError;
             if (!slot::resolveClassUriArgument(*current, arguments, "class_uri", classUri, slotError))
                 return slotError;
-            const auto result = current->revertClass(classUri, mutationRequest(arguments));
+            const auto result = current->revertClass(utf8Ref(classUri), mutationRequest(arguments));
             return toolResult(mutationJson(result), result.status.is_err());
         }
         if (action == "compact") {
@@ -580,7 +592,7 @@ std::optional<Json> McpToolService::callMutationTool(
         //存在或名字不存在时不诊断（NOT_FOUND 一类错误本身已明确）。
         std::vector<std::string> descriptorCandidates;
         if (name != "xref_class") {
-            auto info = current->classInfo(owner);
+            auto info = current->classInfo(utf8Ref(owner));
             if (info.is_ok()) {
                 // ClassInfo 携 move-only Utf8String：unwrap 走移动重载。
                 const auto& clazz = std::move(info).unwrap();
@@ -602,15 +614,15 @@ std::optional<Json> McpToolService::callMutationTool(
         auto query = [&]() -> mjt::workspace::WorkspaceResult<
                              std::vector<mjt::workspace::ReferenceInfo>> {
             if (name == "xref_method") {
-                return current->xrefsToMethod(owner, member, descriptor);
+                return current->xrefsToMethod(utf8Ref(owner), utf8Ref(member), utf8Ref(descriptor));
             }
             if (name == "xref_field") {
-                return current->xrefsToField(owner, member, descriptor);
+                return current->xrefsToField(utf8Ref(owner), utf8Ref(member), utf8Ref(descriptor));
             }
             if (name == "xref_class") {
-                return current->xrefsToClass(className);
+                return current->xrefsToClass(utf8Ref(className));
             }
-            return current->calleesOfMethod(owner, member, descriptor,
+            return current->calleesOfMethod(utf8Ref(owner), utf8Ref(member), utf8Ref(descriptor),
                                             arguments.value("resolved", false));
         };
         auto references = query();
@@ -692,7 +704,7 @@ std::optional<Json> McpToolService::callMutationTool(
         Json        slotError;
         if (!slot::resolveClassArgument(*current, arguments, "class", true, className, slotError))
             return slotError;
-        auto value = current->classRelations(className);
+        auto value = current->classRelations(utf8Ref(className));
         if (value.is_err()) {
             const auto err = shared::toCaStatus(value.unwrap_err());
             return toolError("get class relations failed", &err);
@@ -726,7 +738,7 @@ std::optional<Json> McpToolService::callMutationTool(
         Json        slotError;
         if (!slot::resolveMethodSlots(slots, arguments, true, owner, member, descriptor, slotError))
             return slotError;
-        auto value = current->overridesOfMethod(owner, member, descriptor);
+        auto value = current->overridesOfMethod(utf8Ref(owner), utf8Ref(member), utf8Ref(descriptor));
         if (value.is_err()) {
             const auto err = shared::toCaStatus(value.unwrap_err());
             return toolError("get method overrides failed", &err);
@@ -753,11 +765,11 @@ std::optional<Json> McpToolService::callMutationTool(
         const auto source = arguments.value("source", std::string{});
         const auto sourceName = arguments.value("source_name", uri + ".jasm");
         const auto result = name == "patch_validate_jasm"
-                                ? current->validateJasm(uri,
+                                ? current->validateJasm(utf8Ref(uri),
                                                         utf16(sourceName).ref(),
                                                         utf16(source).ref(),
                                                         mutationRequest(arguments))
-                                : current->applyJasm(uri,
+                                : current->applyJasm(utf8Ref(uri),
                                                      utf16(sourceName).ref(),
                                                      utf16(source).ref(),
                                                      mutationRequest(arguments));
@@ -770,7 +782,7 @@ std::optional<Json> McpToolService::callMutationTool(
             return slotError;
         const auto diffText   = arguments.value("diff", std::string{});
         const auto sourceName = arguments.value("source_name", uri + ".jasm");
-        auto jasm = current->getJasm(uri);
+        auto jasm = current->getJasm(utf8Ref(uri));
         if (!jasm.isOk()) {
             Json diagnostics = Json::array();
             for (const auto& item : jasm.diagnostics) diagnostics.push_back(diagnosticJson(item));
@@ -785,11 +797,11 @@ std::optional<Json> McpToolService::callMutationTool(
             return toolResult(std::move(payload), true);
         }
         const auto result = name == "patch_validate_jasm_diff"
-                                ? current->validateJasm(uri,
+                                ? current->validateJasm(utf8Ref(uri),
                                                         utf16(sourceName).ref(),
                                                         utf16(applied.text).ref(),
                                                         mutationRequest(arguments))
-                                : current->applyJasm(uri,
+                                : current->applyJasm(utf8Ref(uri),
                                                      utf16(sourceName).ref(),
                                                      utf16(applied.text).ref(),
                                                      mutationRequest(arguments));
@@ -808,7 +820,7 @@ std::optional<Json> McpToolService::callMutationTool(
             return slotError;
         const auto sourceName = arguments.value("source_name", owner + "." + mname + ".jasm");
         //1. 取单方法规范 Jasm（与 class Jasm 内方法段逐字节一致）。
-        auto method = current->getMethodJasm(owner, mname, descriptor);
+        auto method = current->getMethodJasm(utf8Ref(owner), utf8Ref(mname), utf8Ref(descriptor));
         if (!method.isOk()) {
             Json diagnostics = Json::array();
             for (const auto& item : method.diagnostics) diagnostics.push_back(diagnosticJson(item));
@@ -831,13 +843,13 @@ std::optional<Json> McpToolService::callMutationTool(
             newMethodSource = applied.text;
         }
         //3. 取整 class Jasm 作 base，把旧方法文本精确替换为新方法文本。
-        auto classInfo = current->classInfo(owner);
+        auto classInfo = current->classInfo(utf8Ref(owner));
         if (classInfo.is_err()) {
             const auto err = shared::toCaStatus(classInfo.unwrap_err());
             return toolError("select class for method jasm failed", &err);
         }
         const std::string classUri = std::move(classInfo).unwrap().resourceUri.to_std_string();
-        auto jasm = current->getJasm(classUri);
+        auto jasm = current->getJasm(utf8Ref(classUri));
         if (!jasm.isOk()) {
             Json diagnostics = Json::array();
             for (const auto& item : jasm.diagnostics) diagnostics.push_back(diagnosticJson(item));
@@ -860,11 +872,11 @@ std::optional<Json> McpToolService::callMutationTool(
         newClassSource.replace(first, oldMethodSource.size(), newMethodSource);
         const auto result =
             name == "method_validate_jasm" || name == "method_validate_jasm_diff"
-                ? current->validateJasm(classUri,
+                ? current->validateJasm(utf8Ref(classUri),
                                         utf16(sourceName).ref(),
                                         utf16(newClassSource).ref(),
                                         mutationRequest(arguments))
-                : current->applyJasm(classUri,
+                : current->applyJasm(utf8Ref(classUri),
                                      utf16(sourceName).ref(),
                                      utf16(newClassSource).ref(),
                                      mutationRequest(arguments));
@@ -879,7 +891,7 @@ std::optional<Json> McpToolService::callMutationTool(
         Json        slotError;
         if (!slot::resolveClassUriArgument(*current, arguments, "class_uri", classUri, slotError))
             return slotError;
-        const auto result = current->replaceClassBytes(classUri, bytes, mutationRequest(arguments));
+        const auto result = current->replaceClassBytes(utf8Ref(classUri), bytes, mutationRequest(arguments));
         return toolResult(mutationJson(result), result.status.is_err());
     }
     if (name == "patch_apply") {
@@ -1045,7 +1057,7 @@ std::optional<Json> McpToolService::callMutationTool(
         //导出前 flush 挂点：台账与分析缓存与 close 同点落盘（同一崩溃窗语义）。
         const auto cacheFlushed = flushAnalysisCache(session);
         if (cacheFlushed.is_err()) return toolError("flush analysis cache failed", &cacheFlushed);
-        const auto status = current->exportJar(arguments.value("path", std::string{}));
+        const auto status = current->exportJar(utf8Ref(arguments.value("path", std::string{})));
         if (status.is_err()) {
             const auto err = shared::toCaStatus(status.unwrap_err());
             return toolError("export project failed", &err);

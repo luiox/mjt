@@ -144,7 +144,7 @@ struct IngestedCensus
 IngestedCensus ingestFixture(const std::filesystem::path& fixture)
 {
     WorkspaceBase workspace;
-    auto          opened = workspace.openJar(fixture.string());
+    auto          opened = workspace.openJar(refOf(fixture.string()));
     if (!opened.is_ok()) {
         ADD_FAILURE() << "open jar failed: " << opened.unwrap_err().message;
         return {AnalysisDb::open(refOf(freshDbPath().string())).unwrap(), 0};
@@ -158,7 +158,7 @@ IngestedCensus ingestFixture(const std::filesystem::path& fixture)
         ADD_FAILURE() << "ingest failed: " << ingested.unwrap_err().message;
         return {std::move(db), 0};
     }
-    auto inputId = resolveCensusInput(db, refOf(workspace.sourcePath()));
+    auto inputId = resolveCensusInput(db, workspace.sourcePath());
     EXPECT_TRUE(inputId.is_ok());
     return {std::move(db), inputId.is_ok() ? inputId.unwrap() : 0};
 }

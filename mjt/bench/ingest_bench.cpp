@@ -102,7 +102,8 @@ int main(int argc, char** argv)
 
     Stopwatch openWatch;
     mjt::workspace::WorkspaceBase workspace;
-    if (workspace.openJar(containerPath).is_err()) die("openJar failed: " + containerPath);
+    if (workspace.openJar(utf8Ref(containerPath)).is_err())
+        die("openJar failed: " + containerPath);
     const double openMs = openWatch.ms();
 
     //-- 相 1：条目遍历 + 内容锚（含容器 canonical 序列化） ------------------
@@ -126,8 +127,8 @@ int main(int argc, char** argv)
     ca::usize containerBytes = 0;
     for (const mjt::workspace::ResourceSummary& resource : resourceList) {
         // ResourceSummary.uri 换型 Utf8String：字节长度走 byte_length()（.size()
-        // 是码点语义），data() 直接给 u8* 字节；接口面参数显式 to_std_string。
-        auto content = workspace.readResource(resource.uri.to_std_string());
+        // 是码点语义），data() 直接给 u8* 字节；接口面吃 Utf8StringRef 借用视图。
+        auto content = workspace.readResource(resource.uri);
         if (content.is_err())
             die("readResource failed: " + resource.uri.to_std_string());
         auto bytes = std::move(content).unwrap().bytes;
@@ -159,7 +160,7 @@ int main(int argc, char** argv)
     auto db = std::move(dbResult).unwrap();
 
     Stopwatch ingestEntryWatch;
-    auto      inputId = db.ensureInput(utf8Ref(workspace.sourcePath()),
+    auto      inputId = db.ensureInput(workspace.sourcePath(),
                                        utf8Ref(containerHasher.get_hash()),
                                        static_cast<ca::i64>(canonicalSize));
     if (inputId.is_err()) die("ensureInput failed");

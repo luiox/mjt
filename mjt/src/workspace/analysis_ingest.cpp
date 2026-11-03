@@ -88,7 +88,7 @@ ca::Result<AnalysisIngestStats, AnalysisIngestError> ingestIntoAnalysisDb(
     };
 
     for (const ResourceSummary& resource : resourceList) {
-        auto content = workspace.readResource(resource.uri.to_std_string());
+        auto content = workspace.readResource(resource.uri);
         if (content.is_err()) {
             return ca::core::Err(workspaceError(std::move(content).unwrap_err()));
         }
@@ -113,7 +113,7 @@ ca::Result<AnalysisIngestStats, AnalysisIngestError> ingestIntoAnalysisDb(
     }
 
     const std::string containerDigest = containerHasher.get_hash();
-    auto inputId = db.ensureInput(utf8Ref(workspace.sourcePath()), utf8Ref(containerDigest),
+    auto inputId = db.ensureInput(workspace.sourcePath(), utf8Ref(containerDigest),
                                   static_cast<ca::i64>(canonicalSize));
     if (inputId.is_err()) {
         return ca::core::Err(databaseError(std::move(inputId).unwrap_err()));

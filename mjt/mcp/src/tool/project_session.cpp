@@ -307,11 +307,11 @@ ca::Status openProjectSession(const std::string&               jarPath,
     session->projectDir = dirText;
     session->temporary  = projectDir.empty();
     session->workspace  = std::make_unique<mjt::JarWorkspace>();
-    const auto opened = session->workspace->openJar(jar.string());
+    const auto opened = session->workspace->openJar(utf8Ref(jar.string()));
     if (opened.is_err()) return shared::toCaStatus(opened.unwrap_err());
     //单写者锁与活动代装载在 bindLedgerStore 内完成；失败即锁被活进程持有或
     //台账损毁，会话不落半开状态。
-    const auto bound = session->workspace->bindLedgerStore(dirText);
+    const auto bound = session->workspace->bindLedgerStore(utf8Ref(dirText));
     if (bound.is_err()) return shared::toCaStatus(bound.unwrap_err());
     //分析缓存绑定同一 bundle（纯数据绑定零触盘；清单不可载 = 会话不落半开，
     //与台账同一 fail-closed 纪律）。缓存引擎不获取 store.lock——单写者锁已归

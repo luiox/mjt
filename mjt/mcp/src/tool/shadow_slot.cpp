@@ -26,6 +26,14 @@ Json errorOf(const mjbase::renamer::ShadowSlotResult& result)
     return detail::toolError(result.message);
 }
 
+///std::string → 借用视图（B3 接口面 Utf8StringRef 参数化适配；克隆前提：
+///源串在调用期内存活）。
+ca::str::Utf8StringRef utf8Ref(const std::string& value) noexcept
+{
+    return ca::str::Utf8StringRef::from_data(
+        value.empty() ? nullptr : reinterpret_cast<const ca::u8*>(value.data()), value.size());
+}
+
 }   //namespace
 
 Json slotError(const std::string& message)
@@ -37,7 +45,7 @@ WorkspaceShadowTable loadWorkspaceShadowTable(mjt::workspace::IWorkspace& worksp
                                               const std::string& file)
 {
     WorkspaceShadowTable slots;
-    slots.path = file.empty() ? mjt::resolveShadowPath(workspace.sourcePath(), "") : file;
+    slots.path = file.empty() ? mjt::resolveShadowPath(workspace.sourcePath().to_std_string(), "") : file;
     std::error_code fsError;
     if (!std::filesystem::exists(slots.path, fsError)) {
         slots.note = "absent: no shadow sidecar at " + slots.path;
@@ -86,7 +94,7 @@ bool resourceUriOfResolved(mjt::workspace::IWorkspace& workspace,
                            std::string&                          uri,
                            Json&                                 error)
 {
-    auto info = workspace.classInfo(internalName);
+    auto info = workspace.classInfo(utf8Ref(internalName));
     if (info.is_err()) {
         error = slotError("unknown-handle: reference resolved to " + internalName +
                           " but the class is not loadable in this workspace: " +
@@ -176,7 +184,7 @@ bool backfillMemberDescriptor(mjt::workspace::IWorkspace& workspace,
     if (memberName.empty()) return true;
     //owner 类不可解析（表外类直通查询、类名拼错）：无操作放行，descriptor
     //保持为空，由下游查询给出 canonical 错误/空集。
-    auto info = workspace.classInfo(ownerRaw);
+    auto info = workspace.classInfo(utf8Ref(ownerRaw));
     if (info.is_err()) return true;
     const auto& clazz = std::move(info).unwrap();
     //候选枚举机（同源复用）：该名字在目标池的全部去重描述符；另一池的同名
@@ -240,7 +248,7 @@ bool memberDescriptorMismatch(mjt::workspace::IWorkspace& workspace,
 {
     //空名/空描述符不适配：canonical 错误面在下游。
     if (memberName.empty() || descriptor.empty()) return true;
-    auto info = workspace.classInfo(ownerRaw);
+    auto info = workspace.classInfo(utf8Ref(ownerRaw));
     if (info.is_err()) return true;
     const auto& clazz = std::move(info).unwrap();
     //同名候选枚举（与 backfill 同一收集面）；描述符命中其一说明失败另有

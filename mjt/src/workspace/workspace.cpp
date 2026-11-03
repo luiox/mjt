@@ -1226,15 +1226,17 @@ WorkspaceBase::~WorkspaceBase() = default;
 
 // ── 打开 / supporting ───────────────────────────────────────────────────
 
-WorkspaceResult<void> WorkspaceBase::openJar(const std::string& path)
+WorkspaceResult<void> WorkspaceBase::openJar(ca::str::Utf8StringRef pathRef)
 {
+    const std::string path = pathRef.to_std_string();
     // 缺省空 decoder = 原始字节直通（#1110 族缺省零漂移，见 decoder 重载）。
-    return openJar(path, {});
+    return openJar(utf8Ref(path), {});
 }
 
 WorkspaceResult<void> WorkspaceBase::openJar(
-    const std::string& path, const mjbase::jar::IJarReader::EntryNameDecoder& decoder)
+    ca::str::Utf8StringRef pathRef, const mjbase::jar::IJarReader::EntryNameDecoder& decoder)
 {
+    const std::string path = pathRef.to_std_string();
     if (path.empty())
         return ca::core::Err(error(WorkspaceError::InvalidArgument, "open JAR", "path is empty"));
     namespace fs = std::filesystem;
@@ -1259,8 +1261,8 @@ WorkspaceResult<void> WorkspaceBase::openJar(
         original_         = std::move(original).unwrap();
         working_          = std::move(working).unwrap();
         artifactKind_     = ArtifactKind::Jar;
-        sourcePath_       = path;
-        primaryClassUri_.clear();
+        sourcePath_       = utf8(path);
+        primaryClassUri_  = ca::str::Utf8String{};
         supporting_.clear();
         // 会话史清零（旧语义：打开新主资源丢弃 undo/redo/savepoint）。绑定态
         // 先落盘旧容器台账再重置链（新容器台账随下次 flush 落盘；旧容器已落盘
@@ -1294,8 +1296,9 @@ WorkspaceResult<void> WorkspaceBase::openJar(
     }
 }
 
-WorkspaceResult<void> WorkspaceBase::openClass(const std::string& path)
+WorkspaceResult<void> WorkspaceBase::openClass(ca::str::Utf8StringRef pathRef)
 {
+    const std::string path = pathRef.to_std_string();
     if (path.empty())
         return ca::core::Err(
             error(WorkspaceError::InvalidArgument, "open class", "path is empty"));
@@ -1352,8 +1355,8 @@ WorkspaceResult<void> WorkspaceBase::openClass(const std::string& path)
         original_         = std::move(original).unwrap();
         working_          = std::move(working).unwrap();
         artifactKind_     = ArtifactKind::Class;
-        sourcePath_       = path;
-        primaryClassUri_  = uri;
+        sourcePath_       = utf8(path);
+        primaryClassUri_  = utf8(uri);
         supporting_.clear();
         auto digest = ledgerBaseDigest();
         if (digest.is_err()) return ca::core::Err(std::move(digest).unwrap_err());
@@ -1385,24 +1388,29 @@ WorkspaceResult<void> WorkspaceBase::openClass(const std::string& path)
     }
 }
 
-WorkspaceResult<SupportingResourceInfo> WorkspaceBase::addSupportingJar(const std::string& path)
+WorkspaceResult<SupportingResourceInfo> WorkspaceBase::addSupportingJar(
+    ca::str::Utf8StringRef pathRef)
 {
-    return addSupportingRole(path, "support");
+    const std::string path = pathRef.to_std_string();
+    return addSupportingRole(utf8Ref(path), ca::str::Utf8StringRef::from_cstr("support"));
 }
 
 WorkspaceResult<SupportingResourceInfo> WorkspaceBase::addSupportingContainer(
-    const std::string& path, model::ContainerRole role)
+    ca::str::Utf8StringRef pathRef, model::ContainerRole role)
 {
+    const std::string path = pathRef.to_std_string();
     // primary 由 project_open 绑定，不接受挂载登记。
     if (role == model::ContainerRole::Primary)
         return ca::core::Err(error(WorkspaceError::InvalidArgument, "add supporting container",
                                    "primary role is bound by project open"));
-    return addSupportingRole(path, std::string{model::to_string(role)});
+    return addSupportingRole(utf8Ref(path), utf8Ref(std::string{model::to_string(role)}));
 }
 
 WorkspaceResult<SupportingResourceInfo> WorkspaceBase::addSupportingRole(
-    const std::string& path, const std::string& roleLabel)
+    ca::str::Utf8StringRef pathRef, ca::str::Utf8StringRef roleLabelRef)
 {
+    const std::string path      = pathRef.to_std_string();
+    const std::string roleLabel = roleLabelRef.to_std_string();
     WorkspaceErrorInfo loaded = ensureLoaded("add supporting JAR");
     if (loaded.is_err()) return ca::core::Err(std::move(loaded));
     auto normalized = normalizedRegularFile(path, "add supporting JAR");
@@ -1451,8 +1459,10 @@ WorkspaceResult<SupportingResourceInfo> WorkspaceBase::addSupportingRole(
     }
 }
 
-WorkspaceResult<SupportingResourceInfo> WorkspaceBase::removeSupportingJar(const std::string& id)
+WorkspaceResult<SupportingResourceInfo> WorkspaceBase::removeSupportingJar(
+    ca::str::Utf8StringRef idRef)
 {
+    const std::string id = idRef.to_std_string();
     WorkspaceErrorInfo loaded = ensureLoaded("remove supporting JAR");
     if (loaded.is_err()) return ca::core::Err(std::move(loaded));
     if (id.empty()) {
@@ -1491,12 +1501,12 @@ ArtifactKind WorkspaceBase::artifactKind() const noexcept
     return artifactKind_;
 }
 
-const std::string& WorkspaceBase::sourcePath() const noexcept
+const ca::str::Utf8String& WorkspaceBase::sourcePath() const noexcept
 {
     return sourcePath_;
 }
 
-const std::string& WorkspaceBase::primaryClassUri() const noexcept
+const ca::str::Utf8String& WorkspaceBase::primaryClassUri() const noexcept
 {
     return primaryClassUri_;
 }
@@ -1762,8 +1772,9 @@ WorkspaceResult<std::vector<ResourceSummary>> WorkspaceBase::listResources(
     return ca::core::Ok(std::move(result));
 }
 
-WorkspaceResult<ResourceContent> WorkspaceBase::readResource(const std::string& uri) const
+WorkspaceResult<ResourceContent> WorkspaceBase::readResource(ca::str::Utf8StringRef uriRef) const
 {
+    const std::string uri = uriRef.to_std_string();
     WorkspaceErrorInfo status = ensureLoaded("read resource");
     if (status.is_err()) return ca::core::Err(std::move(status));
     const model::IResource* resource = working_->getResource(uri);
@@ -1778,8 +1789,9 @@ WorkspaceResult<ResourceContent> WorkspaceBase::readResource(const std::string& 
 }
 
 WorkspaceResult<ClassBytesInfo> WorkspaceBase::readClassBytes(
-    const std::string& uriOrInternalName) const
+    ca::str::Utf8StringRef uriOrInternalNameRef) const
 {
+    const std::string uriOrInternalName = uriOrInternalNameRef.to_std_string();
     WorkspaceErrorInfo status = ensureLoaded("read class bytes");
     if (status.is_err()) return ca::core::Err(std::move(status));
     std::string uri;
@@ -1889,8 +1901,9 @@ WorkspaceResult<std::vector<ClassInfo>> WorkspaceBase::listClasses() const
     return ca::core::Ok(std::move(result));
 }
 
-WorkspaceResult<ClassInfo> WorkspaceBase::classInfo(const std::string& uriOrInternalName) const
+WorkspaceResult<ClassInfo> WorkspaceBase::classInfo(ca::str::Utf8StringRef uriOrInternalNameRef) const
 {
+    const std::string uriOrInternalName = uriOrInternalNameRef.to_std_string();
     WorkspaceErrorInfo status = ensureLoaded("get class info");
     if (status.is_err()) return ca::core::Err(std::move(status));
     auto uri = resolveClassUri(*working_, uriOrInternalName);
@@ -1902,15 +1915,18 @@ WorkspaceResult<ClassInfo> WorkspaceBase::classInfo(const std::string& uriOrInte
     return decodeClass(uri.unwrap(), *resource, lvtJarFallbackFlag());
 }
 
-WorkspaceResult<MethodInfo> WorkspaceBase::methodInfo(const std::string& owner,
-                                                      const std::string& name,
-                                                      const std::string& descriptor) const
+WorkspaceResult<MethodInfo> WorkspaceBase::methodInfo(ca::str::Utf8StringRef ownerRef,
+                                                      ca::str::Utf8StringRef nameRef,
+                                                      ca::str::Utf8StringRef descriptorRef) const
 {
+    const std::string owner      = ownerRef.to_std_string();
+    const std::string name       = nameRef.to_std_string();
+    const std::string descriptor = descriptorRef.to_std_string();
     if (name.empty() || descriptor.empty()) {
         return ca::core::Err(error(WorkspaceError::InvalidArgument, "get method info",
                                    "name and descriptor are required"));
     }
-    auto decoded = classInfo(owner);
+    auto decoded = classInfo(utf8Ref(owner));
     if (decoded.is_err()) return ca::core::Err(std::move(decoded).unwrap_err());
     // ClassInfo 换型 move-only：unwrap 走移动重载，命中行按移动语义返回。
     for (auto& method : std::move(decoded).unwrap().methods) {
@@ -1921,10 +1937,13 @@ WorkspaceResult<MethodInfo> WorkspaceBase::methodInfo(const std::string& owner,
         error(WorkspaceError::NotFound, "get method info", owner + "." + name + descriptor));
 }
 
-WorkspaceResult<FieldInfo> WorkspaceBase::fieldInfo(const std::string& owner,
-                                                    const std::string& name,
-                                                    const std::string& descriptor) const
+WorkspaceResult<FieldInfo> WorkspaceBase::fieldInfo(ca::str::Utf8StringRef ownerRef,
+                                                    ca::str::Utf8StringRef nameRef,
+                                                    ca::str::Utf8StringRef descriptorRef) const
 {
+    const std::string owner      = ownerRef.to_std_string();
+    const std::string name       = nameRef.to_std_string();
+    const std::string descriptor = descriptorRef.to_std_string();
     WorkspaceErrorInfo status = ensureLoaded("get field info");
     if (status.is_err()) return ca::core::Err(std::move(status));
     if (owner.empty() || name.empty() || descriptor.empty()) {
@@ -1950,8 +1969,9 @@ WorkspaceResult<FieldInfo> WorkspaceBase::fieldInfo(const std::string& owner,
 }
 
 WorkspaceResult<std::vector<ConstantPoolEntryInfo>> WorkspaceBase::constantPool(
-    const std::string& uriOrInternalName, bool resolve) const
+    ca::str::Utf8StringRef uriOrInternalNameRef, bool resolve) const
 {
+    const std::string uriOrInternalName = uriOrInternalNameRef.to_std_string();
     WorkspaceErrorInfo status = ensureLoaded("get constant pool");
     if (status.is_err()) return ca::core::Err(std::move(status));
     auto uri = resolveClassUri(*working_, uriOrInternalName);
@@ -1972,9 +1992,12 @@ WorkspaceResult<std::vector<ConstantPoolEntryInfo>> WorkspaceBase::constantPool(
 }
 
 WorkspaceResult<MethodInstructions> WorkspaceBase::methodInstructions(
-    const std::string& owner, const std::string& name, const std::string& descriptor,
-    bool resolve) const
+    ca::str::Utf8StringRef ownerRef, ca::str::Utf8StringRef nameRef,
+    ca::str::Utf8StringRef descriptorRef, bool resolve) const
 {
+    const std::string owner      = ownerRef.to_std_string();
+    const std::string name       = nameRef.to_std_string();
+    const std::string descriptor = descriptorRef.to_std_string();
     WorkspaceErrorInfo status = ensureLoaded("get method instructions");
     if (status.is_err()) return ca::core::Err(std::move(status));
     if (owner.empty() || name.empty() || descriptor.empty()) {
@@ -2022,10 +2045,13 @@ WorkspaceResult<MethodInstructions> WorkspaceBase::methodInstructions(
                                owner + "." + name + descriptor));
 }
 
-WorkspaceResult<MethodBytecode> WorkspaceBase::methodBytecode(const std::string& owner,
-                                                              const std::string& name,
-                                                              const std::string& descriptor) const
+WorkspaceResult<MethodBytecode> WorkspaceBase::methodBytecode(ca::str::Utf8StringRef ownerRef,
+                                                              ca::str::Utf8StringRef nameRef,
+                                                              ca::str::Utf8StringRef descriptorRef) const
 {
+    const std::string owner      = ownerRef.to_std_string();
+    const std::string name       = nameRef.to_std_string();
+    const std::string descriptor = descriptorRef.to_std_string();
     WorkspaceErrorInfo status = ensureLoaded("get method bytecode");
     if (status.is_err()) return ca::core::Err(std::move(status));
     if (owner.empty() || name.empty() || descriptor.empty()) {
@@ -2078,8 +2104,12 @@ WorkspaceResult<MethodBytecode> WorkspaceBase::methodBytecode(const std::string&
 }
 
 jasm::Result<jasm::JvmJasmMethodDisassembly> WorkspaceBase::getMethodJasm(
-    const std::string& owner, const std::string& name, const std::string& descriptor) const
+    ca::str::Utf8StringRef ownerRef, ca::str::Utf8StringRef nameRef,
+    ca::str::Utf8StringRef descriptorRef) const
 {
+    const std::string owner      = ownerRef.to_std_string();
+    const std::string name       = nameRef.to_std_string();
+    const std::string descriptor = descriptorRef.to_std_string();
     if (!isLoaded()) return jasmFailure<jasm::JvmJasmMethodDisassembly>("workspace is not loaded");
     auto uri = resolveClassUri(*working_, owner);
     if (uri.is_err()) {
@@ -2089,10 +2119,6 @@ jasm::Result<jasm::JvmJasmMethodDisassembly> WorkspaceBase::getMethodJasm(
         working_->getResource(uri.unwrap()));
     if (resource == nullptr)
         return jasmFailure<jasm::JvmJasmMethodDisassembly>("Class resource not found: " + owner);
-    const auto nameRef = ca::str::Utf8StringRef::from_data(
-        reinterpret_cast<const ca::u8*>(name.data()), name.size());
-    const auto descriptorRef = ca::str::Utf8StringRef::from_data(
-        reinterpret_cast<const ca::u8*>(descriptor.data()), descriptor.size());
     return jasm::JvmJasmService{}.disassembleMethod(resource->get(), nameRef, descriptorRef);
 }
 
@@ -2167,8 +2193,9 @@ WorkspaceResult<std::vector<ResourceStringInfo>> WorkspaceBase::resourceStrings(
 // ── 搜索面 ──────────────────────────────────────────────────────────────
 
 WorkspaceResult<std::vector<SearchHit>> WorkspaceBase::searchClasses(
-    const std::string& query, const SearchOptions& options) const
+    ca::str::Utf8StringRef queryRef, const SearchOptions& options) const
 {
+    const std::string query = queryRef.to_std_string();
     WorkspaceErrorInfo status = ensureLoaded("search classes");
     if (status.is_err()) return ca::core::Err(std::move(status));
     auto compiled = compileSearchRegex(query, options, "search classes");
@@ -2196,8 +2223,9 @@ WorkspaceResult<std::vector<SearchHit>> WorkspaceBase::searchClasses(
 }
 
 WorkspaceResult<std::vector<SearchHit>> WorkspaceBase::searchMembers(
-    const std::string& query, const SearchOptions& options) const
+    ca::str::Utf8StringRef queryRef, const SearchOptions& options) const
 {
+    const std::string query = queryRef.to_std_string();
     WorkspaceErrorInfo status = ensureLoaded("search members");
     if (status.is_err()) return ca::core::Err(std::move(status));
     auto compiled = compileSearchRegex(query, options, "search members");
@@ -2254,8 +2282,9 @@ WorkspaceResult<std::vector<SearchHit>> WorkspaceBase::searchMembers(
 }
 
 WorkspaceResult<std::vector<SearchHit>> WorkspaceBase::searchStrings(
-    const std::string& query, const SearchOptions& options) const
+    ca::str::Utf8StringRef queryRef, const SearchOptions& options) const
 {
+    const std::string query = queryRef.to_std_string();
     WorkspaceErrorInfo status = ensureLoaded("search strings");
     if (status.is_err()) return ca::core::Err(std::move(status));
     auto compiled = compileSearchRegex(query, options, "search strings");
@@ -2325,8 +2354,9 @@ WorkspaceResult<std::vector<SearchHit>> WorkspaceBase::searchStrings(
 }
 
 WorkspaceResult<std::vector<SearchHit>> WorkspaceBase::searchNumbers(
-    const std::string& query, const SearchOptions& options) const
+    ca::str::Utf8StringRef queryRef, const SearchOptions& options) const
 {
+    const std::string query = queryRef.to_std_string();
     WorkspaceErrorInfo status = ensureLoaded("search numbers");
     if (status.is_err()) return ca::core::Err(std::move(status));
     status = validateSearchOptions(query, options, "search numbers");
@@ -2450,8 +2480,9 @@ WorkspaceResult<std::vector<SearchHit>> WorkspaceBase::searchNumbers(
 }
 
 WorkspaceResult<std::vector<SearchHit>> WorkspaceBase::searchInstructions(
-    const std::string& query, const SearchOptions& options) const
+    ca::str::Utf8StringRef queryRef, const SearchOptions& options) const
 {
+    const std::string query = queryRef.to_std_string();
     WorkspaceErrorInfo status = ensureLoaded("search instructions");
     if (status.is_err()) return ca::core::Err(std::move(status));
     auto compiled = compileSearchRegex(query, options, "search instructions");
@@ -2557,8 +2588,12 @@ WorkspaceResult<std::vector<SearchHit>> WorkspaceBase::searchInstructions(
 // ── 引用 / 层次分析面 ───────────────────────────────────────────────────
 
 WorkspaceResult<std::vector<ReferenceInfo>> WorkspaceBase::xrefsToMethod(
-    const std::string& owner, const std::string& name, const std::string& descriptor) const
+    ca::str::Utf8StringRef ownerRef, ca::str::Utf8StringRef nameRef,
+    ca::str::Utf8StringRef descriptorRef) const
 {
+    const std::string owner      = ownerRef.to_std_string();
+    const std::string name       = nameRef.to_std_string();
+    const std::string descriptor = descriptorRef.to_std_string();
     WorkspaceErrorInfo status = ensureLoaded("xref method");
     if (status.is_err()) return ca::core::Err(std::move(status));
     if (owner.empty() || name.empty() || descriptor.empty()) {
@@ -2588,8 +2623,12 @@ WorkspaceResult<std::vector<ReferenceInfo>> WorkspaceBase::xrefsToMethod(
 }
 
 WorkspaceResult<std::vector<ReferenceInfo>> WorkspaceBase::xrefsToField(
-    const std::string& owner, const std::string& name, const std::string& descriptor) const
+    ca::str::Utf8StringRef ownerRef, ca::str::Utf8StringRef nameRef,
+    ca::str::Utf8StringRef descriptorRef) const
 {
+    const std::string owner      = ownerRef.to_std_string();
+    const std::string name       = nameRef.to_std_string();
+    const std::string descriptor = descriptorRef.to_std_string();
     WorkspaceErrorInfo status = ensureLoaded("xref field");
     if (status.is_err()) return ca::core::Err(std::move(status));
     if (owner.empty() || name.empty() || descriptor.empty()) {
@@ -2619,8 +2658,9 @@ WorkspaceResult<std::vector<ReferenceInfo>> WorkspaceBase::xrefsToField(
 }
 
 WorkspaceResult<std::vector<ReferenceInfo>> WorkspaceBase::xrefsToClass(
-    const std::string& internalName) const
+    ca::str::Utf8StringRef internalNameRef) const
 {
+    const std::string internalName = internalNameRef.to_std_string();
     WorkspaceErrorInfo status = ensureLoaded("xref class");
     if (status.is_err()) return ca::core::Err(std::move(status));
     if (internalName.empty())
@@ -2657,9 +2697,12 @@ WorkspaceResult<ReferenceScan> WorkspaceBase::referenceScan() const
 }
 
 WorkspaceResult<std::vector<ReferenceInfo>> WorkspaceBase::calleesOfMethod(
-    const std::string& owner, const std::string& name, const std::string& descriptor,
-    bool resolved) const
+    ca::str::Utf8StringRef ownerRef, ca::str::Utf8StringRef nameRef,
+    ca::str::Utf8StringRef descriptorRef, bool resolved) const
 {
+    const std::string owner      = ownerRef.to_std_string();
+    const std::string name       = nameRef.to_std_string();
+    const std::string descriptor = descriptorRef.to_std_string();
     WorkspaceErrorInfo status = ensureLoaded("list callees");
     if (status.is_err()) return ca::core::Err(std::move(status));
     if (owner.empty() || name.empty() || descriptor.empty()) {
@@ -2766,8 +2809,9 @@ WorkspaceResult<std::vector<ReferenceInfo>> WorkspaceBase::calleesOfMethod(
 }
 
 WorkspaceResult<ClassRelations> WorkspaceBase::classRelations(
-    const std::string& internalName) const
+    ca::str::Utf8StringRef internalNameRef) const
 {
+    const std::string internalName = internalNameRef.to_std_string();
     WorkspaceErrorInfo status = ensureLoaded("get class relations");
     if (status.is_err()) return ca::core::Err(std::move(status));
     if (internalName.empty()) {
@@ -2845,8 +2889,12 @@ WorkspaceResult<ClassRelations> WorkspaceBase::classRelations(
 }
 
 WorkspaceResult<std::vector<MethodOverrideInfo>> WorkspaceBase::overridesOfMethod(
-    const std::string& owner, const std::string& name, const std::string& descriptor) const
+    ca::str::Utf8StringRef ownerRef, ca::str::Utf8StringRef nameRef,
+    ca::str::Utf8StringRef descriptorRef) const
 {
+    const std::string owner      = ownerRef.to_std_string();
+    const std::string name       = nameRef.to_std_string();
+    const std::string descriptor = descriptorRef.to_std_string();
     WorkspaceErrorInfo status = ensureLoaded("get method overrides");
     if (status.is_err()) return ca::core::Err(std::move(status));
     if (owner.empty() || name.empty() || descriptor.empty()) {
@@ -2924,8 +2972,9 @@ WorkspaceResult<std::vector<MethodOverrideInfo>> WorkspaceBase::overridesOfMetho
     }
 }
 
-jasm::Result<jasm::JvmJasmDisassembly> WorkspaceBase::getJasm(const std::string& uri) const
+jasm::Result<jasm::JvmJasmDisassembly> WorkspaceBase::getJasm(ca::str::Utf8StringRef uriRef) const
 {
+    const std::string uri = uriRef.to_std_string();
     if (!isLoaded()) return jasmFailure<jasm::JvmJasmDisassembly>("workspace is not loaded");
     jasm::ResourceJasmService service(*working_);
     return service.disassemble(uri);
@@ -2933,11 +2982,12 @@ jasm::Result<jasm::JvmJasmDisassembly> WorkspaceBase::getJasm(const std::string&
 
 // ── 变更事务面 ──────────────────────────────────────────────────────────
 
-MutationResult WorkspaceBase::validateJasm(const std::string&      uri,
+MutationResult WorkspaceBase::validateJasm(ca::str::Utf8StringRef uriRef,
                                            ca::str::Utf16StringRef sourceName,
                                            ca::str::Utf16StringRef source,
                                            const MutationRequest&  request)
 {
+    const std::string uri = uriRef.to_std_string();
     WorkspaceErrorInfo status = ensureLoaded("validate JASM");
     if (status.is_err()) return stateFailure(std::move(status));
     if (!accepts(request)) return revisionConflict();
@@ -3058,12 +3108,13 @@ MutationResult WorkspaceBase::commit(std::unique_ptr<model::ResourceContainer> c
     }
 }
 
-MutationResult WorkspaceBase::applyJasm(const std::string&      uri,
+MutationResult WorkspaceBase::applyJasm(ca::str::Utf8StringRef uriRef,
                                         ca::str::Utf16StringRef sourceName,
                                         ca::str::Utf16StringRef source,
                                         const MutationRequest&  request)
 {
-    if (request.dryRun) return validateJasm(uri, sourceName, source, request);
+    const std::string uri = uriRef.to_std_string();
+    if (request.dryRun) return validateJasm(utf8Ref(uri), sourceName, source, request);
     WorkspaceErrorInfo status = ensureLoaded("apply JASM");
     if (status.is_err()) return stateFailure(std::move(status));
     if (!accepts(request)) return revisionConflict();
@@ -3092,10 +3143,11 @@ MutationResult WorkspaceBase::applyJasm(const std::string&      uri,
     }
 }
 
-MutationResult WorkspaceBase::validateClassBytes(const std::string&         uri,
+MutationResult WorkspaceBase::validateClassBytes(ca::str::Utf8StringRef     uriRef,
                                                  const std::vector<ca::u8>& classBytes,
                                                  const MutationRequest&     request)
 {
+    const std::string uri = uriRef.to_std_string();
     WorkspaceErrorInfo status = ensureLoaded("validate class bytes");
     if (status.is_err()) return stateFailure(std::move(status));
     if (!accepts(request)) return revisionConflict();
@@ -3132,11 +3184,12 @@ MutationResult WorkspaceBase::validateClassBytes(const std::string&         uri,
     }
 }
 
-MutationResult WorkspaceBase::applyClassBytes(const std::string&         uri,
+MutationResult WorkspaceBase::applyClassBytes(ca::str::Utf8StringRef     uriRef,
                                               const std::vector<ca::u8>& classBytes,
                                               const MutationRequest&     request)
 {
-    if (request.dryRun) return validateClassBytes(uri, classBytes, request);
+    const std::string uri = uriRef.to_std_string();
+    if (request.dryRun) return validateClassBytes(utf8Ref(uri), classBytes, request);
     WorkspaceErrorInfo status = ensureLoaded("apply class bytes");
     if (status.is_err()) return stateFailure(std::move(status));
     if (!accepts(request)) return revisionConflict();
@@ -3237,10 +3290,11 @@ MutationResult WorkspaceBase::applyClassMutation(const ClassMutation&   mutation
     }
 }
 
-MutationResult WorkspaceBase::replaceClassBytes(const std::string&         uriOrInternalName,
+MutationResult WorkspaceBase::replaceClassBytes(ca::str::Utf8StringRef     uriOrInternalNameRef,
                                                 const std::vector<ca::u8>& bytes,
                                                 const MutationRequest&     request)
 {
+    const std::string uriOrInternalName = uriOrInternalNameRef.to_std_string();
     WorkspaceErrorInfo status = ensureLoaded("replace class bytes");
     if (status.is_err()) return stateFailure(std::move(status));
     if (!accepts(request)) return revisionConflict();
@@ -3904,7 +3958,8 @@ WorkflowResult WorkspaceBase::runWorkflow(const WorkflowRequest& workflow,
                 return fail("candidate_artifact", std::move(artifactPath).unwrap_err());
             ScopedWorkflowCandidateJar artifact(std::move(artifactPath).unwrap());
             const auto exportStatus =
-                exportContainerToJar(*candidate, sourcePath_, pathToUtf8(artifact.path()), revision_);
+                exportContainerToJar(*candidate, sourcePath_.to_std_string(),
+                                     pathToUtf8(artifact.path()), revision_);
             if (exportStatus.is_err()) return fail("candidate_artifact", exportStatus);
             const auto stageStatus = workflow.candidateJarConsumer(pathToUtf8(artifact.path()));
             if (stageStatus.is_err()) {
@@ -3921,12 +3976,14 @@ WorkflowResult WorkspaceBase::runWorkflow(const WorkflowRequest& workflow,
 
         if (!workflow.exportPath.is_empty()) {
             auto destination =
-                validateExportDestination(sourcePath_, workflow.exportPath.to_std_string());
+                validateExportDestination(sourcePath_.to_std_string(),
+                                         workflow.exportPath.to_std_string());
             if (destination.is_err()) return fail("export", std::move(destination).unwrap_err());
             result.exportPath = utf8(pathToUtf8(destination.unwrap()));
             if (!request.dryRun) {
                 const auto exportStatus = exportContainerToJar(
-                    *candidate, sourcePath_, result.exportPath.to_std_string(), revision_);
+                    *candidate, sourcePath_.to_std_string(), result.exportPath.to_std_string(),
+                    revision_);
                 if (exportStatus.is_err()) return fail("export", exportStatus);
                 result.exported = true;
             }
@@ -3972,9 +4029,9 @@ WorkspaceErrorInfo WorkspaceBase::buildRenamePlan(const RenameRequest&   request
     switch (request.kind) {
     case RenameKind::Class:
     {
-        auto source = classInfo(request.owner.to_std_string());
+        auto source = classInfo(request.owner);
         if (source.is_err()) return source.unwrap_err();
-        auto existing = classInfo(request.newName.to_std_string());
+        auto existing = classInfo(request.newName);
         if (existing.is_ok() && request.newName != request.owner)
             return error(WorkspaceError::AlreadyExists, "rename class",
                          request.newName.to_std_string());
@@ -4009,8 +4066,7 @@ WorkspaceErrorInfo WorkspaceBase::buildRenamePlan(const RenameRequest&   request
         if (request.name.is_empty() || request.descriptor.is_empty())
             return error(WorkspaceError::InvalidArgument, "rename field",
                          "name and descriptor are required");
-        auto field = fieldInfo(request.owner.to_std_string(), request.name.to_std_string(),
-                               request.descriptor.to_std_string());
+        auto field = fieldInfo(request.owner, request.name, request.descriptor);
         if (field.is_err()) return field.unwrap_err();
         plan.mapField(request.owner.ref(), request.name.ref(), request.descriptor.ref(),
                       request.owner.ref(), request.newName.ref(), request.descriptor.ref());
@@ -4027,12 +4083,9 @@ WorkspaceErrorInfo WorkspaceBase::buildRenamePlan(const RenameRequest&   request
         if (request.name.is_empty() || request.descriptor.is_empty())
             return error(WorkspaceError::InvalidArgument, "rename method",
                          "name and descriptor are required");
-        auto method = methodInfo(request.owner.to_std_string(), request.name.to_std_string(),
-                                 request.descriptor.to_std_string());
+        auto method = methodInfo(request.owner, request.name, request.descriptor);
         if (method.is_err()) return method.unwrap_err();
-        auto component = overridesOfMethod(request.owner.to_std_string(),
-                                           request.name.to_std_string(),
-                                           request.descriptor.to_std_string());
+        auto component = overridesOfMethod(request.owner, request.name, request.descriptor);
         if (component.is_err()) return component.unwrap_err();
         overrides = std::move(component).unwrap();
         const bool hasSupporting =
@@ -4063,9 +4116,7 @@ WorkspaceErrorInfo WorkspaceBase::buildRenamePlan(const RenameRequest&   request
             return error(WorkspaceError::InvalidArgument, "rename local",
                          "method name, local name and descriptor are required");
         {
-            auto method = methodInfo(request.owner.to_std_string(),
-                                     request.methodName.to_std_string(),
-                                     request.descriptor.to_std_string());
+            auto method = methodInfo(request.owner, request.methodName, request.descriptor);
             if (method.is_err()) return method.unwrap_err();
         }
         mappings.push_back({utf8("local"), request.name.clone(), request.newName.clone()});
@@ -4199,7 +4250,7 @@ WorkflowCandidateCommitResult WorkspaceBase::commitWorkflowCandidateJar(
 
         if (!candidateRequest.exportPath.is_empty()) {
             auto destination = validateExportDestination(
-                sourcePath_, candidateRequest.exportPath.to_std_string());
+                sourcePath_.to_std_string(), candidateRequest.exportPath.to_std_string());
             if (destination.is_err()) {
                 result.mutation = stateFailure(std::move(destination).unwrap_err());
                 return result;
@@ -4207,7 +4258,8 @@ WorkflowCandidateCommitResult WorkspaceBase::commitWorkflowCandidateJar(
             result.exportPath = utf8(pathToUtf8(destination.unwrap()));
             if (!request.dryRun) {
                 const WorkspaceErrorInfo exportStatus = exportContainerToJar(
-                    *candidate, sourcePath_, result.exportPath.to_std_string(), revision_);
+                    *candidate, sourcePath_.to_std_string(), result.exportPath.to_std_string(),
+                    revision_);
                 if (exportStatus.is_err()) {
                     result.mutation = stateFailure(exportStatus);
                     return result;
@@ -4241,8 +4293,9 @@ WorkflowCandidateCommitResult WorkspaceBase::commitWorkflowCandidateJar(
     }
 }
 
-JarDiffResult WorkspaceBase::diffJar(const std::string& referencePath) const
+JarDiffResult WorkspaceBase::diffJar(ca::str::Utf8StringRef referencePathRef) const
 {
+    const std::string referencePath = referencePathRef.to_std_string();
     JarDiffResult result;
     result.referencePath = utf8(referencePath);
     WorkspaceErrorInfo loaded = ensureLoaded("diff JAR");
@@ -4382,8 +4435,10 @@ JarRepairResult WorkspaceBase::applyJarRepair(const JarRepairRequest& repair,
     }
 }
 
-MutationResult WorkspaceBase::revertClass(const std::string& uri, const MutationRequest& request)
+MutationResult WorkspaceBase::revertClass(ca::str::Utf8StringRef uriRef,
+                                          const MutationRequest& request)
 {
+    const std::string uri = uriRef.to_std_string();
     WorkspaceErrorInfo status = ensureLoaded("revert class");
     if (status.is_err()) return stateFailure(std::move(status));
     if (!accepts(request)) return revisionConflict();
@@ -4426,8 +4481,9 @@ MutationResult WorkspaceBase::revertClass(const std::string& uri, const Mutation
     }
 }
 
-WorkspaceResult<void> WorkspaceBase::createSavepoint(const std::string& name)
+WorkspaceResult<void> WorkspaceBase::createSavepoint(ca::str::Utf8StringRef nameRef)
 {
+    const std::string name = nameRef.to_std_string();
     WorkspaceErrorInfo status = ensureLoaded("create savepoint");
     if (status.is_err()) return ca::core::Err(std::move(status));
     if (name.empty())
@@ -4442,9 +4498,10 @@ WorkspaceResult<void> WorkspaceBase::createSavepoint(const std::string& name)
     return ca::core::Ok();
 }
 
-MutationResult WorkspaceBase::restoreSavepoint(const std::string&     name,
+MutationResult WorkspaceBase::restoreSavepoint(ca::str::Utf8StringRef nameRef,
                                                const MutationRequest& request)
 {
+    const std::string name = nameRef.to_std_string();
     WorkspaceErrorInfo status = ensureLoaded("restore savepoint");
     if (status.is_err()) return stateFailure(std::move(status));
     if (!accepts(request)) return revisionConflict();
@@ -4543,8 +4600,9 @@ MutationResult WorkspaceBase::redo(const MutationRequest& request)
 
 // ── 导出面 ──────────────────────────────────────────────────────────────
 
-WorkspaceResult<void> WorkspaceBase::exportJar(const std::string& outputPath) const
+WorkspaceResult<void> WorkspaceBase::exportJar(ca::str::Utf8StringRef outputPathRef) const
 {
+    const std::string outputPath = outputPathRef.to_std_string();
     WorkspaceErrorInfo status = ensureLoaded("export JAR");
     if (status.is_err()) return ca::core::Err(std::move(status));
     if (artifactKind_ != ArtifactKind::Jar) {
@@ -4559,16 +4617,17 @@ WorkspaceResult<void> WorkspaceBase::exportJar(const std::string& outputPath) co
             return ca::core::Err(ledgerFailure("export JAR", std::move(flushed).unwrap_err()));
     }
     const WorkspaceErrorInfo exported =
-        exportContainerToJar(*working_, sourcePath_, outputPath, revision_);
+        exportContainerToJar(*working_, sourcePath_.to_std_string(), outputPath, revision_);
     if (exported.is_err()) return ca::core::Err(std::move(exported));
     return ca::core::Ok();
 }
 
-WorkspaceResult<void> WorkspaceBase::exportClass(const std::string& outputPath) const
+WorkspaceResult<void> WorkspaceBase::exportClass(ca::str::Utf8StringRef outputPathRef) const
 {
+    const std::string outputPath = outputPathRef.to_std_string();
     WorkspaceErrorInfo status = ensureLoaded("export class");
     if (status.is_err()) return ca::core::Err(std::move(status));
-    if (artifactKind_ != ArtifactKind::Class || primaryClassUri_.empty()) {
+    if (artifactKind_ != ArtifactKind::Class || primaryClassUri_.is_empty()) {
         return ca::core::Err(error(WorkspaceError::FailedPrecondition, "export class",
                                    "workspace artifact is not a class"));
     }
@@ -4578,7 +4637,8 @@ WorkspaceResult<void> WorkspaceBase::exportClass(const std::string& outputPath) 
             return ca::core::Err(ledgerFailure("export class", std::move(flushed).unwrap_err()));
     }
     const WorkspaceErrorInfo exported =
-        exportContainerToClass(*working_, primaryClassUri_, sourcePath_, outputPath, revision_);
+        exportContainerToClass(*working_, primaryClassUri_.to_std_string(),
+                               sourcePath_.to_std_string(), outputPath, revision_);
     if (exported.is_err()) return ca::core::Err(std::move(exported));
     return ca::core::Ok();
 }
@@ -4872,8 +4932,9 @@ void WorkspaceBase::autoCompactLedger()
     }
 }
 
-WorkspaceResult<void> WorkspaceBase::bindLedgerStore(const std::string& bundleDir)
+WorkspaceResult<void> WorkspaceBase::bindLedgerStore(ca::str::Utf8StringRef bundleDirRef)
 {
+    const std::string bundleDir = bundleDirRef.to_std_string();
     const WorkspaceErrorInfo loaded = ensureLoaded("bind ledger store");
     if (loaded.is_err()) return ca::core::Err(std::move(loaded));
     if (bundleDir.empty())

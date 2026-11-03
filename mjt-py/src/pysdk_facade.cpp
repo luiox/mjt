@@ -3149,7 +3149,7 @@ ClassCensusFileReport facadeClassCensusFile(const std::string& jarPath,
     } guard{root};
 
     mjt::workspace::WorkspaceBase workspace;
-    if (auto opened = workspace.openJar(jarPath); opened.is_err()) {
+    if (auto opened = workspace.openJar(pathRefOf(jarPath)); opened.is_err()) {
         const auto error = std::move(opened).unwrap_err();
         throw std::runtime_error("open jar failed: " + error.message);
     }
@@ -3170,7 +3170,7 @@ ClassCensusFileReport facadeClassCensusFile(const std::string& jarPath,
                                  std::move(ingested).unwrap_err().message);
     }
 
-    auto inputId = mjt::workspace::resolveCensusInput(db, pathRefOf(workspace.sourcePath()));
+    auto inputId = mjt::workspace::resolveCensusInput(db, workspace.sourcePath());
     if (inputId.is_err()) {
         throw std::runtime_error("census input resolve failed: " +
                                  std::move(inputId).unwrap_err().message);

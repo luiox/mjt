@@ -139,7 +139,8 @@ TEST(MjAnalysisIngestTest, ImportsHierarchyMembersAndReferences)
     const auto dbPath  = freshDbPath();
 
     WorkspaceBase workspace;
-    ASSERT_TRUE(workspace.openJar(jarPath.string()).is_ok());
+    ASSERT_TRUE(
+        workspace.openJar(ca::str::Utf8StringRef::from_string_view(jarPath.string())).is_ok());
 
     {
         auto db    = openOrDie(dbPath);
@@ -225,7 +226,8 @@ TEST(MjAnalysisIngestTest, RegistersEntryIdentityAndKeepsIdsAcrossReingest)
     const auto dbPath  = freshDbPath();
 
     WorkspaceBase workspace;
-    ASSERT_TRUE(workspace.openJar(jarPath.string()).is_ok());
+    ASSERT_TRUE(
+        workspace.openJar(ca::str::Utf8StringRef::from_string_view(jarPath.string())).is_ok());
 
     {
         auto db    = openOrDie(dbPath);
@@ -333,7 +335,8 @@ TEST(MjAnalysisIngestTest, FlagsIrregularEntryPathsAsNonRegular)
     std::filesystem::remove_all(dbPath.string() + "-shm", ec);
 
     WorkspaceBase workspace;
-    ASSERT_TRUE(workspace.openJar(jarPath.string()).is_ok());
+    ASSERT_TRUE(
+        workspace.openJar(ca::str::Utf8StringRef::from_string_view(jarPath.string())).is_ok());
 
     auto db    = openOrDie(dbPath);
     auto stats = ingestIntoAnalysisDb(workspace, db);

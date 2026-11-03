@@ -39,6 +39,14 @@ using mjt::workspace::IWorkspace;
 
 namespace {
 
+///std::string → 借用视图（B3 接口面 Utf8StringRef 参数化适配；克隆前提：
+///源串在调用期内存活）。
+ca::str::Utf8StringRef utf8Ref(const std::string& value) noexcept
+{
+    return ca::str::Utf8StringRef::from_data(
+        value.empty() ? nullptr : reinterpret_cast<const ca::u8*>(value.data()), value.size());
+}
+
 ///resources 主路径的文本匹配工厂（contains/exact/prefix/regex + case_sensitive）：
 ///与 role 过滤路径同一语义。prefix 由 match_mode 档引入；resources 主路径的 query
 ///从静默丢弃改为生效。非法正则返回 false 并置 error。
@@ -317,7 +325,7 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
 
         Json containers = Json::array();
         containers.push_back({{"role", "primary"},
-                              {"path", current->sourcePath()},
+                              {"path", current->sourcePath().to_std_string()},
                               {"fingerprint", primaryFingerprint(session.projectDir)}});
         //support/library/runtime 全部以 workspace 在册表为单一事实源：
         //角色化登记让 library/runtime 也只产生一条记录（role 是记录标签，
@@ -425,7 +433,7 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         return toolResult({{"project_id", arguments.at("project_id")},
                            {"project_dir", session.projectDir},
                            {"persistence", session.temporary ? "temporary" : "project"},
-                           {"source_path", current->sourcePath()},
+                           {"source_path", current->sourcePath().to_std_string()},
                            {"revision", current->revision()},
                            {"dirty", current->isDirty()},
                            {"exportable", current->canExport()},
@@ -445,7 +453,7 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         for (const auto& item : current->supportingResources())
             support.push_back(supportingResourceJson(item));
         return toolResult({{"workspace_id", arguments.at("workspace_id")},
-                           {"source_path", current->sourcePath()},
+                           {"source_path", current->sourcePath().to_std_string()},
                            {"revision", current->revision()},
                            {"dirty", current->isDirty()},
                            {"exportable", current->canExport()},
@@ -479,7 +487,7 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         return toolResult(std::move(paged));
     }
     if (name == "workspace_add_support") {
-        auto result = current->addSupportingJar(arguments.value("path", std::string{}));
+        auto result = current->addSupportingJar(utf8Ref(arguments.value("path", std::string{})));
         if (result.is_err()) { const auto err = shared::toCaStatus(result.unwrap_err()); return toolError("add supporting resource failed", &err); }
         // SupportingResourceInfo 携 move-only Utf8String：unwrap 走移动重载。
         return toolResult({{"supporting_resource", supportingResourceJson(std::move(result).unwrap())}});
@@ -496,7 +504,7 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         return toolResult(std::move(paged));
     }
     if (name == "workspace_remove_support") {
-        auto result = current->removeSupportingJar(arguments.value("support_id", std::string{}));
+        auto result = current->removeSupportingJar(utf8Ref(arguments.value("support_id", std::string{})));
         if (result.is_err()) { const auto err = shared::toCaStatus(result.unwrap_err()); return toolError("remove supporting resource failed", &err); }
         // SupportingResourceInfo 携 move-only Utf8String：unwrap 走移动重载。
         return toolResult({{"removed", supportingResourceJson(std::move(result).unwrap())}});
@@ -525,7 +533,7 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         return toolResult(std::move(paged));
     }
     if (op == "resource_read") {
-        auto content = current->readResource(arguments.value("uri", std::string{}));
+        auto content = current->readResource(utf8Ref(arguments.value("uri", std::string{})));
         if (content.is_err()) { const auto err = shared::toCaStatus(content.unwrap_err()); return toolError("read resource failed", &err); }
         auto value = std::move(content).unwrap();
         auto offset = arguments.value("offset", static_cast<ca::usize>(0));
@@ -618,15 +626,15 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         //接文本），命中后再按结构化字段收紧。
         auto hits =
             op == "search_classes"
-                ? current->searchClasses(query, options)
+                ? current->searchClasses(utf8Ref(query), options)
                 : op == "search_members"
-                      ? current->searchMembers(query, options)
+                      ? current->searchMembers(utf8Ref(query), options)
                       : op == "search_strings"
-                            ? current->searchStrings(query, options)
+                            ? current->searchStrings(utf8Ref(query), options)
                             : op == "search_numbers"
-                                  ? current->searchNumbers(query, options)
+                                  ? current->searchNumbers(utf8Ref(query), options)
                                   : current->searchInstructions(
-                                        structured ? std::string(" ") : query, options);
+                                        utf8Ref(structured ? std::string(" ") : query), options);
         if (hits.is_err()) { const auto err = shared::toCaStatus(hits.unwrap_err()); return toolError("workspace search failed", &err); }
         auto hitList = std::move(hits).unwrap();
         //prefix 档在 mjt 侧收紧（contains 结果集恒为前缀命中的超集）。
@@ -763,7 +771,7 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         Json        slotError;
         if (!slot::resolveClassArgument(*current, arguments, "class", true, className, slotError))
             return slotError;
-        auto value = current->classInfo(className);
+        auto value = current->classInfo(utf8Ref(className));
         if (value.is_err()) { const auto err = shared::toCaStatus(value.unwrap_err()); return toolError("get class failed", &err); }
         // ClassInfo 携 move-only Utf8String：unwrap 走移动重载。
         return toolResult(classJson(std::move(value).unwrap()));
@@ -773,7 +781,7 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         Json        slotError;
         if (!slot::resolveClassArgument(*current, arguments, "class", true, className, slotError))
             return slotError;
-        auto content = current->readClassBytes(className);
+        auto content = current->readClassBytes(utf8Ref(className));
         if (content.is_err()) { const auto err = shared::toCaStatus(content.unwrap_err()); return toolError("read class bytes failed", &err); }
         auto value = std::move(content).unwrap();
         auto offset = arguments.value("offset", static_cast<ca::usize>(0));
@@ -811,11 +819,11 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         Json        slotError;
         if (!slot::resolveClassArgument(*current, arguments, "class", true, className, slotError))
             return slotError;
-        auto selected = current->classInfo(className);
+        auto selected = current->classInfo(utf8Ref(className));
         if (selected.is_err())
             { const auto err = shared::toCaStatus(selected.unwrap_err()); return toolError("select class for Jasm failed", &err); }
         const std::string classUri = std::move(selected).unwrap().resourceUri.to_std_string();
-        auto value = current->getJasm(classUri);
+        auto value = current->getJasm(utf8Ref(classUri));
         if (!value.isOk()) {
             Json diagnostics = Json::array();
             for (const auto& item : value.diagnostics) diagnostics.push_back(diagnosticJson(item));
@@ -848,13 +856,13 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
                                             false, mismatchError))
             return mismatchError;
         if (op == "method_get") {
-            auto value = current->methodInfo(ownerRaw, memberName, descriptor);
+            auto value = current->methodInfo(utf8Ref(ownerRaw), utf8Ref(memberName), utf8Ref(descriptor));
             if (value.is_err()) { const auto err = shared::toCaStatus(value.unwrap_err()); return toolError("get method failed", &err); }
             // MethodInfo 携 move-only Utf8String：unwrap 走移动重载。
             return toolResult(methodJson(std::move(value).unwrap()));
         }
         if (op == "method_bytecode") {
-            auto value = current->methodBytecode(ownerRaw, memberName, descriptor);
+            auto value = current->methodBytecode(utf8Ref(ownerRaw), utf8Ref(memberName), utf8Ref(descriptor));
             if (value.is_err()) { const auto err = shared::toCaStatus(value.unwrap_err()); return toolError("get method bytecode failed", &err); }
             // MethodBytecode 携 move-only Utf8String：unwrap 走移动重载。
             auto info = std::move(value).unwrap();
@@ -871,7 +879,7 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
             //jasm 全文;两份一次取齐,调用方不必退回自写解析器。
             Json payload{{"method", methodJson(std::move(info.method))},
                          {"instructions", std::move(instructions)}};
-            auto jasm = current->getMethodJasm(ownerRaw, memberName, descriptor);
+            auto jasm = current->getMethodJasm(utf8Ref(ownerRaw), utf8Ref(memberName), utf8Ref(descriptor));
             if (jasm.isOk()) {
                 payload["jasm"] = utf8(jasm.value->source.ref());
             } else {
@@ -881,7 +889,7 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
             }
             return toolResult(std::move(payload));
         }
-        auto value = current->getMethodJasm(ownerRaw, memberName, descriptor);
+        auto value = current->getMethodJasm(utf8Ref(ownerRaw), utf8Ref(memberName), utf8Ref(descriptor));
         if (!value.isOk()) {
             Json diagnostics = Json::array();
             for (const auto& item : value.diagnostics) diagnostics.push_back(diagnosticJson(item));
@@ -909,7 +917,7 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
                            "shadow_to_raw";
         if (lookupName.empty()) return toolError("name must be a non-empty string");
         const auto sidecarPath =
-            fileArg.empty() ? mjt::resolveShadowPath(current->sourcePath(), "") : fileArg;
+            fileArg.empty() ? mjt::resolveShadowPath(current->sourcePath().to_std_string(), "") : fileArg;
         std::error_code fsError;
         if (!std::filesystem::exists(sidecarPath, fsError)) {
             return toolError("shadow sidecar not found: " + sidecarPath +
