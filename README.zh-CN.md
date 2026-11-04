@@ -63,11 +63,70 @@ Windows 下 exe 嵌了 `activeCodePage=UTF-8` 与 `longPathAware` 的 manifest�
 使中文类名参数与长路径在默认 GBK 代码页下也能正常工作（需 Windows 10 1903+
 识别前者）。
 
+## CLI 用法
+
+`mjt` 是普通命令行工具（`xmake build mjt`），首批三个面向 JAR 与 mapping
+文件的批处理式命令。退出码约定：`0` 成功（含 `--help`）、`1` 用法错误
+（参数缺失、输入文件不存在、格式名不识别）、`2` 运行失败（打开、解析、
+修复或导出失败）。
+
+```sh
+mjt --version          # 输出版本号
+mjt --help             # 命令树帮助
+```
+
+### `mjt info` — jar 概览
+
+```sh
+mjt info -i <jar> [--json]
+```
+
+输出条目数、类数、类形态分布（class / interface / enum / annotation /
+record / module）、条目路径形态 facet 分布（`regular`、`empty_segment`…）、
+字节码版本分布与 manifest 有无。普查事实来自分析库投影；`--json` 输出同一
+数据（键为稳定英文）。
+
+### `mjt mapping` — mapping 格式互转
+
+```sh
+mjt mapping -i <in> -o <out> --from <fmt> --to <fmt>
+```
+
+经统一中间表示在格式间互转 mapping 文件。格式名大小写不敏感；SRG、
+Tiny-V2、proguard 三族两两互通（其余注册格式：`Tiny-V1`、`Simple`、
+`Enigma`、`R8`、`YGuard`、`Allatori`、`Shadow-Alias`）。格式名不识别时
+fail-loud，退出码 `1`。
+
+可选：用源 mapping 重映射 jar：
+
+```sh
+mjt mapping -i <in> -o <out> --from <fmt> --to <fmt> \
+    --remap-jar <jar> [--remap-out <jar>] [--remap-policy bytecode-only|reflection|metadata|all]
+```
+
+`--remap-jar` 经 mjbase remapper 把源 mapping 应用到 jar；重映射副本缺省写
+`<jar 主名>-remapped.jar`，可用 `--remap-out` 指定路径。
+
+### `mjt jar fix` — jar 诊断与修复
+
+```sh
+mjt jar fix -i <in> -o <out>
+```
+
+扫描 jar，移除不可修复条目（class 字节未通过字节码校验、`.class` 条目不是
+合法 class 字节、命中已知损坏输出标记的条目），把修复副本写到 `<out>`（已
+存在的输出文件会被替换）。报告逐条列出修了什么、保留了什么；不可修的失败
+给非零退出码与原因。输入输出必须是不同文件。
+
+语言：文案跟随 `MJT_LANG` 环境变量（缺省 `en_US`，支持 `zh_CN`）。
+
 ## 仓库结构
 
 ```
 mjt/mcp/src/     MCP 服务器与工具集（核心产品代码）
 mjt/mcp/test/    MCP 层单测
+mjt/cli/         `mjt` CLI 二进制（info / mapping / jar fix）
+mjt/test/cli/    CLI 层单测
 mjt/src/shared/  MCP 工具集共用的底层能力（反编译接入、jar 重映射、workspace…）
 skills/          MCP 技能定义
 mjt-py/src/      嵌入式 Python SDK（mjt --script 嵌入解释器与 mjt.pyd

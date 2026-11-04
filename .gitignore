@@ -39,6 +39,7 @@ compile_commands.json
 # workspace 单测源码（mjt_workspace_unittest 的 add_files 目录）随仓走。
 /mjt/test/*
 !/mjt/test/workspace/
+!/mjt/test/cli/
 /libs/libjdk_finder/test/
 
 ### Temp files ###

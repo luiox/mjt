@@ -50,11 +50,57 @@ or execute `build/<plat>/<arch>/<mode>/artifacts/.../mjt-mcp.exe` directly. The 
 
 On Windows the executable embeds an `activeCodePage=UTF-8` and `longPathAware` manifest, so Chinese class-name arguments and long paths work even under the default GBK code page (the former needs Windows 10 1903+).
 
+## CLI usage
+
+The `mjt` binary is a plain command-line tool (`xmake build mjt`) covering three batch-style commands over JARs and mapping files. Exit codes: `0` success (including `--help`), `1` usage error (missing argument, missing input file, unknown format name), `2` runtime failure (open, parse, repair or export failure).
+
+```sh
+mjt --version          # print tool version
+mjt --help             # command tree help
+```
+
+### `mjt info` — JAR overview
+
+```sh
+mjt info -i <jar> [--json]
+```
+
+Prints entry count, class count, class-kind distribution (class / interface / enum / annotation / record / module), entry-path-shape facet distribution (`regular`, `empty_segment`, …), bytecode version distribution and MANIFEST presence. Census facts come from the analysis database projection; `--json` emits the same data with stable English keys.
+
+### `mjt mapping` — mapping format conversion
+
+```sh
+mjt mapping -i <in> -o <out> --from <fmt> --to <fmt>
+```
+
+Converts a mapping file between formats through a unified intermediate representation. Format names are case-insensitive; the SRG, Tiny-V2 and Proguard families are all interchangeable (other registered formats: `Tiny-V1`, `Simple`, `Enigma`, `R8`, `YGuard`, `Allatori`, `Shadow-Alias`). An unrecognized format name fails loudly with exit code `1`.
+
+Optional jar remapping with the source mapping:
+
+```sh
+mjt mapping -i <in> -o <out> --from <fmt> --to <fmt> \
+    --remap-jar <jar> [--remap-out <jar>] [--remap-policy bytecode-only|reflection|metadata|all]
+```
+
+`--remap-jar` applies the source mapping to a jar via the mjbase remapper; the remapped copy defaults to `<jar stem>-remapped.jar` unless `--remap-out` gives a path.
+
+### `mjt jar fix` — diagnose and repair a JAR
+
+```sh
+mjt jar fix -i <in> -o <out>
+```
+
+Scans the jar, removes entries that cannot be repaired (class bytes failing bytecode validation, `.class` entries that are not class bytes, and known corrupt-output marker entries), and writes a repaired copy to `<out>` (an existing output file is replaced). The report lists what was removed and what was kept per entry; an unrecoverable failure exits non-zero with the reason. Input and output must be different files.
+
+Locale: message text follows the `MJT_LANG` environment variable (`en_US` default, `zh_CN` supported).
+
 ## Repository layout
 
 ```
 mjt/mcp/src/     MCP server and tool set (core product code)
 mjt/mcp/test/    MCP-layer unit tests
+mjt/cli/         `mjt` CLI binary (info / mapping / jar fix)
+mjt/test/cli/    CLI-layer unit tests
 mjt/src/shared/  capabilities shared across the MCP tool set
                  (decompiler integration, jar remapping, workspace…)
 skills/          MCP skill definitions

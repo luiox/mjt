@@ -77,6 +77,52 @@ target("mjt-mcp")
 
     set_rundir("$(projectdir)")
 
+-- ── CLI（`mjt` binary，info / mapping / jar fix） ─────────────
+-- 命令核心面（纯逻辑，main 与 gtest 共链）：i18n 表经既有 translations
+-- 嵌入规则挂本 target（生成头 i18n_mjt_cli_core_translations.generated.hpp，
+-- public include 随静态库传递）；libca 提供命令行解析（ca::opt）、日志
+-- （ca::log）与 i18n 面。
+target("mjt_cli_core")
+    set_kind("static")
+    set_group("mjt")
+
+    if is_plat("windows") then
+        add_cxflags("/utf-8", {tools = "cl"})
+    end
+
+    add_defines('MJT_VERSION="' .. MJT_VERSION .. '"')
+
+    add_deps("mjt_shared")
+    add_packages("libca")
+    add_includedirs("cli/src", {public = true})
+    add_files("cli/src/cmd_*.cpp")
+    add_files("cli/translations/*.lang", {rules = "libca.i18n.embed-lang"})
+
+target("mjt")
+    set_kind("binary")
+    set_group("mjt")
+
+    if is_plat("windows") then
+        add_cxflags("/utf-8", {tools = "cl"})
+    end
+
+    -- 与 mjt-mcp 同款：activeCodePage=UTF-8 + longPathAware manifest。
+    add_rules("mjt.win_utf8_manifest")
+
+    -- 版本宏（--version 输出单源）：与 mjt_shared 同一字面量。
+    add_defines('MJT_VERSION="' .. MJT_VERSION .. '"')
+
+    add_deps("mjt_cli_core", "mjt_shared")
+    add_packages("libca")
+    -- 链接闭包镜像 mjt_ingest_bench（同为 mjt_shared 直连、无 mcp core）：
+    -- libjdk_finder 由 mjbase 闭包 add_links 引用，其 -libpath 在此显式给。
+    add_packages("libjdk_finder")
+     mjt_binary_link_closure("mjt_cli_core", "mjt_shared", "mjbase")
+    mjt_binary_link_closure("libjhasm", "libjclassfile", "libjstr", "libjbc", "libjzip", "libjdk_finder", "sqlite3")
+    add_files("cli/src/main.cpp")
+
+    set_rundir("$(projectdir)")
+
 if has_config("with_tests") then
     target("mjt_workspace_unittest")
         set_kind("binary")
@@ -113,6 +159,24 @@ if has_config("with_tests") then
         -- 注：libca_i18n 为 headeronly target（无 .lib 产物），只入 add_deps 不入 add_links。
         add_includedirs("mcp/src")
         add_files("mcp/test/*.cpp")
+        set_rundir("$(projectdir)")
+
+    target("mjt_cli_unittest")
+        set_kind("binary")
+        set_group("mjt/test")
+        set_default(false)
+
+        -- add_deps("mjt") 仅为构建序：冒烟测试运行 `mjt` exe 本体（binary
+        -- 依赖不参与链接，保证 build unittest 前产物已就位）。
+        add_deps("mjt_cli_core", "mjt_shared", "test_helper", "mjt")
+        add_packages("gtest", "libca")
+        -- 冒烟断言 --version 文案：与 binary 同一字面量。
+        add_defines('MJT_VERSION="' .. MJT_VERSION .. '"')
+        -- 链接闭包与 mjt_workspace_unittest 同款，外加 mjt_cli_core。
+         mjt_binary_link_closure("mjt_cli_core", "mjt_shared", "mjbase")
+        mjt_binary_link_closure("libjhasm", "libjclassfile", "libjstr", "libjbc", "libjzip", "test_helper", "libjdk_finder", "sqlite3")
+        add_includedirs("cli/src")
+        add_files("test/cli/*.cpp")
         set_rundir("$(projectdir)")
 
         if is_plat("windows") then

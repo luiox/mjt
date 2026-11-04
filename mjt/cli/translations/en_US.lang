@@ -1,0 +1,55 @@
+# mjt CLI translations (zh_CN is the source language and superset)
+# Namespace: mjt.cli.* = mjt/cli command-line copy
+# {n} are positional placeholders, repeatable/reorderable
+
+# ── root / shared ───────────────────────────────────────────
+mjt.cli.root.help=JVM bytecode toolkit (info / mapping / jar fix)
+mjt.cli.root.version_help=print version and exit
+mjt.cli.opt.input=input path (-i <path>)
+mjt.cli.opt.output=output path (-o <path>); must not be the same file as the input
+mjt.cli.err.input_missing=input does not exist: {0}
+mjt.cli.err.output_missing=an output path is required (-o <path>)
+
+# ── info ────────────────────────────────────────────────────
+mjt.cli.info.help=show jar overview: entries, classes, class kinds, entry path shapes, bytecode versions, manifest
+mjt.cli.info.json_help=emit the same data as JSON
+mjt.cli.info.title=jar overview: {0}
+mjt.cli.info.entries=entries: {0}
+mjt.cli.info.classes=classes: {0}
+mjt.cli.info.class_kinds=class kinds:
+mjt.cli.info.entry_shapes=entry path shapes:
+mjt.cli.info.bytecode_versions=bytecode versions:
+mjt.cli.info.manifest=manifest: {0}
+mjt.cli.info.manifest_yes=present
+mjt.cli.info.manifest_no=absent
+mjt.cli.err.info_db=analysis database failure: {0}
+
+# ── mapping ─────────────────────────────────────────────────
+mjt.cli.mapping.help=convert mapping files between formats (SRG / Tiny-V2 / Proguard and more); optionally apply the mapping to a jar
+mjt.cli.mapping.from_help=source format name (case-insensitive, e.g. srg / tiny-v2 / proguard)
+mjt.cli.mapping.to_help=target format name
+mjt.cli.mapping.remap_jar_help=input jar to apply the source mapping to (optional)
+mjt.cli.mapping.remap_out_help=remapped jar output path (default: <jar stem>-remapped.jar)
+mjt.cli.mapping.remap_policy_help=remap policy: bytecode-only (default), reflection, metadata, all
+mjt.cli.mapping.remap_done=remapped {0} -> {1} (changed: {2})
+mjt.cli.err.mapping_read_failed=cannot read the mapping file: {0}
+mjt.cli.err.mapping_write_failed=cannot write the mapping file: {0}
+mjt.cli.err.mapping_unknown_format=unknown mapping format: {0} (known formats: {1})
+mjt.cli.err.mapping_parse_failed=mapping parse failed: {0}
+mjt.cli.err.mapping_format_failed=mapping emit failed: {0}
+mjt.cli.err.remap_failed=jar remap failed: {0}
+
+# ── jar fix ─────────────────────────────────────────────────
+mjt.cli.jar.help=jar-level diagnostics and repair
+mjt.cli.fix.help=diagnose a jar and repair removable damage (invalid class entries, corrupt output markers), writing a repaired copy
+mjt.cli.fix.scanned=scanned {0} entries ({1} classes)
+mjt.cli.fix.no_issues=no repairable issues found
+mjt.cli.fix.issues=issues found: {0}
+mjt.cli.fix.removed=removed: {0} [{1}] {2}
+mjt.cli.fix.kept=kept: {0} [{1}] {2}
+mjt.cli.fix.done=repaired jar written to: {0}
+mjt.cli.fix.reason.invalid_class=class bytes did not pass bytecode validation
+mjt.cli.fix.reason.invalid_class_entry=a .class entry was not recognized as valid class bytes
+mjt.cli.fix.reason.corrupt_output_marker=resource name matches a known corrupt output marker
+mjt.cli.err.fix_same_path=input and output must be different files: {0}
+mjt.cli.err.fix_output_busy=cannot replace the existing output file: {0}

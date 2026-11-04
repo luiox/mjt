@@ -1,0 +1,55 @@
+# mjt CLI 翻译（zh_CN 为源语言与超集）
+# 命名空间：mjt.cli.* = mjt/cli 命令行文案
+# {n} 为位置占位符，可重复/可换序
+
+# ── 根 / 共享 ───────────────────────────────────────────────
+mjt.cli.root.help=JVM 字节码工具（info / mapping / jar fix）
+mjt.cli.root.version_help=输出版本号并退出
+mjt.cli.opt.input=输入路径（-i <path>）
+mjt.cli.opt.output=输出路径（-o <path>）；不得与输入同一文件
+mjt.cli.err.input_missing=输入不存在: {0}
+mjt.cli.err.output_missing=需要输出路径（-o <path>）
+
+# ── info ────────────────────────────────────────────────────
+mjt.cli.info.help=展示 jar 概览：条目数、类数、类形态分布、条目路径形态分布、字节码版本分布、manifest 有无
+mjt.cli.info.json_help=以 JSON 输出同一数据
+mjt.cli.info.title=jar 概览: {0}
+mjt.cli.info.entries=条目数: {0}
+mjt.cli.info.classes=类数: {0}
+mjt.cli.info.class_kinds=类形态分布:
+mjt.cli.info.entry_shapes=条目路径形态分布:
+mjt.cli.info.bytecode_versions=字节码版本分布:
+mjt.cli.info.manifest=manifest: {0}
+mjt.cli.info.manifest_yes=有
+mjt.cli.info.manifest_no=无
+mjt.cli.err.info_db=分析库失败: {0}
+
+# ── mapping ─────────────────────────────────────────────────
+mjt.cli.mapping.help=mapping 格式互转（SRG / Tiny-V2 / Proguard 等）；可选将 mapping 应用到 jar
+mjt.cli.mapping.from_help=源格式名（大小写不敏感，如 srg / tiny-v2 / proguard）
+mjt.cli.mapping.to_help=目标格式名
+mjt.cli.mapping.remap_jar_help=应用源 mapping 的输入 jar（可选）
+mjt.cli.mapping.remap_out_help=重映射 jar 输出路径（缺省: <jar 主名>-remapped.jar）
+mjt.cli.mapping.remap_policy_help=重映射策略: bytecode-only（缺省）、reflection、metadata、all
+mjt.cli.mapping.remap_done=已重映射 {0} -> {1}（有改动: {2}）
+mjt.cli.err.mapping_read_failed=无法读取 mapping 文件: {0}
+mjt.cli.err.mapping_write_failed=无法写出 mapping 文件: {0}
+mjt.cli.err.mapping_unknown_format=不支持的 mapping 格式: {0}（可用格式: {1}）
+mjt.cli.err.mapping_parse_failed=mapping 解析失败: {0}
+mjt.cli.err.mapping_format_failed=mapping 生成失败: {0}
+mjt.cli.err.remap_failed=jar 重映射失败: {0}
+
+# ── jar fix ─────────────────────────────────────────────────
+mjt.cli.jar.help=jar 级诊断与修复
+mjt.cli.fix.help=诊断 jar 并修复可移除的损坏（无效 class 条目、损坏输出标记），写出修复副本
+mjt.cli.fix.scanned=已扫描 {0} 个条目（class {1} 个）
+mjt.cli.fix.no_issues=未发现问题
+mjt.cli.fix.issues=发现问题: {0}
+mjt.cli.fix.removed=已移除: {0} [{1}] {2}
+mjt.cli.fix.kept=保留: {0} [{1}] {2}
+mjt.cli.fix.done=修复 jar 已写出: {0}
+mjt.cli.fix.reason.invalid_class=class 字节未通过字节码校验
+mjt.cli.fix.reason.invalid_class_entry=.class 条目无法识别为合法 class 字节
+mjt.cli.fix.reason.corrupt_output_marker=资源名命中已知损坏输出标记
+mjt.cli.err.fix_same_path=输入与输出必须是不同文件: {0}
+mjt.cli.err.fix_output_busy=无法替换已存在的输出文件: {0}
