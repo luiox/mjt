@@ -3,7 +3,7 @@
 # {n} are positional placeholders, repeatable/reorderable
 
 # ── root / shared ───────────────────────────────────────────
-mjt.cli.root.help=JVM bytecode toolkit (info / mapping / jar fix)
+mjt.cli.root.help=JVM bytecode toolkit (info / mapping / jar fix / decompile)
 mjt.cli.root.version_help=print version and exit
 mjt.cli.opt.input=input path (-i <path>)
 mjt.cli.opt.output=output path (-o <path>); must not be the same file as the input
@@ -53,3 +53,35 @@ mjt.cli.fix.reason.invalid_class_entry=a .class entry was not recognized as vali
 mjt.cli.fix.reason.corrupt_output_marker=resource name matches a known corrupt output marker
 mjt.cli.err.fix_same_path=input and output must be different files: {0}
 mjt.cli.err.fix_output_busy=cannot replace the existing output file: {0}
+
+# ── decompile ───────────────────────────────────────────────
+mjt.cli.decompile.help=decompile jar classes to Java sources (CFR / vineflower); single-class mode survives hostile class names
+mjt.cli.decompile.class_help=internal name of the class to decompile (slash form, e.g. fixture/Alpha); output goes to -o or stdout
+mjt.cli.decompile.all_help=confirm whole-jar batch decompilation (required for batch mode)
+mjt.cli.decompile.backend_help=decompiler backend: cfr (default) or vineflower
+mjt.cli.decompile.jar_help=explicit decompiler JAR path
+mjt.cli.decompile.timeout_help=subprocess timeout in milliseconds (default 120000)
+mjt.cli.decompile.memory_help=backend JVM max heap in MiB (default 1024)
+mjt.cli.decompile.err.need_mode=either -c <class> (single class) or -o <outdir|.zip> (batch) is required
+mjt.cli.decompile.err.batch_output_missing=batch mode requires an output path (-o <outdir> or <out>.zip)
+mjt.cli.decompile.err.need_all=batch decompilation covers all {0} classes in the jar; pass --all to confirm
+mjt.cli.decompile.err.single_output_java=single-class output must be a .java file (or omit -o to print to stdout)
+mjt.cli.decompile.err.class_not_found=class not found in jar: {0}
+mjt.cli.decompile.err.open_failed=cannot open jar: {0}
+mjt.cli.decompile.err.invalid_value=invalid value for {0}: {1}
+mjt.cli.decompile.err.stage_failed=staging failed: {0}
+mjt.cli.decompile.err.readback_failed=cannot read back the decompiled source: {0}
+mjt.cli.decompile.err.temp_failed=cannot create the decompile temporary directory
+mjt.cli.decompile.single_done=decompiled {0}
+mjt.cli.decompile.backend_line=backend: {0} ({1})
+mjt.cli.decompile.batch_classes=classes: {0}
+mjt.cli.decompile.batch_done_dir=sources written to: {0}
+mjt.cli.decompile.batch_done_zip=sources archive written to: {0}
+mjt.cli.decompile.batch_skipped=skipped {0} entries whose names cannot be written to disk:
+mjt.cli.decompile.batch_skipped_reason={0} [{1}]
+mjt.cli.decompile.batch_skipped_hint=decompile these via single-class mode (-c <class>), or read them through the jasm text facet
+mjt.cli.decompile.reason.segment_too_long=name segment exceeds the 255 UTF-16 unit file system limit
+mjt.cli.decompile.reason.illegal_character=name segment contains characters that cannot appear in file names
+mjt.cli.decompile.reason.trailing_dot_or_space=name segment ends with a dot or space (stripped by Windows, the file cannot exist)
+mjt.cli.decompile.reason.parent_or_self=name contains a relative path segment (. or ..)
+mjt.cli.decompile.reason.empty_segment=name contains an empty path segment

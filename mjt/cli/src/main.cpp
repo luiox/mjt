@@ -1,13 +1,15 @@
 /// @file        main.cpp
-/// @brief       `mjt` CLI 入口：ca::opt 命令树（info / mapping / jar fix）+
-///              全局 --version/--help + 退出码映射。
+/// @brief       `mjt` CLI 入口：ca::opt 命令树（info / mapping / jar fix /
+///              decompile）+ 全局 --version/--help + 退出码映射。
 ///
 /// 退出码约定（README「CLI usage」同文）：0 成功（含 --help）/ 1 用法错误
-/// （参数缺失、文件不存在、格式名不识别）/ 2 运行失败（打开/解析/修复/
-/// 导出失败）。--help 经 ca::opt 的 HelpRequested 通道返回 0。
+/// （参数缺失、文件不存在、格式名不识别、类选择器无命中）/ 2 运行失败
+/// （打开/解析/修复/导出/反编译失败）。--help 经 ca::opt 的 HelpRequested
+/// 通道返回 0。
 ///
 /// 文案：i18n 表 = mjt_shared（共享层错误文案）+ 本 CLI（mjt.cli.*），语言
 /// 由 MJT_LANG 选择（未设置或未注册时落 en_US）。
+#include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -156,7 +158,116 @@ int runJarFix(const ca::opt::ParseResult& args)
     return mjt::cli::kExitOk;
 }
 
-/// 命令树：根（--version）→ info / mapping / jar → fix。
+/// --timeout-ms / --max-memory-mib 的整数旗标解析：非数字或 ≤ 0 → 用法错误。
+/// @return 成功时写入 @p value。
+bool parsePositiveInteger(const std::string& raw, const char* flag, ca::i64& value)
+{
+    if (!raw.empty()) {
+        std::size_t consumed = 0;
+        long long   parsed   = 0;
+        try {
+            parsed = std::stoll(raw, &consumed);
+        }
+        catch (const std::exception&) {
+            parsed = -1;
+        }
+        if (consumed == raw.size() && parsed > 0) {
+            value = static_cast<ca::i64>(parsed);
+            return true;
+        }
+    }
+    usageFailure(mjt::shared::trfStr("mjt.cli.decompile.err.invalid_value",
+                                     {flag, raw.empty() ? std::string{"(empty)"} : raw}));
+    return false;
+}
+
+/// decompile 错误 → 退出码分支（UnknownBackend / InvalidArgument /
+/// ClassNotFound = 用法 1；Runtime = 运行 2）。
+int decompileFailure(mjt::cli::DecompileError error)
+{
+    const bool usage = error.kind != mjt::cli::DecompileError::Kind::Runtime;
+    return usage ? usageFailure(std::move(error.message))
+                 : runFailure(std::move(error.message));
+}
+
+/// 输出路径是否 .java（大小写不敏感；单类 -o 校验）。
+bool isJavaOutputPath(const std::string& path)
+{
+    const std::filesystem::path parsed = std::filesystem::u8path(path);
+    if (parsed.extension().string().size() != 5) return false;
+    std::string lowered = parsed.extension().string();
+    for (auto& character : lowered)
+        character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+    return lowered == ".java";
+}
+
+/// `mjt decompile -i <jar> -c <internalName> [-o <file.java>]
+///  | -i <jar> -o <outdir|.zip> --all [--decompiler cfr|vineflower]
+///  [--decompiler-jar <jar>] [--timeout-ms <n>] [--max-memory-mib <n>]`。
+///
+/// 模式：-c 在场 = 单类（短安全名方案，敌意类名免疫；-o 缺省打印 stdout）；
+/// -o 在场 = 批量（--all 确认整 jar 成本后执行）。退出码：0 成功（批量预检
+/// 跳过属部分成功，清单走 stderr）/ 1 用法 / 2 运行。
+int runDecompile(const ca::opt::ParseResult& args)
+{
+    const std::string input     = args.get("input");
+    const std::string className = args.get("class");
+    const std::string output    = args.get("output");
+    if (!requireInputFile(input))
+        return usageFailure(mjt::shared::trfStr("mjt.cli.err.input_missing", {input}));
+
+    mjt::cli::DecompileCliOptions options;
+    if (args.has("decompiler")) {
+        auto kind = mjt::cli::parseDecompilerBackendName(args.get("decompiler"));
+        if (kind.is_err()) return decompileFailure(std::move(kind).unwrap_err());
+        options.kind = kind.unwrap();
+        //backendName 归一为稳定 ID（渲染与断言口径一致）。
+        options.backendName = mjt::decompilerKindId(options.kind);
+    }
+    options.decompilerJar = args.get("decompiler-jar");
+    if (args.has("timeout-ms") &&
+        !parsePositiveInteger(args.get("timeout-ms"), "--timeout-ms", options.timeoutMs))
+        return mjt::cli::kExitUsage;
+    if (args.has("max-memory-mib") &&
+        !parsePositiveInteger(args.get("max-memory-mib"), "--max-memory-mib", options.maxMemoryMiB))
+        return mjt::cli::kExitUsage;
+
+    //单类模式：-c 在场优先（短安全名方案，敌意类名免疫；-o 缺省 stdout）。
+    if (args.has("class")) {
+        if (!output.empty() && !isJavaOutputPath(output))
+            return usageFailure(mjt::shared::trfStr("mjt.cli.decompile.err.single_output_java"));
+        auto report = mjt::cli::decompileSingleClass(input, className, output, options);
+        if (report.is_err()) return decompileFailure(std::move(report).unwrap_err());
+        const auto value = std::move(report).unwrap();
+        if (output.empty()) {
+            //stdout 模式只落源码（重定向取文件语义，不混入摘要）。
+            mjt::out().write(value.source);
+        }
+        else {
+            mjt::cli::renderSingleDecompileSummary(value, mjt::out());
+        }
+        return mjt::cli::kExitOk;
+    }
+
+    //批量模式：-o 必填 + --all 显式确认整 jar 成本（缺席时给类数提示）。
+    if (output.empty())
+        return usageFailure(mjt::shared::trfStr("mjt.cli.decompile.err.need_mode"));
+    if (!args.has("all")) {
+        auto counted = mjt::cli::countJarClassEntries(input);
+        const std::string count =
+            counted.is_ok() ? std::to_string(counted.unwrap()) : std::string{"?"};
+        return usageFailure(mjt::shared::trfStr("mjt.cli.decompile.err.need_all", {count}));
+    }
+    auto report = mjt::cli::decompileJarBatch(input, output, options);
+    if (report.is_err()) return decompileFailure(std::move(report).unwrap_err());
+    const auto value = std::move(report).unwrap();
+    mjt::cli::renderBatchDecompileSummary(value, mjt::out());
+    //敌意名预检跳过清单走 stderr（部分成功语义：退出码仍 0）。
+    mjt::cli::renderSkippedEntries(value, mjt::err());
+    return mjt::cli::kExitOk;
+}
+
+/// 命令树：根（--version）→ info / mapping / jar → fix / decompile。
 ca::opt::Command buildCommandLine()
 {
     ca::opt::Command root;
@@ -251,6 +362,54 @@ ca::opt::Command buildCommandLine()
     jar.subcommands.push_back(std::move(fix));
     root.subcommands.push_back(std::move(jar));
 
+    ca::opt::Command decompile;
+    decompile.name = "decompile";
+    decompile.help = mjt::shared::trfStr("mjt.cli.decompile.help");
+    ca::opt::Arg decompileInput = input;
+    decompileInput.required     = true;
+    decompile.args.push_back(decompileInput);
+    ca::opt::Arg classArg;
+    classArg.name    = "class";
+    classArg.aliases = {"-c"};
+    classArg.kind    = ca::opt::OptKind::String;
+    classArg.metavar = "<internalName>";
+    classArg.help    = mjt::shared::trfStr("mjt.cli.decompile.class_help");
+    decompile.args.push_back(classArg);
+    ca::opt::Arg decompileOutput = output;
+    decompileOutput.required     = false;
+    decompile.args.push_back(decompileOutput);
+    ca::opt::Arg all;
+    all.name = "all";
+    all.kind = ca::opt::OptKind::Flag;
+    all.help = mjt::shared::trfStr("mjt.cli.decompile.all_help");
+    decompile.args.push_back(all);
+    ca::opt::Arg decompiler;
+    decompiler.name    = "decompiler";
+    decompiler.kind    = ca::opt::OptKind::String;
+    decompiler.metavar = "<name>";
+    decompiler.help    = mjt::shared::trfStr("mjt.cli.decompile.backend_help");
+    decompiler.default_value = "cfr";
+    decompile.args.push_back(decompiler);
+    ca::opt::Arg decompilerJar;
+    decompilerJar.name    = "decompiler-jar";
+    decompilerJar.kind    = ca::opt::OptKind::String;
+    decompilerJar.metavar = "<jar>";
+    decompilerJar.help    = mjt::shared::trfStr("mjt.cli.decompile.jar_help");
+    decompile.args.push_back(decompilerJar);
+    ca::opt::Arg timeoutMs;
+    timeoutMs.name    = "timeout-ms";
+    timeoutMs.kind    = ca::opt::OptKind::String;
+    timeoutMs.metavar = "<n>";
+    timeoutMs.help    = mjt::shared::trfStr("mjt.cli.decompile.timeout_help");
+    decompile.args.push_back(timeoutMs);
+    ca::opt::Arg maxMemoryMiB;
+    maxMemoryMiB.name    = "max-memory-mib";
+    maxMemoryMiB.kind    = ca::opt::OptKind::String;
+    maxMemoryMiB.metavar = "<n>";
+    maxMemoryMiB.help    = mjt::shared::trfStr("mjt.cli.decompile.memory_help");
+    decompile.args.push_back(maxMemoryMiB);
+    root.subcommands.push_back(std::move(decompile));
+
     return root;
 }
 
@@ -285,6 +444,7 @@ int main(int argc, char* argv[])
     }
     if (path.size() == 1 && path.front() == "info") return runInfo(args);
     if (path.size() == 1 && path.front() == "mapping") return runMapping(args);
+    if (path.size() == 1 && path.front() == "decompile") return runDecompile(args);
     if (path.size() == 2 && path.front() == "jar" && path[1] == "fix") return runJarFix(args);
 
     std::cerr << ca::opt::help_text(parser.root());

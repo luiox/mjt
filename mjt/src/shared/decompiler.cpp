@@ -1033,8 +1033,18 @@ ca::StatusOr<DecompileResult> decompile(const DecompileRequest& request)
             arguments.push_back(actualInput.u8string());
             arguments.push_back("--outputdir");
             arguments.push_back(generatedRoot.u8string());
+            //单 class 输入的跨类型上下文：--extraclasspath 指向原 jar。CFR 的
+            //选项值取下一 token，与 --outputdir 同区置于输入之后。
+            if (classInput && !request.classPath.empty()) {
+                arguments.push_back("--extraclasspath");
+                arguments.push_back(request.classPath);
+            }
         }
         else {
+            //vineflower 选项必须在 source 之前（--<option>=<value> 单 token
+            //等号形）：--add-external 挂原 jar 保单类反编译的跨类型上下文。
+            if (classInput && !request.classPath.empty())
+                arguments.push_back("--add-external=" + request.classPath);
             arguments.push_back(actualInput.u8string());
             arguments.push_back(zipOutput ? output.u8string() : generatedRoot.u8string());
         }

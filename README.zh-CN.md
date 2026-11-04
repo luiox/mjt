@@ -65,10 +65,10 @@ Windows 下 exe 嵌了 `activeCodePage=UTF-8` 与 `longPathAware` 的 manifest�
 
 ## CLI 用法
 
-`mjt` 是普通命令行工具（`xmake build mjt`），首批三个面向 JAR 与 mapping
+`mjt` 是普通命令行工具（`xmake build mjt`），四个面向 JAR 与 mapping
 文件的批处理式命令。退出码约定：`0` 成功（含 `--help`）、`1` 用法错误
-（参数缺失、输入文件不存在、格式名不识别）、`2` 运行失败（打开、解析、
-修复或导出失败）。
+（参数缺失、输入文件不存在、格式名不识别、类选择器无命中）、`2` 运行失败
+（打开、解析、修复、导出或反编译失败）。
 
 ```sh
 mjt --version          # 输出版本号
@@ -118,6 +118,30 @@ mjt jar fix -i <in> -o <out>
 存在的输出文件会被替换）。报告逐条列出修了什么、保留了什么；不可修的失败
 给非零退出码与原因。输入输出必须是不同文件。
 
+### `mjt decompile` — 反编译 jar 类为 Java 源码
+
+```sh
+mjt decompile -i <jar> -c <internalName> [-o <file.java>]   # 单类
+mjt decompile -i <jar> -o <outdir> --all                    # 整 jar
+mjt decompile -i <jar> -o <out.zip> --all --decompiler vineflower   # 归档输出
+```
+
+单类模式按内部名（slash 形，如 `fixture/Alpha`）取目标类字节，落到临时目录
+短安全名（`Target.class`），后端以该文件为输入、classpath 指向原 jar 保跨
+类型上下文。类名本身从不落盘——单段超过 255 UTF-16 单元或含文件系统非法
+字符的敌意类名照样可达，且 vineflower「一个敌意类连累同 jar 全部反编译」
+的级联毒化在结构性上不再可达。带 `-o` 时源码写 `.java` 文件；省略 `-o`
+打印到 stdout。
+
+批量模式整 jar 交给后端（CFR 写源码树，vineflower 写源码树或 `.zip` 归档
+——归档条目名不受文件系统路径限制）。无法落盘的条目名会被跳过：本次运行
+继续，stderr 列出跳过清单并指向单类模式或 jasm 文本面。`--all` 显式确认
+整 jar 成本；批量缺它时退出码 `1` 并给出类数提示。
+
+公共选项（与 MCP decompile 契约对齐）：`--decompiler cfr|vineflower`（缺省
+`cfr`）、`--decompiler-jar <jar>`、`--timeout-ms <n>`（缺省 120000）、
+`--max-memory-mib <n>`（缺省 1024）。
+
 语言：文案跟随 `MJT_LANG` 环境变量（缺省 `en_US`，支持 `zh_CN`）。
 
 ## 仓库结构
@@ -125,7 +149,7 @@ mjt jar fix -i <in> -o <out>
 ```
 mjt/mcp/src/     MCP 服务器与工具集（核心产品代码）
 mjt/mcp/test/    MCP 层单测
-mjt/cli/         `mjt` CLI 二进制（info / mapping / jar fix）
+mjt/cli/         `mjt` CLI 二进制（info / mapping / jar fix / decompile）
 mjt/test/cli/    CLI 层单测
 mjt/src/shared/  MCP 工具集共用的底层能力（反编译接入、jar 重映射、workspace…）
 skills/          MCP 技能定义

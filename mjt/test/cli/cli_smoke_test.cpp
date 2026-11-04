@@ -4,6 +4,11 @@
 ///
 /// exe 定位：test_helper 以本测试 exe 所在目录为活动 builddir 目标层，`mjt`
 /// 为同层伴生产物（unittest target 经 add_deps 保证构建序）。
+///
+/// 平台注记：本文件经 std::system 拼 cmd /c 重定向语法（首尾引号剥离防护），
+/// 是 Windows 命令面专有形态；Linux 无 cmd，整文件限 _WIN32 编译（CLI 命令
+/// 核心面由其余 *_test.cpp 全平台覆盖）。
+#ifdef _WIN32
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -114,6 +119,73 @@ TEST(MjtCliSmokeTest, MappingCommandConvertsThreeFamilies)
     EXPECT_NE(cli_fixture::readFileText(tinyPath).find("tiny\t2\t0"), std::string::npos);
 }
 
+TEST(MjtCliSmokeTest, DecompileHelpListsCommand)
+{
+    const auto run = runCli("--help");
+    EXPECT_EQ(run.exitCode, 0);
+    EXPECT_NE(run.output.find("decompile"), std::string::npos);
+}
+
+TEST(MjtCliSmokeTest, DecompileWithoutModeIsUsageError)
+{
+    const auto jar = cli_fixture::writeInfoJar();
+    const auto run = runCli("decompile -i \"" + jar.string() + "\"");
+    EXPECT_EQ(run.exitCode, 1);
+    EXPECT_NE(run.output.find("-c"), std::string::npos);
+}
+
+TEST(MjtCliSmokeTest, DecompileBatchWithoutAllIsUsageErrorWithClassCount)
+{
+    const auto jar = cli_fixture::writeInfoJar();
+    const auto run = runCli("decompile -i \"" + jar.string() + "\" -o \"decompile_out\"");
+    EXPECT_EQ(run.exitCode, 1);
+    //提示带类数（info 语料 3 个 class）并点名 --all。
+    EXPECT_NE(run.output.find("--all"), std::string::npos);
+    EXPECT_NE(run.output.find("3"), std::string::npos);
+}
+
+TEST(MjtCliSmokeTest, DecompileSingleClassOutputMustBeJavaFile)
+{
+    const auto jar = cli_fixture::writeInfoJar();
+    const auto run =
+        runCli("decompile -i \"" + jar.string() + "\" -c fixture/Alpha -o alpha.txt");
+    EXPECT_EQ(run.exitCode, 1);
+    EXPECT_NE(run.output.find(".java"), std::string::npos);
+}
+
+TEST(MjtCliSmokeTest, DecompileUnknownBackendIsUsageError)
+{
+    const auto jar = cli_fixture::writeInfoJar();
+    const auto run =
+        runCli("decompile -i \"" + jar.string() + "\" -c fixture/Alpha --decompiler bogus");
+    EXPECT_EQ(run.exitCode, 1);
+    EXPECT_NE(run.output.find("bogus"), std::string::npos);
+}
+
+TEST(MjtCliSmokeTest, DecompileNonPositiveLimitsAreUsageErrors)
+{
+    const auto jar = cli_fixture::writeInfoJar();
+    EXPECT_EQ(runCli("decompile -i \"" + jar.string() + "\" -c fixture/Alpha --timeout-ms 0")
+                  .exitCode,
+              1);
+    EXPECT_EQ(runCli("decompile -i \"" + jar.string() + "\" -c fixture/Alpha --max-memory-mib abc")
+                  .exitCode,
+              1);
+}
+
+TEST(MjtCliSmokeTest, DecompileZipOutputWithCfrIsUsageError)
+{
+    const auto jar = cli_fixture::writeInfoJar();
+    const auto outZip = test::getTempOutPath("mjt_cli_smoke_zipout.zip");
+    std::error_code ec;
+    std::filesystem::remove(outZip, ec);
+    const auto run = runCli("decompile -i \"" + jar.string() + "\" -o \"" + outZip.string() +
+                            "\" --all --decompiler cfr");
+    EXPECT_EQ(run.exitCode, 1);
+    EXPECT_NE(run.output.find("zip"), std::string::npos);
+    EXPECT_FALSE(std::filesystem::is_regular_file(outZip));
+}
+
 TEST(MjtCliSmokeTest, JarFixCommandRepairsAndReports)
 {
     const auto inJar  = cli_fixture::writeBrokenJar();
@@ -130,3 +202,5 @@ TEST(MjtCliSmokeTest, JarFixCommandRepairsAndReports)
     const auto uris = cli_fixture::jarEntryUris(outJar);
     EXPECT_EQ(std::find(uris.begin(), uris.end(), "fixture/Broken.class"), uris.end());
 }
+
+#endif   // _WIN32

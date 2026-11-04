@@ -52,7 +52,7 @@ On Windows the executable embeds an `activeCodePage=UTF-8` and `longPathAware` m
 
 ## CLI usage
 
-The `mjt` binary is a plain command-line tool (`xmake build mjt`) covering three batch-style commands over JARs and mapping files. Exit codes: `0` success (including `--help`), `1` usage error (missing argument, missing input file, unknown format name), `2` runtime failure (open, parse, repair or export failure).
+The `mjt` binary is a plain command-line tool (`xmake build mjt`) covering four batch-style commands over JARs and mapping files. Exit codes: `0` success (including `--help`), `1` usage error (missing argument, missing input file, unknown format name, class selector without a match), `2` runtime failure (open, parse, repair, export or decompile failure).
 
 ```sh
 mjt --version          # print tool version
@@ -92,6 +92,20 @@ mjt jar fix -i <in> -o <out>
 
 Scans the jar, removes entries that cannot be repaired (class bytes failing bytecode validation, `.class` entries that are not class bytes, and known corrupt-output marker entries), and writes a repaired copy to `<out>` (an existing output file is replaced). The report lists what was removed and what was kept per entry; an unrecoverable failure exits non-zero with the reason. Input and output must be different files.
 
+### `mjt decompile` — decompile JAR classes to Java sources
+
+```sh
+mjt decompile -i <jar> -c <internalName> [-o <file.java>]   # single class
+mjt decompile -i <jar> -o <outdir> --all                    # whole jar
+mjt decompile -i <jar> -o <out.zip> --all --decompiler vineflower   # zip output
+```
+
+Single-class mode fetches the target class bytes by internal name (slash form, e.g. `fixture/Alpha`), stages them under a short safe name (`Target.class`) and runs the backend with the original jar attached as classpath for cross-type context. The class name itself never materializes on disk, so classes whose names exceed the 255 UTF-16 unit file system limit (or contain characters that cannot appear in file names) stay reachable — including the vineflower cascade failure where one hostile class used to poison every decompile call on its jar. With `-o` the source lands in a `.java` file; without it the source prints to stdout.
+
+Batch mode hands the whole jar to the backend (CFR writes a source tree, vineflower writes a source tree or a `.zip` archive — archive entries are not bound by path limits). Entries whose names cannot be written to disk are skipped: the run continues, stderr lists the skipped entries and points to single-class mode or the jasm text facet. `--all` confirms the whole-jar cost; batch without it exits `1` with the class count.
+
+Shared options (aligned with the MCP decompile contract): `--decompiler cfr|vineflower` (default `cfr`), `--decompiler-jar <jar>`, `--timeout-ms <n>` (default 120000), `--max-memory-mib <n>` (default 1024).
+
 Locale: message text follows the `MJT_LANG` environment variable (`en_US` default, `zh_CN` supported).
 
 ## Repository layout
@@ -99,7 +113,7 @@ Locale: message text follows the `MJT_LANG` environment variable (`en_US` defaul
 ```
 mjt/mcp/src/     MCP server and tool set (core product code)
 mjt/mcp/test/    MCP-layer unit tests
-mjt/cli/         `mjt` CLI binary (info / mapping / jar fix)
+mjt/cli/         `mjt` CLI binary (info / mapping / jar fix / decompile)
 mjt/test/cli/    CLI-layer unit tests
 mjt/src/shared/  capabilities shared across the MCP tool set
                  (decompiler integration, jar remapping, workspace…)

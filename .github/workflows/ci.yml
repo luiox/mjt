@@ -1,6 +1,6 @@
 # mjt CI（Linux + Windows；pysdk 链路仅 Windows）
 #
-# 范围：mjt-mcp 链路 + mjt_mcp_unittest；with_pysdk job 产出 mjt-mcp.exe +
+# 范围：mjt-mcp 链路 + mjt_mcp_unittest + mjt CLI 链路（mjt / mjt_cli_unittest）；with_pysdk job 产出 mjt-mcp.exe +
 # mjt.pyd + mjt_util.py 并跑 pysdk 组件测试（嵌入解释器 selftest + --script
 # 退出码契约 + 宿主脚本冒烟）。
 # 依赖：luiox-repo git 直连包（libca/libmcp/libjstr/libjbytecode/libjzip/
@@ -59,10 +59,14 @@ jobs:
       - name: Build
         run: xmake build -y mjt-mcp
       - name: Build tests
-        run: xmake build -y mjt_mcp_unittest
+        run: |
+          xmake build -y mjt_mcp_unittest
+          xmake build -y mjt_cli_unittest
 
       - name: Run unit tests
-        run: xmake run mjt_mcp_unittest --gtest_brief=1
+        run: |
+          xmake run mjt_mcp_unittest --gtest_brief=1
+          xmake run mjt_cli_unittest --gtest_brief=1
 
   build-and-test-windows:
     name: build & test (windows)
@@ -99,11 +103,15 @@ jobs:
         run: xmake build -y mjt-mcp
       - name: Build tests
         shell: bash
-        run: xmake build -y mjt_mcp_unittest
+        run: |
+          xmake build -y mjt_mcp_unittest
+          xmake build -y mjt_cli_unittest
 
       - name: Run unit tests
         shell: bash
-        run: xmake run mjt_mcp_unittest --gtest_brief=1
+        run: |
+          xmake run mjt_mcp_unittest --gtest_brief=1
+          xmake run mjt_cli_unittest --gtest_brief=1
 
   build-and-test-windows-pysdk:
     name: build & test (windows, with_pysdk)

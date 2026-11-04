@@ -59,6 +59,12 @@ struct DecompileRequest
     std::string mappingPolicy = "bytecode-only";
     ///@brief 临时目录根路径；为空时使用系统临时目录。
     std::string tempRoot;
+    ///@brief 单 class 输入的附加 classpath（原 jar 等跨类型上下文；空 = 不传）。
+    ///
+    ///仅 class 输入生效：CFR 经 `--extraclasspath <path>`（选项值取下一
+    ///token，置于输入之后），vineflower 经 `--add-external=<path>`（单 token
+    ///等号形，置于 source 之前）。jar 输入自带全部上下文，不消费本字段。
+    std::string classPath;
     ///@brief 可选协作取消查询；返回 true 时终止正在运行的反编译器子进程。
     std::function<bool()> cancellationRequested;
 };

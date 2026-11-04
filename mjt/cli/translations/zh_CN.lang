@@ -3,7 +3,7 @@
 # {n} 为位置占位符，可重复/可换序
 
 # ── 根 / 共享 ───────────────────────────────────────────────
-mjt.cli.root.help=JVM 字节码工具（info / mapping / jar fix）
+mjt.cli.root.help=JVM 字节码工具（info / mapping / jar fix / decompile）
 mjt.cli.root.version_help=输出版本号并退出
 mjt.cli.opt.input=输入路径（-i <path>）
 mjt.cli.opt.output=输出路径（-o <path>）；不得与输入同一文件
@@ -53,3 +53,35 @@ mjt.cli.fix.reason.invalid_class_entry=.class 条目无法识别为合法 class 
 mjt.cli.fix.reason.corrupt_output_marker=资源名命中已知损坏输出标记
 mjt.cli.err.fix_same_path=输入与输出必须是不同文件: {0}
 mjt.cli.err.fix_output_busy=无法替换已存在的输出文件: {0}
+
+# ── decompile ───────────────────────────────────────────────
+mjt.cli.decompile.help=反编译 jar 中的类为 Java 源码（CFR / vineflower）；单类模式对敌意类名免疫
+mjt.cli.decompile.class_help=要反编译的类内部名（slash 形，如 fixture/Alpha）；输出写 -o 或 stdout
+mjt.cli.decompile.all_help=确认整 jar 批量反编译（批量模式必填）
+mjt.cli.decompile.backend_help=反编译后端: cfr（缺省）或 vineflower
+mjt.cli.decompile.jar_help=显式反编译器 JAR 路径
+mjt.cli.decompile.timeout_help=子进程超时（毫秒，缺省 120000）
+mjt.cli.decompile.memory_help=后端 JVM 最大堆内存 MiB（缺省 1024）
+mjt.cli.decompile.err.need_mode=需要 -c <class>（单类模式）或 -o <outdir|.zip>（批量模式）之一
+mjt.cli.decompile.err.batch_output_missing=批量模式需要输出路径（-o <outdir> 或 <out>.zip）
+mjt.cli.decompile.err.need_all=批量反编译会处理 jar 内全部 {0} 个类；加 --all 确认执行
+mjt.cli.decompile.err.single_output_java=单类输出的 -o 必须是 .java 文件（或省略 -o 打印到 stdout）
+mjt.cli.decompile.err.class_not_found=jar 内未找到类: {0}
+mjt.cli.decompile.err.open_failed=无法打开 jar: {0}
+mjt.cli.decompile.err.invalid_value={0} 的值无效: {1}
+mjt.cli.decompile.err.stage_failed=暂存失败: {0}
+mjt.cli.decompile.err.readback_failed=无法读回反编译产物: {0}
+mjt.cli.decompile.err.temp_failed=无法创建反编译临时目录
+mjt.cli.decompile.single_done=已反编译 {0}
+mjt.cli.decompile.backend_line=后端: {0} ({1})
+mjt.cli.decompile.batch_classes=类数: {0}
+mjt.cli.decompile.batch_done_dir=源码目录已写出: {0}
+mjt.cli.decompile.batch_done_zip=源码归档已写出: {0}
+mjt.cli.decompile.batch_skipped=跳过 {0} 个无法落盘的条目:
+mjt.cli.decompile.batch_skipped_reason={0} [{1}]
+mjt.cli.decompile.batch_skipped_hint=这些类可用单类模式（-c <class>）反编译，或经 jasm 文本面读取
+mjt.cli.decompile.reason.segment_too_long=名字单段超过文件系统 255 UTF-16 单元上限
+mjt.cli.decompile.reason.illegal_character=名字单段含文件系统非法字符
+mjt.cli.decompile.reason.trailing_dot_or_space=名字单段以点或空格结尾（Windows 落盘时被剥离，文件无法存在）
+mjt.cli.decompile.reason.parent_or_self=名字含相对路径段（. 或 ..）
+mjt.cli.decompile.reason.empty_segment=名字含空路径段

@@ -13,8 +13,13 @@
 #include <string_view>
 #include <vector>
 
+#include "jbc/jbc.hpp"
 #include "libca/str/utf8_string.hpp"
 
+#include "shared/decompiler.hpp"
+
+#include "mjbase/jar/jar_reader.hpp"
+#include "mjbase/jar/jar_writer.hpp"
 #include "mjbase/jasm/jvm_jasm_service.hpp"
 #include "mjbase/model/resource_container.hpp"
 #include "mjbase/model/resource_helper.hpp"
@@ -186,6 +191,168 @@ inline std::vector<std::string> jarEntryUris(const std::filesystem::path& jar)
     });
     std::sort(uris.begin(), uris.end());
     return uris;
+}
+
+// ── decompile 语料（#63 敌意名 + perf 大 jar）───────────────────────
+
+/// 敌意类名长度（单段 UTF-16 单元数）：Windows 单段文件名上限的 ~85 倍，
+/// 落盘必然失败（#63 样本形态：单段全空格 + ".class"）。
+inline constexpr std::size_t kHostileNameLength = 21845;
+
+/// 敌意类内部名：kHostileNameLength 个空格（合法 JVM 名——不含 '/' 与 '.'）。
+inline std::string hostileInternalName() { return std::string(kHostileNameLength, ' '); }
+
+/// 模板类（jasm 汇编一次，改名产多类）。方法体带常量加载 + 返回（有内容）。
+inline std::vector<ca::u8> assembleRenamedClass(const std::string& internalName)
+{
+    const std::string source =
+        ".super java/lang/Object\n"
+        ".class public super fixture/Template {\n"
+        "  .field public counter I\n"
+        "  .method public static act (I)I {\n"
+        "    code: {\n"
+        "      iload_0\n"
+        "      iconst_1\n"
+        "      iadd\n"
+        "      ireturn\n"
+        "    }\n"
+        "  }\n"
+        "}\n";
+    const auto templateBytes = assembleClass(source);
+    //this_class 改写（libjbc 会话面；模板方法体零触碰，与 MCP fixture 同款）。
+    auto opened = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(templateBytes));
+    if (!opened.is_ok()) throw std::runtime_error("fixture jbc session failed");
+    auto session = std::move(opened).unwrap();
+    jbc::ir::ClassUnit& unit = session->unit();
+    unit.thisClass = unit.symbols().intern(internalName);
+    if (!session->commitClassMetadata().is_ok())
+        throw std::runtime_error("fixture class rename failed");
+    auto written = jbc::core::writeClass(session->backing());
+    if (!written.is_ok()) throw std::runtime_error("fixture class write failed");
+    return std::move(written).unwrap();
+}
+
+/// decompile 单类语料 jar：fixture/Alpha（有字段有方法体）+ fixture/Api 接口 +
+/// 1 个常规资源。Alpha 引用 Api（跨类型上下文/classpath 语义的观察点）。
+inline std::filesystem::path writeDecompileJar()
+{
+    mjbase::model::ResourceContainer container;
+    const std::string alphaSource =
+        ".super java/lang/Object\n"
+        ".class public super fixture/Alpha {\n"
+        "  .field private partner Lfixture/Api;\n"
+        "  .method public static act (I)I {\n"
+        "    code: {\n"
+        "      iload_0\n"
+        "      iconst_2\n"
+        "      imul\n"
+        "      ireturn\n"
+        "    }\n"
+        "  }\n"
+        "}\n";
+    container.addResource("fixture/Alpha.class",
+                          std::make_unique<mjbase::model::ClassResource>(
+                              "fixture/Alpha.class", assembleClass(alphaSource)));
+    container.addResource("fixture/Api.class",
+                          std::make_unique<mjbase::model::ClassResource>(
+                              "fixture/Api.class", assembleClass(kApiSource)));
+    container.addResource("data/notes.txt",
+                          std::make_unique<mjbase::model::UnknownResource>(
+                              "data/notes.txt", std::vector<ca::u8>{'o', 'k'}));
+    const auto path = test::getTempOutPath("mjt_cli_decompile_fixture.jar");
+    mjbase::model::ResourceHelper::exportToJar(container, path.string());
+    return path;
+}
+
+/// #63 敌意名语料 jar：正常类 fixture/Alpha + 敌意名类（kHostileNameLength
+/// 个空格 + ".class" 条目，内部名同为该空格名）。条目经 JarWriter 原始字节
+/// 直写（不经模型层校验——敌意条目必须原样存活到 workspace/后端边界）。
+inline std::filesystem::path writeHostileNameJar()
+{
+    const auto alphaBytes = assembleRenamedClass("fixture/Alpha");
+    const auto hostileBytes = assembleRenamedClass(hostileInternalName());
+    const auto path = test::getTempOutPath("mjt_cli_decompile_hostile_fixture.jar");
+    mjbase::jar::JarWriter writer(
+        ca::str::Utf8StringRef::from_data(reinterpret_cast<const ca::u8*>(path.string().data()),
+                                          path.string().size()));
+    auto written = writer.write([&](mjbase::jar::IEntryWriter& entries) {
+        const std::string alphaEntry = "fixture/Alpha.class";
+        entries.writeEntry(
+            ca::str::Utf8StringRef::from_data(
+                reinterpret_cast<const ca::u8*>(alphaEntry.data()), alphaEntry.size()),
+            alphaBytes);
+        const std::string hostileEntry = hostileInternalName() + ".class";
+        entries.writeEntry(
+            ca::str::Utf8StringRef::from_data(
+                reinterpret_cast<const ca::u8*>(hostileEntry.data()), hostileEntry.size()),
+            hostileBytes);
+        const std::string notes = "data/notes.txt";
+        entries.writeEntry(
+            ca::str::Utf8StringRef::from_data(reinterpret_cast<const ca::u8*>(notes.data()),
+                                              notes.size()),
+            std::vector<ca::u8>{'o', 'k'});
+    });
+    if (written.is_err()) throw std::runtime_error("failed to write hostile fixture jar");
+    return path;
+}
+
+/// perf 语料 jar：count 个有内容方法体的类（模板一次汇编，逐类改名），
+/// 计数含对照资源条目。生成走模型层（ClassResource + exportToJar）。
+inline std::filesystem::path writePerfClassListJar(ca::usize count)
+{
+    mjbase::model::ResourceContainer container;
+    for (ca::usize index = 0; index < count; ++index) {
+        const auto internalName = "perf/Subject" + std::to_string(index);
+        const auto uri          = internalName + ".class";
+        container.addResource(uri,
+                              std::make_unique<mjbase::model::ClassResource>(
+                                  uri, assembleRenamedClass(internalName)));
+    }
+    container.addResource("data/notes.txt",
+                          std::make_unique<mjbase::model::UnknownResource>(
+                              "data/notes.txt", std::vector<ca::u8>{'o', 'k'}));
+    const auto path = test::getTempOutPath("mjt_cli_perf_class_list.jar");
+    mjbase::model::ResourceHelper::exportToJar(container, path.string());
+    return path;
+}
+
+/// perf mapping 语料（SRG 形态）：count 组 CL/FD/MD 行。
+inline std::string writePerfSrgMapping(ca::usize count)
+{
+    std::string text;
+    text.reserve(count * 128);
+    for (ca::usize index = 0; index < count; ++index) {
+        const auto name = "perf/Subject" + std::to_string(index);
+        text += "CL: " + name + " perf/Renamed" + std::to_string(index) + "\n";
+        text += "FD: " + name + "/counter I perf/Renamed" + std::to_string(index) +
+                "/renamedCounter I\n";
+        text += "MD: " + name + "/act (I)I perf/Renamed" + std::to_string(index) +
+                "/doAct (I)I\n";
+    }
+    return text;
+}
+
+/// 后端可用性门（真后端执行用例的 SKIP 条款）：decompiler JAR 与 java 均按
+/// 与产品相同的发现序解析；env（MJT_CFR_JAR / MJT_VINEFLOWER_JAR）可在本机
+/// 注入真 jar，CI 无注入时整组用例跳过（与 probeClang 先例同口径）。
+struct BackendProbe
+{
+    bool        available = false;
+    std::string decompilerJar;
+    std::string reason;
+};
+
+inline BackendProbe probeBackend(mjt::DecompilerKind kind)
+{
+    BackendProbe probe;
+    const auto inspect = mjt::inspectDecompiler(kind);
+    if (!inspect.artifactAvailable) probe.reason = "decompiler jar not found (set MJT_CFR_JAR / MJT_VINEFLOWER_JAR)";
+    else if (!inspect.javaAvailable) probe.reason = "java executable not found";
+    else {
+        probe.available      = true;
+        probe.decompilerJar  = inspect.decompilerJar;
+    }
+    return probe;
 }
 
 }   // namespace cli_fixture

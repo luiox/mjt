@@ -1,6 +1,6 @@
 /// @file        commands.hpp
-/// @brief       `mjt` CLI 命令核心面：info / mapping / jar fix 三个命令的
-///              纯逻辑入口与报告结构（main 与 gtest 共链）。
+/// @brief       `mjt` CLI 命令核心面：info / mapping / jar fix / decompile
+///              四个命令的纯逻辑入口与报告结构（main 与 gtest 共链）。
 ///
 /// 分层契约：本模块只做「打开制品 → 调 workspace/mjbase 既有面 → 产出可
 /// 断言的报告结构」，命令行解析（ca::opt）与退出码映射归 main.cpp；渲染
@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "libca/core/result.hpp"
+#include "shared/decompiler.hpp"
 #include "workspace/workspace_types.hpp"
 
 namespace mjt {
@@ -133,5 +134,121 @@ ca::Result<FixReport, workspace::WorkspaceErrorInfo> fixJar(const std::string& i
 
 /// @brief 渲染 jar fix 人类可读报告（i18n 标签；问题按 (uri, kind) 序）。
 void renderFixReport(const FixReport& report, const std::string& outJar, OutputSink& sink);
+
+// ── decompile ──────────────────────────────────────────────────────
+
+/// @brief decompile 命令错误：类别定退出码分支，message 为已渲染文案。
+///
+/// UnknownBackend / InvalidArgument / ClassNotFound 是用户可纠正的输入问题
+/// （→ 退出码 1）；Runtime 是后端执行 / IO / 环境问题（→ 退出码 2）。
+struct DecompileError
+{
+    enum class Kind
+    {
+        UnknownBackend, ///< --decompiler 名不识别（用法错误 → 退出码 1）
+        InvalidArgument, ///< 旗标值 / 输出扩展名等用法问题（→ 退出码 1）
+        ClassNotFound,  ///< -c 选择器在 jar 内无命中（→ 退出码 1）
+        Runtime,        ///< 后端执行 / 暂存 / 落盘失败（→ 退出码 2）
+    };
+    Kind        kind    = Kind::Runtime;
+    std::string message;
+};
+
+/// @brief 单类 / 批量反编译的公共选项（CLI 旗标直传；--timeout-ms /
+///        --max-memory-mib / --decompiler-jar 与 MCP decompile 契约字段对齐）。
+struct DecompileCliOptions
+{
+    DecompilerKind kind         = DecompilerKind::Cfr; ///< 后端类型
+    std::string    backendName  = "cfr";  ///< 稳定后端 ID（"cfr" / "vineflower"）
+    std::string    decompilerJar;         ///< 显式反编译器 JAR；空 = 按发现序解析
+    ca::i64        timeoutMs    = 120000; ///< 子进程超时（毫秒）
+    ca::i64        maxMemoryMiB = 1024;   ///< 后端 JVM 最大堆（MiB）
+};
+
+/// @brief 单类反编译报告：读回的源码与后端元数据（结构断言共用）。
+struct SingleDecompileReport
+{
+    std::string internalName;    ///< 请求的类内部名（原样回显）
+    std::string backend;         ///< 稳定后端 ID
+    std::string decompilerJar;   ///< 实际使用的反编译器 JAR
+    std::string source;          ///< 读回的 Java 源码（仅 stdout 模式填充；
+                                 ///  -o 模式由共享层直接落盘，不驻内存）
+};
+
+/// @brief 批量反编译的单条跳过记录（敌意名预检产物）。
+struct SkippedEntry
+{
+    std::string entryName;  ///< 条目名（规范 UTF-8 形，超长截断展示）
+    std::string reason;     ///< 稳定原因名（segment_too_long / illegal_character /
+                            ///  trailing_dot_or_space / parent_or_self / empty_segment）
+};
+
+/// @brief 批量反编译报告：后端元数据 + 预检跳过清单（渲染与断言共用）。
+struct BatchDecompileReport
+{
+    std::string              backend;         ///< 稳定后端 ID
+    std::string              decompilerJar;   ///< 实际使用的反编译器 JAR
+    std::string              outputPath;      ///< 输出目录或 .zip（原样回显）
+    bool                     zipOutput = false; ///< true = 输出是 vineflower 归档
+    ca::usize                classEntries = 0; ///< jar 内 class 条目总数
+    ca::usize                stagedEntries = 0; ///< 交给后端的条目数（原 jar 直跑 = classEntries）
+    std::vector<SkippedEntry> skipped;      ///< 无法落盘的条目（按名字典序）
+};
+
+/// @brief 解析 --decompiler 旗标值：ASCII 小写归一后匹配 cfr / vineflower。
+///        未知名返回 UnknownBackend（退出码 1）。
+ca::Result<DecompilerKind, DecompileError> parseDecompilerBackendName(const std::string& name);
+
+/// @brief 敌意名预检：条目名（原始字节）能否在本机文件系统落盘。
+///
+/// 规范化（合法 UTF-8 原样 / GBK → UTF-8 / 残字节 U+FFFD）后按 '/' 与 '\\'
+/// 分段，任一段命中以下之一即不安全：空段；"." / ".."；UTF-16 单元数
+/// 超 255；含文件系统非法字符（< > : " | ? * 与控制字符）；以 '.' 或 ' '
+/// 结尾（Windows 落盘时被剥离，文件无法存在）。单类模式不经本检查（短
+/// 安全名方案天然免疫）；批量模式据此跳过并披露。
+/// @return safe = 是否可落盘；reason = 不安全时的稳定原因名（i18n key 后缀）。
+struct EntryNameSafety
+{
+    bool        safe   = true;
+    std::string reason;
+};
+EntryNameSafety classifyEntryNameForDisk(const std::string& rawEntryName);
+
+/// @brief 统计 jar 内 class 条目数（后缀 ".class" 大小写不敏感；仅 central
+///        directory 元数据，不解压）。批量模式 --all 缺席提示带出类数。
+ca::Result<ca::usize, DecompileError> countJarClassEntries(const std::string& jarPath);
+
+/// @brief 单类反编译：目标类字节写临时目录短安全名（Target.class），后端以
+///        单文件输入 + classpath 指向原 jar 保跨类型上下文，产出读回。
+///
+/// 敌意名免疫（#63 A/B 根治）：类名从不落盘——短安全名是唯一物化路径；
+/// 整 jar 不跑批量，敌意类无法级联毒化。
+/// @param jarPath       输入 jar（同时作为 classpath 上下文直传后端）
+/// @param internalName  类内部名（slash 形；workspace readClassBytes 解析）
+/// @param outputJavaPath 输出 .java 路径；空 = 读入内存走 stdout（此时输出
+///                        落在临时目录，返回前清理）
+/// @param options       后端 / 超时 / 内存选项
+ca::Result<SingleDecompileReport, DecompileError> decompileSingleClass(
+    const std::string& jarPath, const std::string& internalName,
+    const std::string& outputJavaPath, const DecompileCliOptions& options);
+
+/// @brief 批量反编译：敌意名预检 → （有敌意名时）字节级快照暂存 jar（剔除
+///        无法落盘条目，其余条目零漂移拷贝）→ 后端原生批量（outdir 落盘 /
+///        vineflower 归档输出）。
+/// @param jarPath    输入 jar
+/// @param outputPath 输出目录或 .zip（.zip 仅 vineflower）
+/// @param options    后端 / 超时 / 内存选项
+ca::Result<BatchDecompileReport, DecompileError> decompileJarBatch(
+    const std::string& jarPath, const std::string& outputPath,
+    const DecompileCliOptions& options);
+
+/// @brief 渲染单类反编译 stdout 摘要（仅 -o 模式；stdout 源码模式不落摘要）。
+void renderSingleDecompileSummary(const SingleDecompileReport& report, OutputSink& sink);
+
+/// @brief 渲染批量反编译 stdout 摘要（后端 / 类数 / 落点）。
+void renderBatchDecompileSummary(const BatchDecompileReport& report, OutputSink& sink);
+
+/// @brief 渲染批量预检跳过清单到 stderr（N 项 + 单类模式 / jasm 指路）。
+void renderSkippedEntries(const BatchDecompileReport& report, OutputSink& sink);
 
 }   // namespace mjt::cli
