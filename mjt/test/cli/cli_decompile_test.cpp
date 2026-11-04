@@ -140,19 +140,21 @@ TEST(MjtCliDecompilePrecheckTest, UnknownBackendNameIsUsageError)
 
 // ── 单类模式（真后端，按发现序门控）──────────────────────────────────
 
-/// 门控 helper：后端不可用时 SKIP（经 ASSERT_NO_FATAL_FAILURE 传播），可用时
-/// 填充选项。
-void requireBackend(mjt::DecompilerKind kind, DecompileCliOptions& options)
+/// 门控 helper：后端可用时填充选项并返回 true；不可用返回 false（调用方在
+/// TEST 体里 GTEST_SKIP——gtest 的 skip 在子函数里只会记录结果，不会截断
+/// TEST 体，后续断言仍会跑，windows CI 实证）。
+bool requireBackend(mjt::DecompilerKind kind, DecompileCliOptions& options)
 {
     const auto probe = cli_fixture::probeBackend(kind);
-    if (!probe.available) GTEST_SKIP() << probe.reason;
+    if (!probe.available) return false;
     options = backendOptions(kind, probe.decompilerJar);
+    return true;
 }
 
 TEST(MjtCliDecompileBackendTest, SingleClassWritesSourceAndHonorsOutputPath)
 {
     DecompileCliOptions options;
-    ASSERT_NO_FATAL_FAILURE(requireBackend(mjt::DecompilerKind::Cfr, options));
+    if (!requireBackend(mjt::DecompilerKind::Cfr, options)) GTEST_SKIP() << "decompiler backend not available";
     const auto jar    = cli_fixture::writeDecompileJar();
     const auto outPath = test::getTempOutPath("mjt_cli_decompile_alpha.java");
     std::error_code ec;
@@ -168,7 +170,7 @@ TEST(MjtCliDecompileBackendTest, SingleClassWritesSourceAndHonorsOutputPath)
 TEST(MjtCliDecompileBackendTest, SingleClassToStdoutModeReturnsSource)
 {
     DecompileCliOptions options;
-    ASSERT_NO_FATAL_FAILURE(requireBackend(mjt::DecompilerKind::Cfr, options));
+    if (!requireBackend(mjt::DecompilerKind::Cfr, options)) GTEST_SKIP() << "decompiler backend not available";
     const auto jar = cli_fixture::writeDecompileJar();
 
     auto report = decompileSingleClass(jar.string(), "fixture/Api", "", options);
@@ -188,7 +190,7 @@ TEST(MjtCliDecompileBackendTest, HostileNameDoesNotPoisonNormalClassesOnBothBack
     const std::string hostileName = cli_fixture::hostileInternalName();
     for (const auto kind : {mjt::DecompilerKind::Cfr, mjt::DecompilerKind::Vineflower}) {
         DecompileCliOptions options;
-        ASSERT_NO_FATAL_FAILURE(requireBackend(kind, options));
+        if (!requireBackend(kind, options)) GTEST_SKIP() << "decompiler backend not available";
 
         //同 jar 正常类不受敌意类级联毒化（#63 A 修复门）。
         auto normal = decompileSingleClass(jar.string(), "fixture/Alpha", "", options);
@@ -201,7 +203,7 @@ TEST(MjtCliDecompileBackendTest, HostileNameDoesNotPoisonNormalClassesOnBothBack
 TEST(MjtCliDecompileBackendTest, HostileNameClassReachableViaCfrTruncation)
 {
     DecompileCliOptions options;
-    ASSERT_NO_FATAL_FAILURE(requireBackend(mjt::DecompilerKind::Cfr, options));
+    if (!requireBackend(mjt::DecompilerKind::Cfr, options)) GTEST_SKIP() << "decompiler backend not available";
     const auto jar = cli_fixture::writeHostileNameJar();
     auto hostile =
         decompileSingleClass(jar.string(), cli_fixture::hostileInternalName(), "", options);
@@ -212,7 +214,7 @@ TEST(MjtCliDecompileBackendTest, HostileNameClassReachableViaCfrTruncation)
 TEST(MjtCliDecompileBackendTest, HostileNameClassOnVineflowerFailsLoud)
 {
     DecompileCliOptions options;
-    ASSERT_NO_FATAL_FAILURE(requireBackend(mjt::DecompilerKind::Vineflower, options));
+    if (!requireBackend(mjt::DecompilerKind::Vineflower, options)) GTEST_SKIP() << "decompiler backend not available";
     const auto jar = cli_fixture::writeHostileNameJar();
     auto hostile =
         decompileSingleClass(jar.string(), cli_fixture::hostileInternalName(), "", options);
@@ -227,7 +229,7 @@ TEST(MjtCliDecompileBackendTest, HostileNameClassOnVineflowerFailsLoud)
 TEST(MjtCliDecompileBackendTest, BatchWritesSourcesAndSkipsHostileEntries)
 {
     DecompileCliOptions options;
-    ASSERT_NO_FATAL_FAILURE(requireBackend(mjt::DecompilerKind::Vineflower, options));
+    if (!requireBackend(mjt::DecompilerKind::Vineflower, options)) GTEST_SKIP() << "decompiler backend not available";
     const auto jar = cli_fixture::writeHostileNameJar();
     const auto outDir = test::getTempOutPath("mjt_cli_decompile_batch_out.keep");
     std::error_code ec;
@@ -251,7 +253,7 @@ TEST(MjtCliDecompileBackendTest, BatchWritesSourcesAndSkipsHostileEntries)
 TEST(MjtCliDecompileBackendTest, BatchZipOutputWritesVineflowerArchive)
 {
     DecompileCliOptions options;
-    ASSERT_NO_FATAL_FAILURE(requireBackend(mjt::DecompilerKind::Vineflower, options));
+    if (!requireBackend(mjt::DecompilerKind::Vineflower, options)) GTEST_SKIP() << "decompiler backend not available";
     const auto jar = cli_fixture::writeDecompileJar();
     const auto outZip = test::getTempOutPath("mjt_cli_decompile_batch_out.zip");
     std::error_code ec;
@@ -289,7 +291,7 @@ TEST(MjtCliDecompileBackendTest, MissingBackendJarFailsLoudWithProbedList)
 TEST(MjtCliDecompileBackendTest, TimeoutKillsBackendAndFailsLoud)
 {
     DecompileCliOptions options;
-    ASSERT_NO_FATAL_FAILURE(requireBackend(mjt::DecompilerKind::Cfr, options));
+    if (!requireBackend(mjt::DecompilerKind::Cfr, options)) GTEST_SKIP() << "decompiler backend not available";
     options.timeoutMs = 1;   //毫秒级超时：子进程必然被击杀
     const auto jar = cli_fixture::writeDecompileJar();
     auto report = decompileSingleClass(jar.string(), "fixture/Alpha", "", options);

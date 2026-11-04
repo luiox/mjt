@@ -31,6 +31,7 @@ class CapturedSink
 public:
     CapturedSink()
         : file_(std::tmpfile())
+        , sink_(file_)
     {}
     ~CapturedSink()
     {
@@ -39,7 +40,9 @@ public:
     CapturedSink(const CapturedSink&)            = delete;
     CapturedSink& operator=(const CapturedSink&) = delete;
 
-    mjt::OutputSink sink() { return mjt::OutputSink(file_); }
+    //返回引用而非值：OutputSink 非 const 左值引用形参不能绑右值（MSVC 扩展
+    //放行、g++ 拒绝——linux CI 实证）。
+    mjt::OutputSink& sink() { return sink_; }
 
     std::string text()
     {
@@ -53,7 +56,8 @@ public:
     }
 
 private:
-    std::FILE* file_ = nullptr;
+    std::FILE*     file_ = nullptr;
+    mjt::OutputSink sink_;
 };
 
 }   // namespace
