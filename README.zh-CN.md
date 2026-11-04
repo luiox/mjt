@@ -65,10 +65,10 @@ Windows 下 exe 嵌了 `activeCodePage=UTF-8` 与 `longPathAware` 的 manifest�
 
 ## CLI 用法
 
-`mjt` 是普通命令行工具（`xmake build mjt`），六个面向 JAR 与 mapping
+`mjt` 是普通命令行工具（`xmake build mjt`），九个面向 JAR 与 mapping
 文件的批处理式命令。退出码约定：`0` 成功（含 `--help`）、`1` 用法错误
 （参数缺失、输入文件不存在、格式名不识别、类选择器无命中、旗标值非法）、
-`2` 运行失败（打开、解析、修复、导出、反编译、抽取或扫描失败）。
+`2` 运行失败（打开、解析、修复、导出、反编译、抽取、扫描或反汇编失败）。
 
 ```sh
 mjt --version          # 输出版本号
@@ -136,7 +136,7 @@ mjt decompile -i <jar> -o <out.zip> --all --decompiler vineflower   # 归档输�
 
 批量模式整 jar 交给后端（CFR 写源码树，vineflower 写源码树或 `.zip` 归档
 ——归档条目名不受文件系统路径限制）。无法落盘的条目名会被跳过：本次运行
-继续，stderr 列出跳过清单并指向单类模式或 jasm 文本面。`--all` 显式确认
+继续，stderr 列出跳过清单并指向单类模式或 `mjt disasm`。`--all` 显式确认
 整 jar 成本；批量缺它时退出码 `1` 并给出类数提示。
 
 公共选项（与 MCP decompile 契约对齐）：`--decompiler cfr|vineflower`（缺省
@@ -174,6 +174,41 @@ mjt xref -i <jar> -c <internalName> [-m <member>] [--direction to|from|both] [--
 kind（`method` / `field` / `type`）、来源（`class.method(desc)@insn` 或
 类头行的 `(class header)`）与目标（`owner.name(desc)` 或类型名）。
 
+### `mjt classes` — 类清单（形态与来源列）
+
+```sh
+mjt classes -i <jar> [--kind class|interface|enum|record|annotation|module] [--origin jdk|known|unknown] [--limit N] [--json] [-o <file>]
+```
+
+列出 jar 内全部类（内部名 + 形态 + 来源三列），数据来自分析库 census 投影——
+与 `mjt info` 同源同果的派生列。`--kind` 按类形态过滤，`--origin` 按包前缀
+来源过滤（`jdk` / `known` / `unknown`）；两者可组合（交集），值大小写不敏感。
+行序 = 内部名字节序升序（跨平台确定）。输出恒有界：`--limit` 限制行数（缺省
+`10000`）；超出时报告 `total` 并提示放大上限或加过滤项。带 `-o` 时完整清单
+写文件、stdout 只留摘要；`--json` 输出同一数据（键为稳定英文）。
+
+### `mjt disasm` — 单类 jasm 文本
+
+```sh
+mjt disasm -i <jar> -c <internalName> [-o <file>]
+```
+
+输出单类的规范化 jasm 文本——与 MCP `class_query kind=jasm` 同源。类按内部
+名（slash 形）定位；类不存在退出码 `1`。纯文本面、不依赖反编译器：敌意类名、
+批量反编译预检跳过的类、指令形状快速核对（`iload_0`、`invokestatic`…）都走
+这里。省略 `-o` 时 jasm 文本打印到 stdout（重定向取文件语义）；带 `-o` 落盘。
+
+### `mjt subs` — 单类成员清单
+
+```sh
+mjt subs -i <jar> -c <internalName> [--json]
+```
+
+列出单类的字段与方法：名、描述符、原始 access 旗标（JVMS 位掩码，十进制）
+与 `native` 标记（仅方法）。字段在前，各组保持 classfile 声明序；头部报告类
+形态（与 `mjt classes` 同源派生）。类不存在退出码 `1`；`--json` 输出同一数据
+（键为稳定英文）。
+
 语言：文案跟随 `MJT_LANG` 环境变量（缺省 `en_US`，支持 `zh_CN`）。
 
 ## 仓库结构
@@ -181,7 +216,7 @@ kind（`method` / `field` / `type`）、来源（`class.method(desc)@insn` 或
 ```
 mjt/mcp/src/     MCP 服务器与工具集（核心产品代码）
 mjt/mcp/test/    MCP 层单测
-mjt/cli/         `mjt` CLI 二进制（info / mapping / jar fix / decompile / strings / xref）
+mjt/cli/         `mjt` CLI 二进制（info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs）
 mjt/test/cli/    CLI 层单测
 mjt/src/shared/  MCP 工具集共用的底层能力（反编译接入、jar 重映射、workspace…）
 skills/          MCP 技能定义

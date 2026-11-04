@@ -1,12 +1,12 @@
 /// @file        main.cpp
 /// @brief       `mjt` CLI 入口：ca::opt 命令树（info / mapping / jar fix /
-///              decompile / strings / xref）+ 全局 --version/--help + 退出码
-///              映射。
+///              decompile / strings / xref / classes / disasm / subs）+ 全局
+///              --version/--help + 退出码映射。
 ///
 /// 退出码约定（README「CLI usage」同文）：0 成功（含 --help）/ 1 用法错误
 /// （参数缺失、文件不存在、格式名不识别、类选择器无命中、旗标值非法）/
-/// 2 运行失败（打开/解析/修复/导出/反编译/抽取/扫描失败）。--help 经 ca::opt
-/// 的 HelpRequested 通道返回 0。
+/// 2 运行失败（打开/解析/修复/导出/反编译/抽取/扫描/反汇编失败）。--help 经
+/// ca::opt 的 HelpRequested 通道返回 0。
 ///
 /// 文案：i18n 表 = mjt_shared（共享层错误文案）+ 本 CLI（mjt.cli.*），语言
 /// 由 MJT_LANG 选择（未设置或未注册时落 en_US）。
@@ -335,8 +335,104 @@ int runXref(const ca::opt::ParseResult& args)
     return mjt::cli::kExitOk;
 }
 
+/// `mjt classes -i <jar> [--kind <k>] [--origin <o>] [--limit N] [--json]
+///  [-o <file>]`。
+int runClasses(const ca::opt::ParseResult& args)
+{
+    const std::string input  = args.get("input");
+    const std::string output = args.get("output");
+    if (!requireInputFile(input))
+        return usageFailure(mjt::shared::trfStr("mjt.cli.err.input_missing", {input}));
+
+    ca::i64 limit = 10000;
+    if (args.has("limit") && !parsePositiveInteger(args.get("limit"), "--limit", limit))
+        return mjt::cli::kExitUsage;
+
+    auto report = mjt::cli::collectClasses(input, args.get("kind"), args.get("origin"), limit);
+    if (report.is_err()) {
+        const auto error = std::move(report).unwrap_err();
+        const bool usage = error.kind != mjt::cli::ClassesError::Kind::Runtime;
+        return usage ? usageFailure(error.message) : runFailure(error.message);
+    }
+    const auto value = std::move(report).unwrap();
+
+    // -o 重定向主输出（文本/JSON 同形落盘），stdout 只留摘要行。
+    if (!output.empty()) {
+        std::FILE* file = std::fopen(output.c_str(), "wb");
+        if (file == nullptr)
+            return runFailure(mjt::shared::trfStr("mjt.cli.classes.err.write_failed", {output}));
+        {
+            mjt::OutputSink sink(file);
+            if (args.has("json")) mjt::cli::renderClassesJson(value, sink);
+            else                  mjt::cli::renderClassesText(value, sink);
+        }
+        std::fclose(file);
+        mjt::out().puts(mjt::shared::trfStr("mjt.cli.classes.written", {output}));
+        return mjt::cli::kExitOk;
+    }
+    if (args.has("json")) mjt::cli::renderClassesJson(value, mjt::out());
+    else                  mjt::cli::renderClassesText(value, mjt::out());
+    return mjt::cli::kExitOk;
+}
+
+/// disasm / subs 错误 → 退出码分支（ClassNotFound = 用法 1；Runtime = 运行 2）。
+template <typename Error>
+int classSelectorFailure(Error error)
+{
+    const bool usage = error.kind != Error::Kind::Runtime;
+    return usage ? usageFailure(std::move(error.message)) : runFailure(std::move(error.message));
+}
+
+/// `mjt disasm -i <jar> -c <internalName> [-o <file>]`。
+int runDisasm(const ca::opt::ParseResult& args)
+{
+    const std::string input     = args.get("input");
+    const std::string className = args.get("class");
+    const std::string output    = args.get("output");
+    if (!requireInputFile(input))
+        return usageFailure(mjt::shared::trfStr("mjt.cli.err.input_missing", {input}));
+
+    auto report = mjt::cli::collectDisasm(input, className);
+    if (report.is_err())
+        return classSelectorFailure(std::move(report).unwrap_err());
+    const auto value = std::move(report).unwrap();
+
+    // -o 落盘 jasm 全文，stdout 只留 written 行（strings -o 同款分工）。
+    if (!output.empty()) {
+        std::FILE* file = std::fopen(output.c_str(), "wb");
+        if (file == nullptr)
+            return runFailure(mjt::shared::trfStr("mjt.cli.disasm.err.write_failed", {output}));
+        {
+            mjt::OutputSink sink(file);
+            mjt::cli::renderDisasmText(value, sink);
+        }
+        std::fclose(file);
+        mjt::out().puts(mjt::shared::trfStr("mjt.cli.disasm.written", {output}));
+        return mjt::cli::kExitOk;
+    }
+    mjt::cli::renderDisasmText(value, mjt::out());
+    return mjt::cli::kExitOk;
+}
+
+/// `mjt subs -i <jar> -c <internalName> [--json]`。
+int runSubs(const ca::opt::ParseResult& args)
+{
+    const std::string input     = args.get("input");
+    const std::string className = args.get("class");
+    if (!requireInputFile(input))
+        return usageFailure(mjt::shared::trfStr("mjt.cli.err.input_missing", {input}));
+
+    auto report = mjt::cli::collectSubs(input, className);
+    if (report.is_err())
+        return classSelectorFailure(std::move(report).unwrap_err());
+    const auto value = std::move(report).unwrap();
+    if (args.has("json")) mjt::cli::renderSubsJson(value, mjt::out());
+    else                  mjt::cli::renderSubsText(value, mjt::out());
+    return mjt::cli::kExitOk;
+}
+
 /// 命令树：根（--version）→ info / mapping / jar → fix / decompile / strings /
-/// xref。
+/// xref / classes / disasm / subs。
 ca::opt::Command buildCommandLine()
 {
     ca::opt::Command root;
@@ -546,6 +642,78 @@ ca::opt::Command buildCommandLine()
     xref.args.push_back(xrefJson);
     root.subcommands.push_back(std::move(xref));
 
+    // classes：类清单（census 投影；--kind/--origin 过滤，--limit 防呆上限，
+    // -o 可选落盘）。
+    ca::opt::Command classes;
+    classes.name = "classes";
+    classes.help = mjt::shared::trfStr("mjt.cli.classes.help");
+    ca::opt::Arg classesInput = input;
+    classes.args.push_back(classesInput);
+    ca::opt::Arg kind;
+    kind.name    = "kind";
+    kind.kind    = ca::opt::OptKind::String;
+    kind.metavar = "<class|interface|enum|record|annotation|module>";
+    kind.help    = mjt::shared::trfStr("mjt.cli.classes.kind_help");
+    classes.args.push_back(kind);
+    ca::opt::Arg origin;
+    origin.name    = "origin";
+    origin.kind    = ca::opt::OptKind::String;
+    origin.metavar = "<jdk|known|unknown>";
+    origin.help    = mjt::shared::trfStr("mjt.cli.classes.origin_help");
+    classes.args.push_back(origin);
+    ca::opt::Arg classesLimit;
+    classesLimit.name          = "limit";
+    classesLimit.kind          = ca::opt::OptKind::String;
+    classesLimit.metavar       = "<n>";
+    classesLimit.help          = mjt::shared::trfStr("mjt.cli.classes.limit_help");
+    classesLimit.default_value = "10000";
+    classes.args.push_back(classesLimit);
+    ca::opt::Arg classesJson;
+    classesJson.name = "json";
+    classesJson.kind = ca::opt::OptKind::Flag;
+    classesJson.help = mjt::shared::trfStr("mjt.cli.classes.json_help");
+    classes.args.push_back(classesJson);
+    ca::opt::Arg classesOutput = output;
+    classesOutput.required     = false;
+    classesOutput.help         = mjt::shared::trfStr("mjt.cli.classes.output_help");
+    classes.args.push_back(classesOutput);
+    root.subcommands.push_back(std::move(classes));
+
+    // disasm：单类 jasm 文本（-o 可选；类不存在退出码 1）。
+    ca::opt::Command disasm;
+    disasm.name = "disasm";
+    disasm.help = mjt::shared::trfStr("mjt.cli.disasm.help");
+    ca::opt::Arg disasmInput = input;
+    disasm.args.push_back(disasmInput);
+    ca::opt::Arg disasmClass = classArg;
+    disasmClass.name    = "class";
+    disasmClass.help    = mjt::shared::trfStr("mjt.cli.disasm.class_help");
+    disasmClass.required = true;
+    disasm.args.push_back(disasmClass);
+    ca::opt::Arg disasmOutput = output;
+    disasmOutput.required     = false;
+    disasmOutput.help         = mjt::shared::trfStr("mjt.cli.disasm.output_help");
+    disasm.args.push_back(disasmOutput);
+    root.subcommands.push_back(std::move(disasm));
+
+    // subs：单类成员清单（字段/方法名、描述符、access 旗标、native 标记）。
+    ca::opt::Command subs;
+    subs.name = "subs";
+    subs.help = mjt::shared::trfStr("mjt.cli.subs.help");
+    ca::opt::Arg subsInput = input;
+    subs.args.push_back(subsInput);
+    ca::opt::Arg subsClass = classArg;
+    subsClass.name    = "class";
+    subsClass.help    = mjt::shared::trfStr("mjt.cli.subs.class_help");
+    subsClass.required = true;
+    subs.args.push_back(subsClass);
+    ca::opt::Arg subsJson;
+    subsJson.name = "json";
+    subsJson.kind = ca::opt::OptKind::Flag;
+    subsJson.help = mjt::shared::trfStr("mjt.cli.subs.json_help");
+    subs.args.push_back(subsJson);
+    root.subcommands.push_back(std::move(subs));
+
     return root;
 }
 
@@ -583,6 +751,9 @@ int main(int argc, char* argv[])
     if (path.size() == 1 && path.front() == "decompile") return runDecompile(args);
     if (path.size() == 1 && path.front() == "strings") return runStrings(args);
     if (path.size() == 1 && path.front() == "xref") return runXref(args);
+    if (path.size() == 1 && path.front() == "classes") return runClasses(args);
+    if (path.size() == 1 && path.front() == "disasm") return runDisasm(args);
+    if (path.size() == 1 && path.front() == "subs") return runSubs(args);
     if (path.size() == 2 && path.front() == "jar" && path[1] == "fix") return runJarFix(args);
 
     std::cerr << ca::opt::help_text(parser.root());

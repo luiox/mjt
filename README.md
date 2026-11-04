@@ -52,7 +52,7 @@ On Windows the executable embeds an `activeCodePage=UTF-8` and `longPathAware` m
 
 ## CLI usage
 
-The `mjt` binary is a plain command-line tool (`xmake build mjt`) covering six batch-style commands over JARs and mapping files. Exit codes: `0` success (including `--help`), `1` usage error (missing argument, missing input file, unknown format name, class selector without a match, invalid flag value), `2` runtime failure (open, parse, repair, export, decompile, extraction or scan failure).
+The `mjt` binary is a plain command-line tool (`xmake build mjt`) covering nine batch-style commands over JARs and mapping files. Exit codes: `0` success (including `--help`), `1` usage error (missing argument, missing input file, unknown format name, class selector without a match, invalid flag value), `2` runtime failure (open, parse, repair, export, decompile, extraction, scan or disassembly failure).
 
 ```sh
 mjt --version          # print tool version
@@ -102,7 +102,7 @@ mjt decompile -i <jar> -o <out.zip> --all --decompiler vineflower   # zip output
 
 Single-class mode fetches the target class bytes by internal name (slash form, e.g. `fixture/Alpha`), stages them under a short safe name (`Target.class`) and runs the backend with the original jar attached as classpath for cross-type context. The class name itself never materializes on disk, so classes whose names exceed the 255 UTF-16 unit file system limit (or contain characters that cannot appear in file names) stay reachable — including the vineflower cascade failure where one hostile class used to poison every decompile call on its jar. With `-o` the source lands in a `.java` file; without it the source prints to stdout.
 
-Batch mode hands the whole jar to the backend (CFR writes a source tree, vineflower writes a source tree or a `.zip` archive — archive entries are not bound by path limits). Entries whose names cannot be written to disk are skipped: the run continues, stderr lists the skipped entries and points to single-class mode or the jasm text facet. `--all` confirms the whole-jar cost; batch without it exits `1` with the class count.
+Batch mode hands the whole jar to the backend (CFR writes a source tree, vineflower writes a source tree or a `.zip` archive — archive entries are not bound by path limits). Entries whose names cannot be written to disk are skipped: the run continues, stderr lists the skipped entries and points to single-class mode or `mjt disasm`. `--all` confirms the whole-jar cost; batch without it exits `1` with the class count.
 
 Shared options (aligned with the MCP decompile contract): `--decompiler cfr|vineflower` (default `cfr`), `--decompiler-jar <jar>`, `--timeout-ms <n>` (default 120000), `--max-memory-mib <n>` (default 1024).
 
@@ -124,6 +124,30 @@ Reverse-lookups the direct references around a class or member. `to` (default) f
 
 Output is always bounded: `--limit` caps the reference list (default `200`); when more matches exist the report says `total` and asks for a larger `--limit` — obfuscated jars can reach millions of rows and unbounded output is an incident. Each reference line shows kind (`method` / `field` / `type`), source (`class.method(desc)@insn` or `(class header)` for class-level sites) and target (`owner.name(desc)` or the type name).
 
+### `mjt classes` — class inventory with kind and origin columns
+
+```sh
+mjt classes -i <jar> [--kind class|interface|enum|record|annotation|module] [--origin jdk|known|unknown] [--limit N] [--json] [-o <file>]
+```
+
+Lists every class in the jar (internal name + kind + origin columns) from the analysis census projection — the same derived columns as `mjt info`. `--kind` filters by class kind, `--origin` by package-prefix origin (`jdk` / `known` / `unknown`); both combine as an intersection and values are case-insensitive. Rows are ordered by internal name (byte order, stable across platforms). Output is always bounded: `--limit` caps the list (default `10000`); when more rows match, the report shows `total` and asks for a higher limit or tighter filters. With `-o` the full list goes to a file and stdout keeps the summary; `--json` emits the same data with stable English keys.
+
+### `mjt disasm` — single-class jasm text
+
+```sh
+mjt disasm -i <jar> -c <internalName> [-o <file>]
+```
+
+Prints the normalized jasm text of one class — the same source the MCP `class_query kind=jasm` facet serves. The class is located by internal name (slash form); an unknown class exits `1`. This is a pure text facet with no decompiler involved, so it works where decompilation cannot: hostile class names, classes the batch precheck skipped, quick instruction-shape checks (`iload_0`, `invokestatic`, …). Without `-o` the jasm text prints to stdout only (redirect-friendly); with `-o` it lands in a file.
+
+### `mjt subs` — single-class member inventory
+
+```sh
+mjt subs -i <jar> -c <internalName> [--json]
+```
+
+Lists the fields and methods of one class: name, descriptor, raw access flags (JVMS bitmask, decimal) and a `native` marker for methods. Fields come first, each group in classfile declaration order; the header reports the class kind (same derivation as `mjt classes`). An unknown class exits `1`; `--json` emits the same data with stable English keys.
+
 Locale: message text follows the `MJT_LANG` environment variable (`en_US` default, `zh_CN` supported).
 
 ## Repository layout
@@ -131,7 +155,7 @@ Locale: message text follows the `MJT_LANG` environment variable (`en_US` defaul
 ```
 mjt/mcp/src/     MCP server and tool set (core product code)
 mjt/mcp/test/    MCP-layer unit tests
-mjt/cli/         `mjt` CLI binary (info / mapping / jar fix / decompile / strings / xref)
+mjt/cli/         `mjt` CLI binary (info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs)
 mjt/test/cli/    CLI-layer unit tests
 mjt/src/shared/  capabilities shared across the MCP tool set
                  (decompiler integration, jar remapping, workspace…)

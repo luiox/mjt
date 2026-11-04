@@ -186,6 +186,70 @@ TEST(MjtCliSmokeTest, DecompileZipOutputWithCfrIsUsageError)
     EXPECT_FALSE(std::filesystem::is_regular_file(outZip));
 }
 
+TEST(MjtCliSmokeTest, HelpListsReadFamilyCommands)
+{
+    const auto run = runCli("--help");
+    EXPECT_EQ(run.exitCode, 0);
+    EXPECT_NE(run.output.find("classes"), std::string::npos);
+    EXPECT_NE(run.output.find("disasm"), std::string::npos);
+    EXPECT_NE(run.output.find("subs"), std::string::npos);
+}
+
+TEST(MjtCliSmokeTest, ClassesCommandListsKindsAndJson)
+{
+    const auto jar = cli_fixture::writeClassesJar();
+
+    const auto text = runCli("classes -i \"" + jar.string() + "\"");
+    EXPECT_EQ(text.exitCode, 0);
+    EXPECT_NE(text.output.find("matched: 9 of 9 jar classes"), std::string::npos);
+    EXPECT_NE(text.output.find("fixture/Alpha class unknown"), std::string::npos);
+    EXPECT_NE(text.output.find("sun/misc/Stub class jdk"), std::string::npos);
+
+    const auto json = runCli("classes -i \"" + jar.string() + "\" --origin known --json");
+    EXPECT_EQ(json.exitCode, 0);
+    EXPECT_NE(json.output.find("\"origin\": \"known\""), std::string::npos);
+    EXPECT_NE(json.output.find("\"total\": 1"), std::string::npos);
+}
+
+TEST(MjtCliSmokeTest, ClassesInvalidKindIsUsageError)
+{
+    const auto jar = cli_fixture::writeClassesJar();
+    const auto run = runCli("classes -i \"" + jar.string() + "\" --kind struct");
+    EXPECT_EQ(run.exitCode, 1);
+    EXPECT_NE(run.output.find("struct"), std::string::npos);
+}
+
+TEST(MjtCliSmokeTest, DisasmCommandPrintsJasmAndReportsMissingClass)
+{
+    const auto jar = cli_fixture::writeClassesJar();
+
+    const auto text = runCli("disasm -i \"" + jar.string() + "\" -c fixture/Alpha");
+    EXPECT_EQ(text.exitCode, 0);
+    EXPECT_NE(text.output.find("fixture/Alpha"), std::string::npos);
+    EXPECT_NE(text.output.find("ireturn"), std::string::npos);
+
+    const auto missing = runCli("disasm -i \"" + jar.string() + "\" -c fixture/NoSuch");
+    EXPECT_EQ(missing.exitCode, 1);
+    EXPECT_NE(missing.output.find("fixture/NoSuch"), std::string::npos);
+}
+
+TEST(MjtCliSmokeTest, SubsCommandListsMembersAndReportsMissingClass)
+{
+    const auto jar = cli_fixture::writeClassesJar();
+
+    const auto text = runCli("subs -i \"" + jar.string() + "\" -c fixture/Native");
+    EXPECT_EQ(text.exitCode, 0);
+    EXPECT_NE(text.output.find("fields: 1, methods: 2"), std::string::npos);
+    EXPECT_NE(text.output.find("method probe (I)V access=257 native"), std::string::npos);
+
+    const auto json = runCli("subs -i \"" + jar.string() + "\" -c fixture/Native --json");
+    EXPECT_EQ(json.exitCode, 0);
+    EXPECT_NE(json.output.find("\"native\": true"), std::string::npos);
+
+    const auto missing = runCli("subs -i \"" + jar.string() + "\" -c fixture/NoSuch");
+    EXPECT_EQ(missing.exitCode, 1);
+}
+
 TEST(MjtCliSmokeTest, JarFixCommandRepairsAndReports)
 {
     const auto inJar  = cli_fixture::writeBrokenJar();

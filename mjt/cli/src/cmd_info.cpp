@@ -9,128 +9,21 @@
 #include "commands.hpp"
 
 #include <algorithm>
-#include <filesystem>
 #include <map>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
-#if defined(_WIN32)
-#include <process.h>
-#define MJT_CLI_GETPID _getpid
-#else
-#include <unistd.h>
-#define MJT_CLI_GETPID getpid
-#endif
-
-#include "mjbase/project/analysis_db.hpp"
+#include "census_support.hpp"
 #include "mjbase/project/class_kind.hpp"
 #include "mjbase/project/library_origin.hpp"
-#include "shared/i18n_errors.hpp"
 #include "shared/json_util.hpp"
 #include "shared/output_sink.hpp"
-#include "workspace/analysis_census.hpp"
-#include "workspace/analysis_ingest.hpp"
 #include "workspace/workspace.hpp"
 
 namespace mjt::cli {
 namespace {
-
-/// Utf8String/UTF-8 std::string → 借用视图（与 workspace 测试同款构造）。
-ca::str::Utf8StringRef refOf(const std::string& value)
-{
-    return ca::str::Utf8StringRef::from_data(reinterpret_cast<const ca::u8*>(value.data()),
-                                             value.size());
-}
-
-/// info 用的一次性分析库文件路径：临时目录 + 进程 id + 单调序号，进程内唯一。
-std::string tempDbPath()
-{
-    static unsigned long long sequence = 0;
-    const auto path = std::filesystem::temp_directory_path() /
-                      ("mjt-info-" + std::to_string(MJT_CLI_GETPID()) + "-" +
-                       std::to_string(++sequence) + ".mjdb");
-    std::error_code ec;
-    std::filesystem::remove(path, ec);
-    return path.string();
-}
-
-/// RAII：分析库一次性文件清理（主文件 + WAL/SHM 伴生，失败静默）。
-class TempDbGuard
-{
-public:
-    explicit TempDbGuard(std::string path)
-        : path_(std::move(path))
-    {}
-    ~TempDbGuard()
-    {
-        std::error_code ec;
-        std::filesystem::remove(path_, ec);
-        std::filesystem::remove(path_ + "-wal", ec);
-        std::filesystem::remove(path_ + "-shm", ec);
-    }
-    TempDbGuard(const TempDbGuard&)            = delete;
-    TempDbGuard& operator=(const TempDbGuard&) = delete;
-    const std::string& path() const { return path_; }
-
-private:
-    std::string path_;
-};
-
-/// AnalysisDb 错误（Utf8String message）→ workspace 错误值（i18n 模板承载）。
-workspace::WorkspaceErrorInfo dbError(const mjbase::project::AnalysisDbError& cause)
-{
-    workspace::WorkspaceErrorInfo info;
-    info.code    = workspace::WorkspaceError::Internal;
-    info.message = shared::trfStr("mjt.cli.err.info_db", {cause.message.to_std_string()});
-    return info;
-}
-
-/// 导入桥错误 → workspace 错误值（message 原样透传，已是呈现面文案）。
-workspace::WorkspaceErrorInfo ingestError(const workspace::AnalysisIngestError& cause)
-{
-    workspace::WorkspaceErrorInfo info;
-    info.code    = workspace::WorkspaceError::Internal;
-    info.message = cause.message;
-    return info;
-}
-
-/// census 投影错误 → workspace 错误值（message 原样透传）。
-workspace::WorkspaceErrorInfo censusError(const workspace::CensusExportError& cause)
-{
-    workspace::WorkspaceErrorInfo info;
-    info.code    = workspace::WorkspaceError::Internal;
-    info.message = cause.message;
-    return info;
-}
-
-/// AnalysisDb 查询/导入 Result 的错误通道换型（AnalysisDbError → 错误值）。
-ca::Result<mjbase::project::DbContainerCensus, workspace::WorkspaceErrorInfo>
-mapCensusError(ca::Result<mjbase::project::DbContainerCensus, mjbase::project::AnalysisDbError>&&
-                   value)
-{
-    if (value.is_err()) return ca::Err(dbError(std::move(value).unwrap_err()));
-    return ca::Ok(std::move(value).unwrap());
-}
-
-ca::Result<std::vector<mjbase::project::DbClassCensusRow>, workspace::WorkspaceErrorInfo>
-mapClassRowsError(
-    ca::Result<std::vector<mjbase::project::DbClassCensusRow>, mjbase::project::AnalysisDbError>&&
-        value)
-{
-    if (value.is_err()) return ca::Err(dbError(std::move(value).unwrap_err()));
-    return ca::Ok(std::move(value).unwrap());
-}
-
-ca::Result<std::vector<mjbase::project::DbMemberCensusRow>, workspace::WorkspaceErrorInfo>
-mapMemberRowsError(
-    ca::Result<std::vector<mjbase::project::DbMemberCensusRow>, mjbase::project::AnalysisDbError>&&
-        value)
-{
-    if (value.is_err()) return ca::Err(dbError(std::move(value).unwrap_err()));
-    return ca::Ok(std::move(value).unwrap());
-}
 
 /// major → "java N" 短标签（major ≥ 45 且 ≤ 200 才可判；越界值不贴标签）。
 std::string javaVersionLabel(ca::i32 major)

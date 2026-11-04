@@ -3,7 +3,7 @@
 # {n} are positional placeholders, repeatable/reorderable
 
 # ── root / shared ───────────────────────────────────────────
-mjt.cli.root.help=JVM bytecode toolkit (info / mapping / jar fix / decompile / strings / xref)
+mjt.cli.root.help=JVM bytecode toolkit (info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs)
 mjt.cli.root.version_help=print version and exit
 mjt.cli.opt.input=input path (-i <path>)
 mjt.cli.opt.output=output path (-o <path>); must not be the same file as the input
@@ -83,7 +83,7 @@ mjt.cli.decompile.batch_done_dir=sources written to: {0}
 mjt.cli.decompile.batch_done_zip=sources archive written to: {0}
 mjt.cli.decompile.batch_skipped=skipped {0} entries whose names cannot be written to disk:
 mjt.cli.decompile.batch_skipped_reason={0} [{1}]
-mjt.cli.decompile.batch_skipped_hint=decompile these via single-class mode (-c <class>), or read them through the jasm text facet
+mjt.cli.decompile.batch_skipped_hint=decompile these via single-class mode (-c <class>), or read them via disasm (-c <class>)
 mjt.cli.decompile.reason.segment_too_long=name segment exceeds the 255 UTF-16 unit file system limit
 mjt.cli.decompile.reason.illegal_character=name segment contains characters that cannot appear in file names
 mjt.cli.decompile.reason.trailing_dot_or_space=name segment ends with a dot or space (stripped by Windows, the file cannot exist)
@@ -127,3 +127,42 @@ mjt.cli.xref.err.invalid_limit=--limit must be a positive integer: {0}
 mjt.cli.xref.err.class_not_found=class not found in jar: {0}
 mjt.cli.xref.err.open_failed=cannot open jar: {0}
 mjt.cli.xref.err.scan_failed=reference scan failed: {0}
+
+# ── classes ─────────────────────────────────────────────────
+mjt.cli.classes.help=list jar classes with kind and origin columns (analysis census projection); --kind / --origin filters combine, output is bounded by --limit
+mjt.cli.classes.kind_help=filter by class kind: class, interface, enum, record, annotation, module
+mjt.cli.classes.origin_help=filter by library origin: jdk, known, unknown
+mjt.cli.classes.limit_help=maximum number of class rows (default 10000); raise it or add filters after the truncation hint
+mjt.cli.classes.json_help=emit the same data as JSON
+mjt.cli.classes.output_help=write the full list to a file; stdout keeps the summary only
+mjt.cli.classes.title=classes: {0}
+mjt.cli.classes.kind_filter=kind filter: {0}
+mjt.cli.classes.origin_filter=origin filter: {0}
+mjt.cli.classes.matched=matched: {0} of {1} jar classes; showing {2}
+mjt.cli.classes.truncated=truncated; pass --limit {0} or higher, or add --kind / --origin filters
+mjt.cli.classes.written=list written to: {0}
+mjt.cli.classes.err.invalid_kind=invalid --kind value: {0} (expected class / interface / enum / record / annotation / module)
+mjt.cli.classes.err.invalid_origin=invalid --origin value: {0} (expected jdk / known / unknown)
+mjt.cli.classes.err.invalid_limit=--limit must be a positive integer: {0}
+mjt.cli.classes.err.open_failed=cannot open jar: {0}
+mjt.cli.classes.err.write_failed=cannot write the output file: {0}
+
+# ── disasm ──────────────────────────────────────────────────
+mjt.cli.disasm.help=print the normalized jasm text of one class (same source as the MCP class_query kind=jasm facet); no decompiler involved
+mjt.cli.disasm.class_help=class to disassemble (internal name, slash form, e.g. fixture/Alpha); must exist in the jar
+mjt.cli.disasm.output_help=write the jasm text to a file; stdout keeps the text only
+mjt.cli.disasm.written=jasm text written to: {0}
+mjt.cli.disasm.err.class_not_found=class not found in jar: {0}
+mjt.cli.disasm.err.open_failed=cannot open jar: {0}
+mjt.cli.disasm.err.disasm_failed=disassembly failed: {0}
+mjt.cli.disasm.err.write_failed=cannot write the output file: {0}
+
+# ── subs ────────────────────────────────────────────────────
+mjt.cli.subs.help=list the fields and methods of one class with access flags and native markers; no decompiler involved
+mjt.cli.subs.class_help=class to list (internal name, slash form, e.g. fixture/Alpha); must exist in the jar
+mjt.cli.subs.json_help=emit the same data as JSON
+mjt.cli.subs.title=subs: {0}
+mjt.cli.subs.class_kind=class kind: {0}
+mjt.cli.subs.counted=fields: {0}, methods: {1}
+mjt.cli.subs.err.class_not_found=class not found in jar: {0}
+mjt.cli.subs.err.open_failed=cannot open jar: {0}

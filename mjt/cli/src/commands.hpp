@@ -380,4 +380,142 @@ void renderXrefText(const XrefReport& report, OutputSink& sink);
 /// @brief 渲染 xref JSON（键稳定英文；文本字段经 json::escape 转义）。
 void renderXrefJson(const XrefReport& report, OutputSink& sink);
 
+// ── classes ────────────────────────────────────────────────────────
+
+/// @brief classes 命令错误：类别定退出码分支，message 为已渲染文案。
+struct ClassesError
+{
+    enum class Kind
+    {
+        InvalidArgument, ///< --kind / --origin / --limit 值非法（用法 → 退出码 1）
+        Runtime,         ///< jar 打开 / 分析库失败（→ 退出码 2）
+    };
+    Kind        kind    = Kind::Runtime;
+    std::string message;
+};
+
+/// @brief 一行类清单：内部名 + 形态 + 来源（censusClasses 投影行的 CLI 切面）。
+struct ClassesRow
+{
+    std::string internalName; ///< 类内部名（slash 形）
+    std::string kind;         ///< classKindName 稳定名（class / interface / …）
+    std::string origin;       ///< libraryOriginName 稳定名（jdk / known / unknown）
+};
+
+/// @brief 一次类清单查询的报告（有界输出；渲染与断言共用）。
+struct ClassesReport
+{
+    std::string jarPath;      ///< 输入 jar 路径（原样回显）
+    std::string kindFilter;   ///< --kind 归一值（小写；空 = 不过滤）
+    std::string originFilter; ///< --origin 归一值（小写；空 = 不过滤）
+    ca::i64     classesInJar = 0; ///< jar 内类总数（过滤前口径，对账列）
+    ca::i64     total        = 0; ///< 过滤后总行数
+    ca::i64     limit        = 10000; ///< --limit（生效值，防呆上限）
+    bool        truncated    = false; ///< true = total > limit，classes 只含前 limit 行
+    /// @brief 类清单行（censusClasses 库序 = internal_name BINARY 升序）。
+    std::vector<ClassesRow> classes;
+};
+
+/// @brief 类清单：census 投影（censusClasses，kind / origin 为投影层派生列）
+///        全行过滤 + --limit 截断。
+///
+/// 过滤项组合语义：--kind 与 --origin 都给 = 交集；两者都缺 = 全量。
+/// --kind / --origin 值大小写不敏感，未知名返回 InvalidArgument；--limit < 1
+/// 返回 InvalidArgument。输出必经 --limit 截断（缺省 10000）——4179 类语料
+/// 全量 4179 行尚可接受，更大的 jar 无界输出是事故。
+ca::Result<ClassesReport, ClassesError> collectClasses(const std::string& jarPath,
+                                                       const std::string& kindFilter,
+                                                       const std::string& originFilter,
+                                                       ca::i64 limit);
+
+/// @brief 渲染 classes 人类可读报告（头部计数 + 截断提示 + 行列表）。
+void renderClassesText(const ClassesReport& report, OutputSink& sink);
+
+/// @brief 渲染 classes JSON（键稳定英文；文本字段经 json::escape 转义）。
+void renderClassesJson(const ClassesReport& report, OutputSink& sink);
+
+// ── disasm ─────────────────────────────────────────────────────────
+
+/// @brief disasm 命令错误：类别定退出码分支，message 为已渲染文案。
+struct DisasmError
+{
+    enum class Kind
+    {
+        ClassNotFound, ///< -c 类在 jar 内无命中（→ 退出码 1）
+        Runtime,       ///< jar 打开 / 反汇编失败（→ 退出码 2）
+    };
+    Kind        kind    = Kind::Runtime;
+    std::string message;
+};
+
+/// @brief 单类 jasm 反汇编报告（渲染与断言共用）。
+struct DisasmReport
+{
+    std::string jarPath;      ///< 输入 jar 路径（原样回显）
+    std::string internalName; ///< 请求的类内部名（原样回显）
+    std::string jasm;         ///< 反汇编文本（UTF-8；stdout 模式原样直出）
+};
+
+/// @brief 单类 jasm 文本：workspace getJasm（MCP class_query kind=jasm 同源
+///        能力）读面，类选择器经 classInfo（URI / 内名双解析）定位。
+/// @note 类不存在返回 ClassNotFound（退出码 1）；类字节可解析但反汇编失败
+///       返回 Runtime（退出码 2）。纯文本面，不依赖反编译器。
+ca::Result<DisasmReport, DisasmError> collectDisasm(const std::string& jarPath,
+                                                    const std::string& internalName);
+
+/// @brief 渲染 disasm 文本（jasm 全文原样直出，不混头部——重定向取文件语义）。
+void renderDisasmText(const DisasmReport& report, OutputSink& sink);
+
+// ── subs ───────────────────────────────────────────────────────────
+
+/// @brief subs 命令错误：类别定退出码分支，message 为已渲染文案。
+struct SubsError
+{
+    enum class Kind
+    {
+        ClassNotFound, ///< -c 类在 jar 内无命中（→ 退出码 1）
+        Runtime,       ///< jar 打开 / 解析失败（→ 退出码 2）
+    };
+    Kind        kind    = Kind::Runtime;
+    std::string message;
+};
+
+/// @brief 一行成员清单：kind + 名字 + 描述符 + access 旗标 + native 标记。
+struct SubsMember
+{
+    std::string kind;        ///< "field" / "method"（censusMembers kind 小写 token）
+    std::string name;
+    std::string descriptor;
+    ca::i32     access = 0;  ///< 原始访问旗标（JVMS 位掩码，十进制渲染）
+    bool        native = false; ///< 方法 ACC_NATIVE 派生；字段恒 false
+};
+
+/// @brief 单类成员清单报告（渲染与断言共用）。
+struct SubsReport
+{
+    std::string jarPath;      ///< 输入 jar 路径（原样回显）
+    std::string internalName; ///< 请求的类内部名（原样回显）
+    std::string kind;         ///< 类形态稳定名（classifyClassKind，census 同源派生）
+    ca::i64     fields  = 0;  ///< 字段数（= members 中 kind == field 行数）
+    ca::i64     methods = 0;  ///< 方法数（= members 中 kind == method 行数）
+    /// @brief 成员行：字段在前（censusMembers kind 编码序），各自保持
+    ///        classfile 声明序。
+    std::vector<SubsMember> members;
+};
+
+/// @brief 单类成员清单：workspace classInfo 读面（字段/方法名、描述符、access
+///        旗标、native 派生）+ 类形态 classifyClassKind 派生。
+///
+/// 单类查询走 classInfo 直读（声明序保留），不走 censusMembers（那需要整
+/// jar 分析库导入，单类成本不成比例）；类形态与 classes 命令同源同果。
+/// 类不存在返回 ClassNotFound（退出码 1）。纯文本面，不依赖反编译器。
+ca::Result<SubsReport, SubsError> collectSubs(const std::string& jarPath,
+                                              const std::string& internalName);
+
+/// @brief 渲染 subs 人类可读报告（头部计数 + 成员行列表）。
+void renderSubsText(const SubsReport& report, OutputSink& sink);
+
+/// @brief 渲染 subs JSON（键稳定英文；文本字段经 json::escape 转义）。
+void renderSubsJson(const SubsReport& report, OutputSink& sink);
+
 }   // namespace mjt::cli

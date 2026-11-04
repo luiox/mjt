@@ -95,6 +95,56 @@ TEST(MjtCliPerfTest, XrefOnBigJarStaysWithinSoftBound)
     expectWithinSoftBound("xref from perf/Subject0 (2100 classes)", xrefMs, 30000.0);
 }
 
+TEST(MjtCliPerfTest, ClassesOnBigJarStaysWithinSoftBound)
+{
+    const auto jar = cli_fixture::writePerfClassListJar(kPerfClassCount);
+
+    const double classesMs = measureOnce([&] {
+        auto report = collectClasses(jar.string(), "", "", 10000);
+        ASSERT_TRUE(report.is_ok()) << report.unwrap_err().message;
+        const auto info = std::move(report).unwrap();
+        // 对账自检：全量无过滤 = censusClasses 行数，无截断。
+        EXPECT_EQ(info.classesInJar, static_cast<ca::i64>(kPerfClassCount));
+        EXPECT_EQ(info.total, static_cast<ca::i64>(kPerfClassCount));
+        EXPECT_FALSE(info.truncated);
+        EXPECT_GT(info.classes[0].internalName.size(), 0);
+    });
+    // classes 与 info 同走整 jar census 导入（语料 2100 类），上界同 info 档。
+    expectWithinSoftBound("classes 2100 classes (census projection)", classesMs, 20000.0);
+}
+
+TEST(MjtCliPerfTest, DisasmSingleClassOnBigJarStaysWithinSoftBound)
+{
+    const auto jar = cli_fixture::writePerfClassListJar(kPerfClassCount);
+
+    const double disasmMs = measureOnce([&] {
+        auto report = collectDisasm(jar.string(), "perf/Subject0");
+        ASSERT_TRUE(report.is_ok()) << report.unwrap_err().message;
+        // 指令形状自检：语料方法体含 iadd/ireturn（模板方法体零触碰）。
+        const auto info = std::move(report).unwrap();
+        EXPECT_NE(info.jasm.find("ireturn"), std::string::npos);
+    });
+    // 单类直读 + 反汇编，应亚秒级；上界只防数量级劣化。
+    expectWithinSoftBound("disasm single class (2100-class jar)", disasmMs, 5000.0);
+}
+
+TEST(MjtCliPerfTest, SubsSingleClassOnBigJarStaysWithinSoftBound)
+{
+    const auto jar = cli_fixture::writePerfClassListJar(kPerfClassCount);
+
+    const double subsMs = measureOnce([&] {
+        auto report = collectSubs(jar.string(), "perf/Subject2099");
+        ASSERT_TRUE(report.is_ok()) << report.unwrap_err().message;
+        // 对账自检：语料类 1 字段 1 方法（模板结构零触碰）。
+        const auto info = std::move(report).unwrap();
+        EXPECT_EQ(info.fields, 1);
+        EXPECT_EQ(info.methods, 1);
+        EXPECT_FALSE(info.members.empty());
+    });
+    // 单类 classInfo 直读，应亚秒级；上界只防数量级劣化。
+    expectWithinSoftBound("subs single class (2100-class jar)", subsMs, 5000.0);
+}
+
 TEST(MjtCliPerfTest, MappingRoundTripOnBigMappingStaysWithinSoftBound)
 {
     const auto srg = cli_fixture::writePerfSrgMapping(kPerfClassCount);

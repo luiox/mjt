@@ -321,6 +321,99 @@ inline std::filesystem::path writeXrefJar()
     return path;
 }
 
+// ── classes / disasm / subs 语料（批四：类清单 / 单类 jasm / 成员清单）───
+
+/// classes 语料源 Native：native 方法（subs native 标记观察点）+ 常规方法。
+inline std::vector<ca::u8> assembleNativeHostClass()
+{
+    return assembleClass(
+        ".super java/lang/Object\n"
+        ".class public super fixture/Native {\n"
+        "  .field private token J\n"
+        "  .method public native probe (I)V {}\n"
+        "  .method public static calc (II)I {\n"
+        "    code: {\n"
+        "      iload_0\n"
+        "      iload_1\n"
+        "      iadd\n"
+        "      ireturn\n"
+        "    }\n"
+        "  }\n"
+        "}\n");
+}
+
+/// classes/subs/disasm 语料 jar：九类覆盖六形态（class / interface / enum /
+/// record / annotation / module）与三来源（jdk = sun/misc、known =
+/// com/google/gson、unknown = fixture/ + module-info），外加一个常规资源。
+/// fixture/Native 兼作 subs 的 native 观察点；fixture/Alpha（字段 + 常量
+/// 运算方法体）兼作 disasm 的指令形状观察点。
+inline std::filesystem::path writeClassesJar()
+{
+    mjbase::model::ResourceContainer container;
+    const std::string alphaSource =
+        ".super java/lang/Object\n"
+        ".class public super fixture/Alpha {\n"
+        "  .field private state I\n"
+        "  .method public static act (I)I {\n"
+        "    code: {\n"
+        "      iload_0\n"
+        "      iconst_2\n"
+        "      imul\n"
+        "      ireturn\n"
+        "    }\n"
+        "  }\n"
+        "}\n";
+    container.addResource("fixture/Alpha.class",
+                          std::make_unique<mjbase::model::ClassResource>(
+                              "fixture/Alpha.class", assembleClass(alphaSource)));
+    container.addResource("fixture/Api.class",
+                          std::make_unique<mjbase::model::ClassResource>(
+                              "fixture/Api.class", assembleClass(kApiSource)));
+    container.addResource("fixture/Color.class",
+                          std::make_unique<mjbase::model::ClassResource>(
+                              "fixture/Color.class", assembleClass(kColorSource)));
+    container.addResource("fixture/Anno.class",
+                          std::make_unique<mjbase::model::ClassResource>(
+                              "fixture/Anno.class",
+                              assembleClass(".class public abstract interface annotation "
+                                            "fixture/Anno {\n"
+                                            "  .method public abstract value ()I {}\n"
+                                            "}\n")));
+    container.addResource("fixture/Pair.class",
+                          std::make_unique<mjbase::model::ClassResource>(
+                              "fixture/Pair.class",
+                              assembleClass(".super java/lang/Record\n"
+                                            ".class public final record fixture/Pair {\n"
+                                            "  .field private final a I\n"
+                                            "}\n")));
+    container.addResource("fixture/Native.class",
+                          std::make_unique<mjbase::model::ClassResource>(
+                              "fixture/Native.class", assembleNativeHostClass()));
+    container.addResource("com/google/gson/Stub.class",
+                          std::make_unique<mjbase::model::ClassResource>(
+                              "com/google/gson/Stub.class",
+                              assembleClass(".super java/lang/Object\n"
+                                            ".class public super com/google/gson/Stub {\n"
+                                            "}\n")));
+    container.addResource("sun/misc/Stub.class",
+                          std::make_unique<mjbase::model::ClassResource>(
+                              "sun/misc/Stub.class",
+                              assembleClass(".super java/lang/Object\n"
+                                            ".class public super sun/misc/Stub {\n"
+                                            "}\n")));
+    container.addResource("module-info.class",
+                          std::make_unique<mjbase::model::ClassResource>(
+                              "module-info.class",
+                              assembleClass(".class module module-info {\n"
+                                            "}\n")));
+    container.addResource("data/notes.txt",
+                          std::make_unique<mjbase::model::UnknownResource>(
+                              "data/notes.txt", std::vector<ca::u8>{'o', 'k'}));
+    const auto path = test::getTempOutPath("mjt_cli_classes_fixture.jar");
+    mjbase::model::ResourceHelper::exportToJar(container, path.string());
+    return path;
+}
+
 // ── decompile 语料（#63 敌意名 + perf 大 jar）───────────────────────
 
 /// 敌意类名长度（单段 UTF-16 单元数）：Windows 单段文件名上限的 ~85 倍，

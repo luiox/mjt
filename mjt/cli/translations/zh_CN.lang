@@ -3,7 +3,7 @@
 # {n} 为位置占位符，可重复/可换序
 
 # ── 根 / 共享 ───────────────────────────────────────────────
-mjt.cli.root.help=JVM 字节码工具（info / mapping / jar fix / decompile / strings / xref）
+mjt.cli.root.help=JVM 字节码工具（info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs）
 mjt.cli.root.version_help=输出版本号并退出
 mjt.cli.opt.input=输入路径（-i <path>）
 mjt.cli.opt.output=输出路径（-o <path>）；不得与输入同一文件
@@ -83,7 +83,7 @@ mjt.cli.decompile.batch_done_dir=源码目录已写出: {0}
 mjt.cli.decompile.batch_done_zip=源码归档已写出: {0}
 mjt.cli.decompile.batch_skipped=跳过 {0} 个无法落盘的条目:
 mjt.cli.decompile.batch_skipped_reason={0} [{1}]
-mjt.cli.decompile.batch_skipped_hint=这些类可用单类模式（-c <class>）反编译，或经 jasm 文本面读取
+mjt.cli.decompile.batch_skipped_hint=这些类可用单类模式（-c <class>）反编译，或用 disasm（-c <class>）读取
 mjt.cli.decompile.reason.segment_too_long=名字单段超过文件系统 255 UTF-16 单元上限
 mjt.cli.decompile.reason.illegal_character=名字单段含文件系统非法字符
 mjt.cli.decompile.reason.trailing_dot_or_space=名字单段以点或空格结尾（Windows 落盘时被剥离，文件无法存在）
@@ -127,3 +127,42 @@ mjt.cli.xref.err.invalid_limit=--limit 必须是正整数: {0}
 mjt.cli.xref.err.class_not_found=jar 中找不到类: {0}
 mjt.cli.xref.err.open_failed=无法打开 jar: {0}
 mjt.cli.xref.err.scan_failed=引用扫描失败: {0}
+
+# ── classes ─────────────────────────────────────────────────
+mjt.cli.classes.help=列出 jar 类清单（形态与来源列，分析库 census 投影）；--kind / --origin 过滤可组合，输出由 --limit 有界
+mjt.cli.classes.kind_help=按类形态过滤: class、interface、enum、record、annotation、module
+mjt.cli.classes.origin_help=按库来源过滤: jdk、known、unknown
+mjt.cli.classes.limit_help=类行数上限（缺省 10000）；截断后按提示放大或加过滤项
+mjt.cli.classes.json_help=以 JSON 输出同一数据
+mjt.cli.classes.output_help=完整清单写入文件；stdout 只留摘要
+mjt.cli.classes.title=classes: {0}
+mjt.cli.classes.kind_filter=形态过滤: {0}
+mjt.cli.classes.origin_filter=来源过滤: {0}
+mjt.cli.classes.matched=命中: {0} / jar 类 {1}；展示 {2}
+mjt.cli.classes.truncated=已截断；用 --limit {0} 或更大，或加 --kind / --origin 过滤
+mjt.cli.classes.written=清单已写出: {0}
+mjt.cli.classes.err.invalid_kind=--kind 值无效: {0}（应为 class / interface / enum / record / annotation / module）
+mjt.cli.classes.err.invalid_origin=--origin 值无效: {0}（应为 jdk / known / unknown）
+mjt.cli.classes.err.invalid_limit=--limit 必须是正整数: {0}
+mjt.cli.classes.err.open_failed=无法打开 jar: {0}
+mjt.cli.classes.err.write_failed=无法写出输出文件: {0}
+
+# ── disasm ──────────────────────────────────────────────────
+mjt.cli.disasm.help=输出单类的规范化 jasm 文本（与 MCP class_query kind=jasm 同源）；不依赖反编译器
+mjt.cli.disasm.class_help=要反汇编的类（内部名 slash 形，如 fixture/Alpha）；必须存在于 jar
+mjt.cli.disasm.output_help=jasm 文本写入文件；stdout 只留文本
+mjt.cli.disasm.written=jasm 文本已写出: {0}
+mjt.cli.disasm.err.class_not_found=jar 中找不到类: {0}
+mjt.cli.disasm.err.open_failed=无法打开 jar: {0}
+mjt.cli.disasm.err.disasm_failed=反汇编失败: {0}
+mjt.cli.disasm.err.write_failed=无法写出输出文件: {0}
+
+# ── subs ────────────────────────────────────────────────────
+mjt.cli.subs.help=列出单类的字段与方法（access 旗标与 native 标记）；不依赖反编译器
+mjt.cli.subs.class_help=要列举的类（内部名 slash 形，如 fixture/Alpha）；必须存在于 jar
+mjt.cli.subs.json_help=以 JSON 输出同一数据
+mjt.cli.subs.title=subs: {0}
+mjt.cli.subs.class_kind=类形态: {0}
+mjt.cli.subs.counted=字段: {0}, 方法: {1}
+mjt.cli.subs.err.class_not_found=jar 中找不到类: {0}
+mjt.cli.subs.err.open_failed=无法打开 jar: {0}
