@@ -1,11 +1,12 @@
 /// @file        main.cpp
 /// @brief       `mjt` CLI 入口：ca::opt 命令树（info / mapping / jar fix /
-///              decompile）+ 全局 --version/--help + 退出码映射。
+///              decompile / strings / xref）+ 全局 --version/--help + 退出码
+///              映射。
 ///
 /// 退出码约定（README「CLI usage」同文）：0 成功（含 --help）/ 1 用法错误
-/// （参数缺失、文件不存在、格式名不识别、类选择器无命中）/ 2 运行失败
-/// （打开/解析/修复/导出/反编译失败）。--help 经 ca::opt 的 HelpRequested
-/// 通道返回 0。
+/// （参数缺失、文件不存在、格式名不识别、类选择器无命中、旗标值非法）/
+/// 2 运行失败（打开/解析/修复/导出/反编译/抽取/扫描失败）。--help 经 ca::opt
+/// 的 HelpRequested 通道返回 0。
 ///
 /// 文案：i18n 表 = mjt_shared（共享层错误文案）+ 本 CLI（mjt.cli.*），语言
 /// 由 MJT_LANG 选择（未设置或未注册时落 en_US）。
@@ -267,7 +268,75 @@ int runDecompile(const ca::opt::ParseResult& args)
     return mjt::cli::kExitOk;
 }
 
-/// 命令树：根（--version）→ info / mapping / jar → fix / decompile。
+/// `mjt strings -i <jar> [--class <internalName>] [--min-len N] [--json] [-o <file>]`。
+int runStrings(const ca::opt::ParseResult& args)
+{
+    const std::string input     = args.get("input");
+    const std::string className = args.get("class");
+    const std::string output    = args.get("output");
+    if (!requireInputFile(input))
+        return usageFailure(mjt::shared::trfStr("mjt.cli.err.input_missing", {input}));
+
+    ca::i64 minimumLen = 1;
+    if (args.has("min-len") &&
+        !parsePositiveInteger(args.get("min-len"), "--min-len", minimumLen))
+        return mjt::cli::kExitUsage;
+
+    auto report = mjt::cli::collectStrings(input, className, minimumLen);
+    if (report.is_err()) {
+        const auto error = std::move(report).unwrap_err();
+        const bool usage = error.kind != mjt::cli::StringsError::Kind::Runtime;
+        return usage ? usageFailure(error.message) : runFailure(error.message);
+    }
+    const auto value = std::move(report).unwrap();
+
+    // -o 重定向主输出（文本/JSON 同形落盘），stdout 只留摘要行。
+    if (!output.empty()) {
+        std::FILE* file = std::fopen(output.c_str(), "wb");
+        if (file == nullptr)
+            return runFailure(mjt::shared::trfStr("mjt.cli.strings.err.write_failed", {output}));
+        {
+            mjt::OutputSink sink(file);
+            if (args.has("json")) mjt::cli::renderStringsJson(value, sink);
+            else                  mjt::cli::renderStringsText(value, sink);
+        }
+        std::fclose(file);
+        mjt::out().puts(mjt::shared::trfStr("mjt.cli.strings.written", {output}));
+        return mjt::cli::kExitOk;
+    }
+    if (args.has("json")) mjt::cli::renderStringsJson(value, mjt::out());
+    else                  mjt::cli::renderStringsText(value, mjt::out());
+    return mjt::cli::kExitOk;
+}
+
+/// `mjt xref -i <jar> -c <internalName> [-m <member>] [--direction to|from|both]
+///  [--limit N] [--json]`。
+int runXref(const ca::opt::ParseResult& args)
+{
+    const std::string input     = args.get("input");
+    const std::string className = args.get("class");
+    const std::string member    = args.get("member");
+    if (!requireInputFile(input))
+        return usageFailure(mjt::shared::trfStr("mjt.cli.err.input_missing", {input}));
+
+    ca::i64 limit = 200;
+    if (args.has("limit") && !parsePositiveInteger(args.get("limit"), "--limit", limit))
+        return mjt::cli::kExitUsage;
+
+    auto report = mjt::cli::collectXref(input, className, member, args.get("direction"), limit);
+    if (report.is_err()) {
+        const auto error = std::move(report).unwrap_err();
+        const bool usage = error.kind != mjt::cli::XrefError::Kind::Runtime;
+        return usage ? usageFailure(error.message) : runFailure(error.message);
+    }
+    const auto value = std::move(report).unwrap();
+    if (args.has("json")) mjt::cli::renderXrefJson(value, mjt::out());
+    else                  mjt::cli::renderXrefText(value, mjt::out());
+    return mjt::cli::kExitOk;
+}
+
+/// 命令树：根（--version）→ info / mapping / jar → fix / decompile / strings /
+/// xref。
 ca::opt::Command buildCommandLine()
 {
     ca::opt::Command root;
@@ -410,6 +479,73 @@ ca::opt::Command buildCommandLine()
     decompile.args.push_back(maxMemoryMiB);
     root.subcommands.push_back(std::move(decompile));
 
+    // strings：常量池字符串抽取（-o 可选；--class 过滤单类，--min-len 过滤短串）。
+    ca::opt::Command strings;
+    strings.name = "strings";
+    strings.help = mjt::shared::trfStr("mjt.cli.strings.help");
+    ca::opt::Arg stringsInput = input;
+    strings.args.push_back(stringsInput);
+    ca::opt::Arg stringsClass = classArg;
+    stringsClass.name = "class";
+    stringsClass.help = mjt::shared::trfStr("mjt.cli.strings.class_help");
+    strings.args.push_back(stringsClass);
+    ca::opt::Arg minLen;
+    minLen.name          = "min-len";
+    minLen.kind          = ca::opt::OptKind::String;
+    minLen.metavar       = "<n>";
+    minLen.help          = mjt::shared::trfStr("mjt.cli.strings.min_len_help");
+    minLen.default_value = "1";
+    strings.args.push_back(minLen);
+    ca::opt::Arg stringsJson;
+    stringsJson.name = "json";
+    stringsJson.kind = ca::opt::OptKind::Flag;
+    stringsJson.help = mjt::shared::trfStr("mjt.cli.strings.json_help");
+    strings.args.push_back(stringsJson);
+    ca::opt::Arg stringsOutput = output;
+    stringsOutput.required     = false;
+    stringsOutput.help         = mjt::shared::trfStr("mjt.cli.strings.output_help");
+    strings.args.push_back(stringsOutput);
+    root.subcommands.push_back(std::move(strings));
+
+    // xref：类/成员反查（--direction 缺省 to；--limit 缺省 200，输出必有界）。
+    ca::opt::Command xref;
+    xref.name = "xref";
+    xref.help = mjt::shared::trfStr("mjt.cli.xref.help");
+    ca::opt::Arg xrefInput = input;
+    xref.args.push_back(xrefInput);
+    ca::opt::Arg xrefClass = classArg;
+    xrefClass.name    = "class";
+    xrefClass.help    = mjt::shared::trfStr("mjt.cli.xref.class_help");
+    xrefClass.required = true;
+    xref.args.push_back(xrefClass);
+    ca::opt::Arg member;
+    member.name    = "member";
+    member.aliases = {"-m"};
+    member.kind    = ca::opt::OptKind::String;
+    member.metavar = "<member>";
+    member.help    = mjt::shared::trfStr("mjt.cli.xref.member_help");
+    xref.args.push_back(member);
+    ca::opt::Arg direction;
+    direction.name          = "direction";
+    direction.kind          = ca::opt::OptKind::String;
+    direction.metavar       = "<to|from|both>";
+    direction.help          = mjt::shared::trfStr("mjt.cli.xref.direction_help");
+    direction.default_value = "to";
+    xref.args.push_back(direction);
+    ca::opt::Arg limit;
+    limit.name          = "limit";
+    limit.kind          = ca::opt::OptKind::String;
+    limit.metavar       = "<n>";
+    limit.help          = mjt::shared::trfStr("mjt.cli.xref.limit_help");
+    limit.default_value = "200";
+    xref.args.push_back(limit);
+    ca::opt::Arg xrefJson;
+    xrefJson.name = "json";
+    xrefJson.kind = ca::opt::OptKind::Flag;
+    xrefJson.help = mjt::shared::trfStr("mjt.cli.xref.json_help");
+    xref.args.push_back(xrefJson);
+    root.subcommands.push_back(std::move(xref));
+
     return root;
 }
 
@@ -445,6 +581,8 @@ int main(int argc, char* argv[])
     if (path.size() == 1 && path.front() == "info") return runInfo(args);
     if (path.size() == 1 && path.front() == "mapping") return runMapping(args);
     if (path.size() == 1 && path.front() == "decompile") return runDecompile(args);
+    if (path.size() == 1 && path.front() == "strings") return runStrings(args);
+    if (path.size() == 1 && path.front() == "xref") return runXref(args);
     if (path.size() == 2 && path.front() == "jar" && path[1] == "fix") return runJarFix(args);
 
     std::cerr << ca::opt::help_text(parser.root());

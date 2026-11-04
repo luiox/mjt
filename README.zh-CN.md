@@ -65,10 +65,10 @@ Windows 下 exe 嵌了 `activeCodePage=UTF-8` 与 `longPathAware` 的 manifest�
 
 ## CLI 用法
 
-`mjt` 是普通命令行工具（`xmake build mjt`），四个面向 JAR 与 mapping
+`mjt` 是普通命令行工具（`xmake build mjt`），六个面向 JAR 与 mapping
 文件的批处理式命令。退出码约定：`0` 成功（含 `--help`）、`1` 用法错误
-（参数缺失、输入文件不存在、格式名不识别、类选择器无命中）、`2` 运行失败
-（打开、解析、修复、导出或反编译失败）。
+（参数缺失、输入文件不存在、格式名不识别、类选择器无命中、旗标值非法）、
+`2` 运行失败（打开、解析、修复、导出、反编译、抽取或扫描失败）。
 
 ```sh
 mjt --version          # 输出版本号
@@ -81,10 +81,11 @@ mjt --help             # 命令树帮助
 mjt info -i <jar> [--json]
 ```
 
-输出条目数、类数、类形态分布（class / interface / enum / annotation /
-record / module）、条目路径形态 facet 分布（`regular`、`empty_segment`…）、
-字节码版本分布与 manifest 有无。普查事实来自分析库投影；`--json` 输出同一
-数据（键为稳定英文）。
+输出条目数、类数、成员普查（方法/字段总数、native 方法数、两侧可见性
+分布）、类形态分布（class / interface / enum / annotation / record /
+module）、类来源分布（`jdk` / `known` / `unknown`，包前缀派生）、条目路径
+形态 facet 分布（`regular`、`empty_segment`…）、字节码版本分布与 manifest
+有无。普查事实来自分析库投影；`--json` 输出同一数据（键为稳定英文）。
 
 ### `mjt mapping` — mapping 格式互转
 
@@ -142,6 +143,37 @@ mjt decompile -i <jar> -o <out.zip> --all --decompiler vineflower   # 归档输�
 `cfr`）、`--decompiler-jar <jar>`、`--timeout-ms <n>`（缺省 120000）、
 `--max-memory-mib <n>`（缺省 1024）。
 
+### `mjt strings` — 常量池字符串抽取
+
+```sh
+mjt strings -i <jar> [--class <internalName>] [--min-len N] [--json] [-o <file>]
+```
+
+抽取 jar 内类的常量池字符串（整 jar；`--class` 限定单类），输出去重列表，
+按出现次数排序。出现 = 常量池条目：一个字符串字面量同时产出
+`CONSTANT_String` 条目与背书 `CONSTANT_Utf8` 条目（`--json` 携带每个值的
+`kinds` 细分：utf8 / string / class），同一文本被两个类引用即计 4。
+`--min-len N` 过滤短于 N 字节的值（规范 UTF-8 字节长度，缺省 `1`）；畸形
+class 条目跳过并计数。带 `-o` 时完整报告写文件、stdout 只留摘要；值恒单行
+（控制字符转义）且恒为合法 UTF-8（常量池编码怪形经规范解码兜底）。
+
+### `mjt xref` — 类/成员反查
+
+```sh
+mjt xref -i <jar> -c <internalName> [-m <member>] [--direction to|from|both] [--limit N] [--json]
+```
+
+反查类/成员周边的直接引用。`to`（缺省）找编码目标命中的全部位置（该类的
+方法调用与字段访问、指向它的类型指令与类头声明）；`from` 找该类方法体发出
+的全部引用；`both` 为并集（自引用边去重）。`-m <member>` 收缩到单个成员：
+`name` 跨描述符匹配，`name(descriptor)`（如 `act(I)V`）精确匹配。类必须
+存在于 jar；选择器无命中退出码 `1`。
+
+输出恒有界：`--limit` 限制引用行数（缺省 `200`）；超出时报告 `total` 并
+提示放大 `--limit`——混淆 jar 反查可达百万行，无界输出是事故。每行引用含
+kind（`method` / `field` / `type`）、来源（`class.method(desc)@insn` 或
+类头行的 `(class header)`）与目标（`owner.name(desc)` 或类型名）。
+
 语言：文案跟随 `MJT_LANG` 环境变量（缺省 `en_US`，支持 `zh_CN`）。
 
 ## 仓库结构
@@ -149,7 +181,7 @@ mjt decompile -i <jar> -o <out.zip> --all --decompiler vineflower   # 归档输�
 ```
 mjt/mcp/src/     MCP 服务器与工具集（核心产品代码）
 mjt/mcp/test/    MCP 层单测
-mjt/cli/         `mjt` CLI 二进制（info / mapping / jar fix / decompile）
+mjt/cli/         `mjt` CLI 二进制（info / mapping / jar fix / decompile / strings / xref）
 mjt/test/cli/    CLI 层单测
 mjt/src/shared/  MCP 工具集共用的底层能力（反编译接入、jar 重映射、workspace…）
 skills/          MCP 技能定义

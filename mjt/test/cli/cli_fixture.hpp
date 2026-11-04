@@ -193,6 +193,134 @@ inline std::vector<std::string> jarEntryUris(const std::filesystem::path& jar)
     return uris;
 }
 
+// ── strings 语料（批三：常量池字符串抽取）───────────────────────────
+
+/// strings 语料源 A：两个字面量（一个跨类复用，一个本类独有）。
+inline std::vector<ca::u8> assembleWordsClass()
+{
+    return assembleClass(
+        ".super java/lang/Object\n"
+        ".class public super fixture/Words {\n"
+        "  .method public static first ()Ljava/lang/String; {\n"
+        "    code: {\n"
+        "      ldc \"hello world\"\n"
+        "      areturn\n"
+        "    }\n"
+        "  }\n"
+        "  .method public static second ()Ljava/lang/String; {\n"
+        "    code: {\n"
+        "      ldc \"zeta_payload_xyz\"\n"
+        "      areturn\n"
+        "    }\n"
+        "  }\n"
+        "}\n");
+}
+
+/// strings 语料源 B：复用 "hello world" + 一个长密文形字面量（--min-len 观察点）。
+inline std::vector<ca::u8> assembleEchoClass()
+{
+    return assembleClass(
+        ".super java/lang/Object\n"
+        ".class public super fixture/Echo {\n"
+        "  .method public static echo ()Ljava/lang/String; {\n"
+        "    code: {\n"
+        "      ldc \"hello world\"\n"
+        "      areturn\n"
+        "    }\n"
+        "  }\n"
+        "  .method public static blob ()Ljava/lang/String; {\n"
+        "    code: {\n"
+        "      ldc \"ENCRYPTED_BLOB_0123456789abcdef\"\n"
+        "      areturn\n"
+        "    }\n"
+        "  }\n"
+        "}\n");
+}
+
+/// strings 语料 jar：Words + Echo 两类（无资源条目）。
+inline std::filesystem::path writeStringsJar()
+{
+    mjbase::model::ResourceContainer container;
+    container.addResource("fixture/Words.class",
+                          std::make_unique<mjbase::model::ClassResource>(
+                              "fixture/Words.class", assembleWordsClass()));
+    container.addResource("fixture/Echo.class",
+                          std::make_unique<mjbase::model::ClassResource>(
+                              "fixture/Echo.class", assembleEchoClass()));
+    const auto path = test::getTempOutPath("mjt_cli_strings_fixture.jar");
+    mjbase::model::ResourceHelper::exportToJar(container, path.string());
+    return path;
+}
+
+// ── xref 语料（批三：已知引用边）────────────────────────────────────
+
+/// xref 语料源 Node：被反查目标（静态字段 + 递归自引用方法）。
+inline std::vector<ca::u8> assembleNodeClass()
+{
+    return assembleClass(
+        ".super java/lang/Object\n"
+        ".class public super fixture/Node {\n"
+        "  .field public static flag Z\n"
+        "  .method public static run ()V {\n"
+        "    code: {\n"
+        "      invokestatic fixture/Node.run ()V\n"
+        "      return\n"
+        "    }\n"
+        "  }\n"
+        "}\n");
+}
+
+/// xref 语料源 Caller：call 发出方法/字段引用，pick 发出 checkcast 类型引用。
+inline std::vector<ca::u8> assembleCallerClass()
+{
+    return assembleClass(
+        ".super java/lang/Object\n"
+        ".class public super fixture/Caller {\n"
+        "  .method public static call ()V {\n"
+        "    code: {\n"
+        "      invokestatic fixture/Node.run ()V\n"
+        "      getstatic fixture/Node.flag Z\n"
+        "      pop\n"
+        "      return\n"
+        "    }\n"
+        "  }\n"
+        "  .method public static pick (Ljava/lang/Object;)Ljava/lang/Object; {\n"
+        "    code: {\n"
+        "      aload_0\n"
+        "      checkcast fixture/Node\n"
+        "      areturn\n"
+        "    }\n"
+        "  }\n"
+        "}\n");
+}
+
+/// xref 语料源 NodeImpl：super 头声明命中 Node（类头类型引用观察点）。
+inline std::vector<ca::u8> assembleNodeImplClass()
+{
+    return assembleClass(
+        ".super fixture/Node\n"
+        ".class public super fixture/NodeImpl {\n"
+        "}\n");
+}
+
+/// xref 语料 jar：Node（目标）/ Caller（调用方）/ NodeImpl（子类）三类。
+inline std::filesystem::path writeXrefJar()
+{
+    mjbase::model::ResourceContainer container;
+    container.addResource("fixture/Node.class",
+                          std::make_unique<mjbase::model::ClassResource>(
+                              "fixture/Node.class", assembleNodeClass()));
+    container.addResource("fixture/Caller.class",
+                          std::make_unique<mjbase::model::ClassResource>(
+                              "fixture/Caller.class", assembleCallerClass()));
+    container.addResource("fixture/NodeImpl.class",
+                          std::make_unique<mjbase::model::ClassResource>(
+                              "fixture/NodeImpl.class", assembleNodeImplClass()));
+    const auto path = test::getTempOutPath("mjt_cli_xref_fixture.jar");
+    mjbase::model::ResourceHelper::exportToJar(container, path.string());
+    return path;
+}
+
 // ── decompile 语料（#63 敌意名 + perf 大 jar）───────────────────────
 
 /// 敌意类名长度（单段 UTF-16 单元数）：Windows 单段文件名上限的 ~85 倍，

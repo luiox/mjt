@@ -54,9 +54,45 @@ TEST(MjtCliPerfTest, InfoOnBigJarStaysWithinSoftBound)
     const double infoMs = measureOnce([&] {
         auto report = collectInfo(jar.string());
         ASSERT_TRUE(report.is_ok()) << report.unwrap_err().message;
-        EXPECT_EQ(static_cast<ca::i64>(kPerfClassCount), report.unwrap().classes);
+        const auto info = std::move(report).unwrap();
+        EXPECT_EQ(static_cast<ca::i64>(kPerfClassCount), info.classes);
+        // 批三新增维度自检：成员普查总量与可见性桶对账（分布不空转）。
+        ca::i64 methodSum = 0;
+        for (const auto& [bucket, count] : info.methodVisibility) methodSum += count;
+        EXPECT_EQ(methodSum, info.methods);
+        EXPECT_GT(info.methods, 0);
     });
-    expectWithinSoftBound("info 2100 classes", infoMs, 60000.0);
+    // 批三收紧：info 新增成员普查（censusMembers）/来源分布维度后，语料实测
+    // 仍在低秒档，上界自 60s 收至 20s（仍只防数量级劣化）。
+    expectWithinSoftBound("info 2100 classes (member census + origins)", infoMs, 20000.0);
+}
+
+TEST(MjtCliPerfTest, StringsOnBigJarStaysWithinSoftBound)
+{
+    const auto jar = cli_fixture::writePerfClassListJar(kPerfClassCount);
+
+    const double stringsMs = measureOnce([&] {
+        auto report = collectStrings(jar.string(), "", 1);
+        ASSERT_TRUE(report.is_ok()) << report.unwrap_err().message;
+        const auto info = std::move(report).unwrap();
+        EXPECT_EQ(info.classesScanned, static_cast<ca::i64>(kPerfClassCount));
+        EXPECT_GT(info.uniqueValues, 0);
+    });
+    expectWithinSoftBound("strings 2100 classes", stringsMs, 30000.0);
+}
+
+TEST(MjtCliPerfTest, XrefOnBigJarStaysWithinSoftBound)
+{
+    const auto jar = cli_fixture::writePerfClassListJar(kPerfClassCount);
+
+    const double xrefMs = measureOnce([&] {
+        // from 方向（语料类 super 头声明必有类型边）：全量 ReferenceScan 建索引
+        // 是查询主体，方向只影响线性过滤。
+        auto report = collectXref(jar.string(), "perf/Subject0", "", "from", 200);
+        ASSERT_TRUE(report.is_ok()) << report.unwrap_err().message;
+        EXPECT_GT(std::move(report).unwrap().total, 0);
+    });
+    expectWithinSoftBound("xref from perf/Subject0 (2100 classes)", xrefMs, 30000.0);
 }
 
 TEST(MjtCliPerfTest, MappingRoundTripOnBigMappingStaysWithinSoftBound)

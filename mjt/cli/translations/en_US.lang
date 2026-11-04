@@ -3,7 +3,7 @@
 # {n} are positional placeholders, repeatable/reorderable
 
 # ── root / shared ───────────────────────────────────────────
-mjt.cli.root.help=JVM bytecode toolkit (info / mapping / jar fix / decompile)
+mjt.cli.root.help=JVM bytecode toolkit (info / mapping / jar fix / decompile / strings / xref)
 mjt.cli.root.version_help=print version and exit
 mjt.cli.opt.input=input path (-i <path>)
 mjt.cli.opt.output=output path (-o <path>); must not be the same file as the input
@@ -11,11 +11,15 @@ mjt.cli.err.input_missing=input does not exist: {0}
 mjt.cli.err.output_missing=an output path is required (-o <path>)
 
 # ── info ────────────────────────────────────────────────────
-mjt.cli.info.help=show jar overview: entries, classes, class kinds, entry path shapes, bytecode versions, manifest
+mjt.cli.info.help=show jar overview: entries, classes, member census, class kinds, entry path shapes, bytecode versions, origins, manifest
 mjt.cli.info.json_help=emit the same data as JSON
 mjt.cli.info.title=jar overview: {0}
 mjt.cli.info.entries=entries: {0}
 mjt.cli.info.classes=classes: {0}
+mjt.cli.info.members=members: methods {0}, fields {1}, native {2}
+mjt.cli.info.method_visibility=method visibility:
+mjt.cli.info.field_visibility=field visibility:
+mjt.cli.info.origins=class origins:
 mjt.cli.info.class_kinds=class kinds:
 mjt.cli.info.entry_shapes=entry path shapes:
 mjt.cli.info.bytecode_versions=bytecode versions:
@@ -85,3 +89,41 @@ mjt.cli.decompile.reason.illegal_character=name segment contains characters that
 mjt.cli.decompile.reason.trailing_dot_or_space=name segment ends with a dot or space (stripped by Windows, the file cannot exist)
 mjt.cli.decompile.reason.parent_or_self=name contains a relative path segment (. or ..)
 mjt.cli.decompile.reason.empty_segment=name contains an empty path segment
+
+# ── strings ─────────────────────────────────────────────────
+mjt.cli.strings.help=extract constant-pool strings from jar classes (whole jar or a single class), deduplicated with occurrence counts
+mjt.cli.strings.class_help=restrict extraction to one class (internal name, slash form, e.g. fixture/Alpha)
+mjt.cli.strings.min_len_help=minimum string length in bytes (default 1)
+mjt.cli.strings.json_help=emit the same data as JSON
+mjt.cli.strings.output_help=write the full report to a file; stdout keeps the summary only
+mjt.cli.strings.title=strings: {0}
+mjt.cli.strings.class_filter=class filter: {0}
+mjt.cli.strings.scanned=scanned {0} classes (skipped: {1})
+mjt.cli.strings.summary=unique strings: {0} (occurrences: {1})
+mjt.cli.strings.written=report written to: {0}
+mjt.cli.strings.err.invalid_min_len=--min-len must be a positive integer: {0}
+mjt.cli.strings.err.class_not_found=class not found in jar: {0}
+mjt.cli.strings.err.open_failed=cannot open jar: {0}
+mjt.cli.strings.err.write_failed=cannot write the output file: {0}
+
+# ── xref ────────────────────────────────────────────────────
+mjt.cli.xref.help=reverse-lookup references to a class or member (to / from / both); output is bounded by --limit
+mjt.cli.xref.class_help=class to look up (internal name, slash form, e.g. fixture/Alpha); must exist in the jar
+mjt.cli.xref.member_help=optional member selector: name or name(descriptor), e.g. act or act(I)V
+mjt.cli.xref.direction_help=reference direction: to (default), from, both
+mjt.cli.xref.limit_help=maximum number of reference lines (default 200); raise it after the truncation hint
+mjt.cli.xref.json_help=emit the same data as JSON
+mjt.cli.xref.title=xref: {0}
+mjt.cli.xref.class=class: {0}
+mjt.cli.xref.member=member: {0}
+mjt.cli.xref.direction=direction: {0}
+mjt.cli.xref.counted=references: {0}
+mjt.cli.xref.of=of
+mjt.cli.xref.truncated=truncated; pass --limit {0} or higher to see all
+mjt.cli.xref.class_header=(class header)
+mjt.cli.xref.err.invalid_direction=invalid direction: {0} (expected to / from / both)
+mjt.cli.xref.err.invalid_member=invalid member selector: {0} (expected name or name(descriptor))
+mjt.cli.xref.err.invalid_limit=--limit must be a positive integer: {0}
+mjt.cli.xref.err.class_not_found=class not found in jar: {0}
+mjt.cli.xref.err.open_failed=cannot open jar: {0}
+mjt.cli.xref.err.scan_failed=reference scan failed: {0}

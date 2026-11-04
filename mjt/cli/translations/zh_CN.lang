@@ -3,7 +3,7 @@
 # {n} 为位置占位符，可重复/可换序
 
 # ── 根 / 共享 ───────────────────────────────────────────────
-mjt.cli.root.help=JVM 字节码工具（info / mapping / jar fix / decompile）
+mjt.cli.root.help=JVM 字节码工具（info / mapping / jar fix / decompile / strings / xref）
 mjt.cli.root.version_help=输出版本号并退出
 mjt.cli.opt.input=输入路径（-i <path>）
 mjt.cli.opt.output=输出路径（-o <path>）；不得与输入同一文件
@@ -11,11 +11,15 @@ mjt.cli.err.input_missing=输入不存在: {0}
 mjt.cli.err.output_missing=需要输出路径（-o <path>）
 
 # ── info ────────────────────────────────────────────────────
-mjt.cli.info.help=展示 jar 概览：条目数、类数、类形态分布、条目路径形态分布、字节码版本分布、manifest 有无
+mjt.cli.info.help=展示 jar 概览：条目数、类数、成员普查、类形态分布、条目路径形态分布、字节码版本分布、来源分布、manifest 有无
 mjt.cli.info.json_help=以 JSON 输出同一数据
 mjt.cli.info.title=jar 概览: {0}
 mjt.cli.info.entries=条目数: {0}
 mjt.cli.info.classes=类数: {0}
+mjt.cli.info.members=成员: 方法 {0}, 字段 {1}, native {2}
+mjt.cli.info.method_visibility=方法可见性分布:
+mjt.cli.info.field_visibility=字段可见性分布:
+mjt.cli.info.origins=类来源分布:
 mjt.cli.info.class_kinds=类形态分布:
 mjt.cli.info.entry_shapes=条目路径形态分布:
 mjt.cli.info.bytecode_versions=字节码版本分布:
@@ -85,3 +89,41 @@ mjt.cli.decompile.reason.illegal_character=名字单段含文件系统非法字�
 mjt.cli.decompile.reason.trailing_dot_or_space=名字单段以点或空格结尾（Windows 落盘时被剥离，文件无法存在）
 mjt.cli.decompile.reason.parent_or_self=名字含相对路径段（. 或 ..）
 mjt.cli.decompile.reason.empty_segment=名字含空路径段
+
+# ── strings ─────────────────────────────────────────────────
+mjt.cli.strings.help=抽取 jar 类常量池字符串（整 jar 或单类），去重并按出现次数排序
+mjt.cli.strings.class_help=只抽取一个类（内部名 slash 形，如 fixture/Alpha）
+mjt.cli.strings.min_len_help=最短字符串长度（字节，缺省 1）
+mjt.cli.strings.json_help=以 JSON 输出同一数据
+mjt.cli.strings.output_help=完整报告写入文件；stdout 只留摘要
+mjt.cli.strings.title=strings: {0}
+mjt.cli.strings.class_filter=类过滤: {0}
+mjt.cli.strings.scanned=已扫描 {0} 个类（跳过: {1}）
+mjt.cli.strings.summary=去重字符串: {0}（出现 {1} 次）
+mjt.cli.strings.written=报告已写出: {0}
+mjt.cli.strings.err.invalid_min_len=--min-len 必须是正整数: {0}
+mjt.cli.strings.err.class_not_found=jar 中找不到类: {0}
+mjt.cli.strings.err.open_failed=无法打开 jar: {0}
+mjt.cli.strings.err.write_failed=无法写出输出文件: {0}
+
+# ── xref ────────────────────────────────────────────────────
+mjt.cli.xref.help=反查类/成员的引用关系（to / from / both）；输出由 --limit 有界
+mjt.cli.xref.class_help=要反查的类（内部名 slash 形，如 fixture/Alpha）；必须存在于 jar
+mjt.cli.xref.member_help=可选成员选择器：name 或 name(descriptor)，如 act 或 act(I)V
+mjt.cli.xref.direction_help=引用方向: to（缺省）、from、both
+mjt.cli.xref.limit_help=引用行数上限（缺省 200）；截断后按提示放大
+mjt.cli.xref.json_help=以 JSON 输出同一数据
+mjt.cli.xref.title=xref: {0}
+mjt.cli.xref.class=类: {0}
+mjt.cli.xref.member=成员: {0}
+mjt.cli.xref.direction=方向: {0}
+mjt.cli.xref.counted=引用: {0}
+mjt.cli.xref.of=/
+mjt.cli.xref.truncated=已截断；用 --limit {0} 或更大查看全部
+mjt.cli.xref.class_header=（类头声明）
+mjt.cli.xref.err.invalid_direction=无效方向: {0}（应为 to / from / both）
+mjt.cli.xref.err.invalid_member=无效成员选择器: {0}（应为 name 或 name(descriptor)）
+mjt.cli.xref.err.invalid_limit=--limit 必须是正整数: {0}
+mjt.cli.xref.err.class_not_found=jar 中找不到类: {0}
+mjt.cli.xref.err.open_failed=无法打开 jar: {0}
+mjt.cli.xref.err.scan_failed=引用扫描失败: {0}

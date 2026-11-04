@@ -52,7 +52,7 @@ On Windows the executable embeds an `activeCodePage=UTF-8` and `longPathAware` m
 
 ## CLI usage
 
-The `mjt` binary is a plain command-line tool (`xmake build mjt`) covering four batch-style commands over JARs and mapping files. Exit codes: `0` success (including `--help`), `1` usage error (missing argument, missing input file, unknown format name, class selector without a match), `2` runtime failure (open, parse, repair, export or decompile failure).
+The `mjt` binary is a plain command-line tool (`xmake build mjt`) covering six batch-style commands over JARs and mapping files. Exit codes: `0` success (including `--help`), `1` usage error (missing argument, missing input file, unknown format name, class selector without a match, invalid flag value), `2` runtime failure (open, parse, repair, export, decompile, extraction or scan failure).
 
 ```sh
 mjt --version          # print tool version
@@ -65,7 +65,7 @@ mjt --help             # command tree help
 mjt info -i <jar> [--json]
 ```
 
-Prints entry count, class count, class-kind distribution (class / interface / enum / annotation / record / module), entry-path-shape facet distribution (`regular`, `empty_segment`, …), bytecode version distribution and MANIFEST presence. Census facts come from the analysis database projection; `--json` emits the same data with stable English keys.
+Prints entry count, class count, member census (method / field totals, native method count, per-side visibility buckets), class-kind distribution (class / interface / enum / annotation / record / module), class origin distribution (`jdk` / `known` / `unknown`, derived from package prefixes), entry-path-shape facet distribution (`regular`, `empty_segment`, …), bytecode version distribution and MANIFEST presence. Census facts come from the analysis database projection; `--json` emits the same data with stable English keys.
 
 ### `mjt mapping` — mapping format conversion
 
@@ -106,6 +106,24 @@ Batch mode hands the whole jar to the backend (CFR writes a source tree, vineflo
 
 Shared options (aligned with the MCP decompile contract): `--decompiler cfr|vineflower` (default `cfr`), `--decompiler-jar <jar>`, `--timeout-ms <n>` (default 120000), `--max-memory-mib <n>` (default 1024).
 
+### `mjt strings` — constant-pool string extraction
+
+```sh
+mjt strings -i <jar> [--class <internalName>] [--min-len N] [--json] [-o <file>]
+```
+
+Extracts constant-pool strings from the jar's classes (whole jar, or a single class with `--class`) and prints a deduplicated list ordered by occurrence count. Occurrences are constant-pool entries: a string literal contributes both its `CONSTANT_String` entry and its backing `CONSTANT_Utf8` entry (the `--json` output carries a per-value `kinds` breakdown of utf8 / string / class entries), so the same text referenced from two classes counts four. `--min-len N` filters values shorter than N bytes (canonical UTF-8 length, default `1`); malformed class entries are skipped and counted. With `-o` the full report goes to a file and stdout keeps the summary; values are kept on a single line (control characters escaped) and stay valid UTF-8 regardless of pool encoding quirks.
+
+### `mjt xref` — class / member reverse reference lookup
+
+```sh
+mjt xref -i <jar> -c <internalName> [-m <member>] [--direction to|from|both] [--limit N] [--json]
+```
+
+Reverse-lookups the direct references around a class or member. `to` (default) finds every site whose encoded target is the class (method calls and field accesses owned by it, type instructions and class-header declarations naming it); `from` finds every reference emitted by the class's own methods; `both` is the union (self-edges deduplicated). `-m <member>` narrows to one member: `name` matches across descriptors, `name(descriptor)` (e.g. `act(I)V`) is an exact match. The class must exist in the jar; unknown selectors exit `1`.
+
+Output is always bounded: `--limit` caps the reference list (default `200`); when more matches exist the report says `total` and asks for a larger `--limit` — obfuscated jars can reach millions of rows and unbounded output is an incident. Each reference line shows kind (`method` / `field` / `type`), source (`class.method(desc)@insn` or `(class header)` for class-level sites) and target (`owner.name(desc)` or the type name).
+
 Locale: message text follows the `MJT_LANG` environment variable (`en_US` default, `zh_CN` supported).
 
 ## Repository layout
@@ -113,7 +131,7 @@ Locale: message text follows the `MJT_LANG` environment variable (`en_US` defaul
 ```
 mjt/mcp/src/     MCP server and tool set (core product code)
 mjt/mcp/test/    MCP-layer unit tests
-mjt/cli/         `mjt` CLI binary (info / mapping / jar fix / decompile)
+mjt/cli/         `mjt` CLI binary (info / mapping / jar fix / decompile / strings / xref)
 mjt/test/cli/    CLI-layer unit tests
 mjt/src/shared/  capabilities shared across the MCP tool set
                  (decompiler integration, jar remapping, workspace…)

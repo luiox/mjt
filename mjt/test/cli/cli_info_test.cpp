@@ -102,6 +102,49 @@ TEST(MjtCliInfoTest, ReportsCensusCountsKindsShapesVersionsManifest)
     EXPECT_EQ(info.versions[0].second, 3);
 }
 
+TEST(MjtCliInfoTest, ReportsMemberCensusNativeAndOrigins)
+{
+    const auto jar    = cli_fixture::writeInfoJar();
+    auto       report = collectInfo(jar.string());
+    ASSERT_TRUE(report.is_ok()) << report.unwrap_err().message;
+    const auto info = std::move(report).unwrap();
+
+    // 成员普查（fixture 逐类核对：Alpha private 字段 1 + public static 方法 1，
+    // Api public abstract 方法 1，Color public static 方法 1——jasm 只汇编
+    // 源内声明的成员，无隐式补齐）。
+    EXPECT_EQ(info.methods, 3);
+    EXPECT_EQ(info.fields, 1);
+    EXPECT_EQ(info.nativeMethods, 0);
+    ASSERT_EQ(info.methodVisibility.size(), 1U);
+    EXPECT_EQ(info.methodVisibility[0].first, "public");
+    EXPECT_EQ(info.methodVisibility[0].second, 3);
+    ASSERT_EQ(info.fieldVisibility.size(), 1U);
+    EXPECT_EQ(info.fieldVisibility[0].first, "private");
+    EXPECT_EQ(info.fieldVisibility[0].second, 1);
+
+    // 来源分布：fixture/* 前缀不命中任何官方/第三方根 → unknown 单桶。
+    ASSERT_EQ(info.origins.size(), 1U);
+    EXPECT_EQ(info.origins[0].first, "unknown");
+    EXPECT_EQ(info.origins[0].second, 3);
+}
+
+TEST(MjtCliInfoTest, MemberCensusTotalsMatchVisibilityBuckets)
+{
+    // 对账不变式：可见性桶计数之和 = 各自成员总数（投影两个独立查询的交叉
+    // 验证；censusMembers 行数 = Σ method_count + field_count 同款纪律）。
+    const auto jar    = cli_fixture::writeDecompileJar();
+    auto       report = collectInfo(jar.string());
+    ASSERT_TRUE(report.is_ok()) << report.unwrap_err().message;
+    const auto info = std::move(report).unwrap();
+
+    ca::i64 methodSum = 0;
+    for (const auto& [bucket, count] : info.methodVisibility) methodSum += count;
+    EXPECT_EQ(methodSum, info.methods);
+    ca::i64 fieldSum = 0;
+    for (const auto& [bucket, count] : info.fieldVisibility) fieldSum += count;
+    EXPECT_EQ(fieldSum, info.fields);
+}
+
 TEST(MjtCliInfoTest, ReportsManifestPresence)
 {
     const auto jar    = cli_fixture::writeInfoJarWithManifest();
@@ -131,8 +174,15 @@ TEST(MjtCliInfoTest, RendersDeterministicTextAndJson)
     EXPECT_NE(text.find("jar overview: " + jar.string()), std::string::npos);
     EXPECT_NE(text.find("entries: 9"), std::string::npos);
     EXPECT_NE(text.find("classes: 3"), std::string::npos);
+    EXPECT_NE(text.find("members: methods 3, fields 1, native 0"), std::string::npos);
     EXPECT_NE(text.find("class kinds:"), std::string::npos);
     EXPECT_NE(text.find("  interface: 1"), std::string::npos);
+    EXPECT_NE(text.find("method visibility:"), std::string::npos);
+    EXPECT_NE(text.find("  public: 3"), std::string::npos);
+    EXPECT_NE(text.find("field visibility:"), std::string::npos);
+    EXPECT_NE(text.find("  private: 1"), std::string::npos);
+    EXPECT_NE(text.find("class origins:"), std::string::npos);
+    EXPECT_NE(text.find("  unknown: 3"), std::string::npos);
     EXPECT_NE(text.find("entry path shapes:"), std::string::npos);
     EXPECT_NE(text.find("  trailing_slash: 3"), std::string::npos);
     EXPECT_NE(text.find("  empty_segment: 2"), std::string::npos);
@@ -145,7 +195,13 @@ TEST(MjtCliInfoTest, RendersDeterministicTextAndJson)
     const auto json = jsonCapture.text();
     EXPECT_NE(json.find("\"entries\": 9"), std::string::npos);
     EXPECT_NE(json.find("\"classes\": 3"), std::string::npos);
+    EXPECT_NE(json.find("\"methods\": 3"), std::string::npos);
+    EXPECT_NE(json.find("\"fields\": 1"), std::string::npos);
+    EXPECT_NE(json.find("\"native_methods\": 0"), std::string::npos);
     EXPECT_NE(json.find("\"interface\": 1"), std::string::npos);
+    EXPECT_NE(json.find("\"method_visibility\": {\"public\": 3}"), std::string::npos);
+    EXPECT_NE(json.find("\"field_visibility\": {\"private\": 1}"), std::string::npos);
+    EXPECT_NE(json.find("\"origins\": {\"unknown\": 3}"), std::string::npos);
     EXPECT_NE(json.find("\"empty_segment\": 2"), std::string::npos);
     EXPECT_NE(json.find("\"61\": 3"), std::string::npos);
     EXPECT_NE(json.find("\"has_manifest\": false"), std::string::npos);

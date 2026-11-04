@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <map>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -25,6 +26,7 @@
 
 #include "mjbase/project/analysis_db.hpp"
 #include "mjbase/project/class_kind.hpp"
+#include "mjbase/project/library_origin.hpp"
 #include "shared/i18n_errors.hpp"
 #include "shared/json_util.hpp"
 #include "shared/output_sink.hpp"
@@ -121,6 +123,15 @@ mapClassRowsError(
     return ca::Ok(std::move(value).unwrap());
 }
 
+ca::Result<std::vector<mjbase::project::DbMemberCensusRow>, workspace::WorkspaceErrorInfo>
+mapMemberRowsError(
+    ca::Result<std::vector<mjbase::project::DbMemberCensusRow>, mjbase::project::AnalysisDbError>&&
+        value)
+{
+    if (value.is_err()) return ca::Err(dbError(std::move(value).unwrap_err()));
+    return ca::Ok(std::move(value).unwrap());
+}
+
 /// major → "java N" 短标签（major ≥ 45 且 ≤ 200 才可判；越界值不贴标签）。
 std::string javaVersionLabel(ca::i32 major)
 {
@@ -135,6 +146,28 @@ void sortByName(std::vector<std::pair<std::string, T>>& distribution)
     std::sort(distribution.begin(), distribution.end(),
               [](const auto& left, const auto& right) { return left.first < right.first; });
 }
+
+/// 计数表 → 分布：按 @p order 的稳定桶序输出，只含非零项（分布不依赖 map
+/// 迭代序，桶序即呈现契约）。
+template <typename T>
+std::vector<std::pair<std::string, T>> orderedBuckets(
+    const std::map<std::string, T>& counts, std::initializer_list<const char*> order)
+{
+    std::vector<std::pair<std::string, T>> result;
+    for (const char* name : order) {
+        const auto it = counts.find(name);
+        if (it == counts.end() || it->second == 0) continue;
+        result.emplace_back(name, it->second);
+    }
+    return result;
+}
+
+/// 可见性分布固定桶序（JVMS 命名；包私有 = 三显式位全空）。
+constexpr std::initializer_list<const char*> kVisibilityOrder = {
+    "public", "private", "protected", "package_private"};
+
+/// 来源分布固定桶序（LibraryOrigin 枚举序；mjbase libraryOriginName 同文）。
+constexpr std::initializer_list<const char*> kOriginOrder = {"jdk", "known", "unknown"};
 
 }   // namespace
 
@@ -170,12 +203,37 @@ ca::Result<InfoReport, workspace::WorkspaceErrorInfo> collectInfo(const std::str
     for (const auto& facet : censusValue.entryShapes)
         report.entryShapes.emplace_back(facet.facet.to_std_string(), facet.count);
 
+    // 成员普查总量：容器投影计数列（与 censusMembers 逐行同源同口径）。
+    report.methods       = censusValue.methods;
+    report.fields        = censusValue.fields;
+    report.nativeMethods = censusValue.nativeMethods;
+
     // class_kind 分布：投影行已带派生形态（classifyClassKind），这里只归并计数。
     std::map<std::string, ca::i64> kinds;
-    for (const auto& row : std::move(classRows).unwrap())
+    std::map<std::string, ca::i64> origins;
+    for (const auto& row : std::move(classRows).unwrap()) {
         ++kinds[std::string(mjbase::project::classKindName(row.kind))];
+        ++origins[std::string(mjbase::project::libraryOriginName(row.origin))];
+    }
     for (const auto& [kind, count] : kinds) report.classKinds.emplace_back(kind, count);
     sortByName(report.classKinds);
+    report.origins = orderedBuckets(origins, kOriginOrder);
+
+    // 成员可见性分布：censusMembers 逐成员 access 按位归类（JVMS 三显式位；
+    // 之外 = 包私有）。行序复合键，无聚合价值，逐行扫一遍即线性。
+    auto memberRows = mapMemberRowsError(db.censusMembers(id));
+    if (memberRows.is_err()) return ca::Err(std::move(memberRows).unwrap_err());
+    {
+        std::map<std::string, ca::i64> methodVis;
+        std::map<std::string, ca::i64> fieldVis;
+        for (const auto& row : std::move(memberRows).unwrap()) {
+            auto& target = row.kind == mjbase::project::DbMemberKind::Method ? methodVis
+                                                                            : fieldVis;
+            ++target[memberVisibilityName(row.access)];
+        }
+        report.methodVisibility = orderedBuckets(methodVis, kVisibilityOrder);
+        report.fieldVisibility  = orderedBuckets(fieldVis, kVisibilityOrder);
+    }
 
     // 字节码版本分布：summary_scan 骨架；损坏类被跳过（不进分布，不判失败）。
     auto summaries = ws.listClassSummaries();
@@ -197,10 +255,28 @@ void renderInfoText(const InfoReport& report, OutputSink& sink)
     sink.puts(shared::trfStr("mjt.cli.info.title", {report.jarPath}));
     sink.puts(shared::trfStr("mjt.cli.info.entries", {std::to_string(report.entries)}));
     sink.puts(shared::trfStr("mjt.cli.info.classes", {std::to_string(report.classes)}));
+    sink.puts(shared::trfStr("mjt.cli.info.members",
+                             {std::to_string(report.methods), std::to_string(report.fields),
+                              std::to_string(report.nativeMethods)}));
     if (!report.classKinds.empty()) {
         sink.puts(shared::trfStr("mjt.cli.info.class_kinds"));
         for (const auto& [kind, count] : report.classKinds)
             sink.puts("  " + kind + ": " + std::to_string(count));
+    }
+    if (!report.methodVisibility.empty()) {
+        sink.puts(shared::trfStr("mjt.cli.info.method_visibility"));
+        for (const auto& [bucket, count] : report.methodVisibility)
+            sink.puts("  " + bucket + ": " + std::to_string(count));
+    }
+    if (!report.fieldVisibility.empty()) {
+        sink.puts(shared::trfStr("mjt.cli.info.field_visibility"));
+        for (const auto& [bucket, count] : report.fieldVisibility)
+            sink.puts("  " + bucket + ": " + std::to_string(count));
+    }
+    if (!report.origins.empty()) {
+        sink.puts(shared::trfStr("mjt.cli.info.origins"));
+        for (const auto& [origin, count] : report.origins)
+            sink.puts("  " + origin + ": " + std::to_string(count));
     }
     if (!report.entryShapes.empty()) {
         sink.puts(shared::trfStr("mjt.cli.info.entry_shapes"));
@@ -249,7 +325,13 @@ void renderInfoJson(const InfoReport& report, OutputSink& sink)
     out += "  \"jar\": \"" + json::escape(report.jarPath) + "\",\n";
     out += "  \"entries\": " + std::to_string(report.entries) + ",\n";
     out += "  \"classes\": " + std::to_string(report.classes) + ",\n";
+    out += "  \"methods\": " + std::to_string(report.methods) + ",\n";
+    out += "  \"fields\": " + std::to_string(report.fields) + ",\n";
+    out += "  \"native_methods\": " + std::to_string(report.nativeMethods) + ",\n";
     out += "  \"class_kinds\": " + objectField(report.classKinds) + ",\n";
+    out += "  \"method_visibility\": " + objectField(report.methodVisibility) + ",\n";
+    out += "  \"field_visibility\": " + objectField(report.fieldVisibility) + ",\n";
+    out += "  \"origins\": " + objectField(report.origins) + ",\n";
     out += "  \"entry_shapes\": " + objectField(report.entryShapes) + ",\n";
     out += "  \"bytecode_versions\": " + versions + ",\n";
     out += std::string("  \"has_manifest\": ") + (report.hasManifest ? "true" : "false") + "\n";

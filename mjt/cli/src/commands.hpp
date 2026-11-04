@@ -1,6 +1,7 @@
 /// @file        commands.hpp
-/// @brief       `mjt` CLI 命令核心面：info / mapping / jar fix / decompile
-///              四个命令的纯逻辑入口与报告结构（main 与 gtest 共链）。
+/// @brief       `mjt` CLI 命令核心面：info / mapping / jar fix / decompile /
+///              strings / xref 六个命令的纯逻辑入口与报告结构（main 与 gtest
+///              共链）。
 ///
 /// 分层契约：本模块只做「打开制品 → 调 workspace/mjbase 既有面 → 产出可
 /// 断言的报告结构」，命令行解析（ca::opt）与退出码映射归 main.cpp；渲染
@@ -50,7 +51,28 @@ struct InfoReport
     /// @brief 字节码版本分布（class file major → 计数，major 升序）。
     std::vector<std::pair<ca::i32, ca::i64>>     versions;
     bool hasManifest = false; ///< 容器内是否有可解析的 MANIFEST.MF
+    // ── 批三新增：成员普查 / native 计数 / 来源分布（census 投影同源） ──
+    ca::i64 methods       = 0; ///< 方法总数（censusContainer.methods）
+    ca::i64 fields        = 0; ///< 字段总数（censusContainer.fields）
+    ca::i64 nativeMethods = 0; ///< ACC_NATIVE 方法数（censusContainer.nativeMethods）
+    /// @brief 方法可见性分布（public/private/protected/package_private 声明序；
+    ///        censusMembers 逐成员 access 按位归类，只含非零项）。
+    std::vector<std::pair<std::string, ca::i64>> methodVisibility;
+    /// @brief 字段可见性分布（同 methodVisibility 桶序）。
+    std::vector<std::pair<std::string, ca::i64>> fieldVisibility;
+    /// @brief 类来源分布（library_origin：jdk/known/unknown，LibraryOrigin 枚举
+    ///        序；censusClasses 投影层派生列，只含非零项）。
+    std::vector<std::pair<std::string, ca::i64>> origins;
 };
+
+/// @brief 成员 access 旗标 → 可见性桶名（JVMS：三显式位之外 = 包私有）。
+inline std::string memberVisibilityName(ca::i32 access)
+{
+    if (access & 0x0001) return "public";     // ACC_PUBLIC
+    if (access & 0x0002) return "private";    // ACC_PRIVATE
+    if (access & 0x0004) return "protected";  // ACC_PROTECTED
+    return "package_private";
+}
 
 /// @brief 采集 jar 概览：workspace 打开 → 分析库整库导入 → census 投影 +
 ///        summary_scan 骨架。分析库落在进程临时目录的唯一文件，返回前清理。
@@ -250,5 +272,112 @@ void renderBatchDecompileSummary(const BatchDecompileReport& report, OutputSink&
 
 /// @brief 渲染批量预检跳过清单到 stderr（N 项 + 单类模式 / jasm 指路）。
 void renderSkippedEntries(const BatchDecompileReport& report, OutputSink& sink);
+
+// ── strings ────────────────────────────────────────────────────────
+
+/// @brief strings 命令错误：类别定退出码分支，message 为已渲染文案。
+struct StringsError
+{
+    enum class Kind
+    {
+        InvalidArgument, ///< --min-len 等旗标值非法（用法错误 → 退出码 1）
+        ClassNotFound,   ///< --class 选择器在 jar 内无命中（→ 退出码 1）
+        Runtime,         ///< jar 打开 / 读取失败（→ 退出码 2）
+    };
+    Kind        kind    = Kind::Runtime;
+    std::string message;
+};
+
+/// @brief 一条去重后的字符串值：jar 级出现次数 + 常量池种类计数。
+struct StringsValue
+{
+    ca::i64 count = 0;  ///< 出现次数（常量池条目数，跨类累加）
+    ca::i64 utf8 = 0;   ///< 其中裸 CONSTANT_Utf8 条目数
+    ca::i64 string = 0; ///< 其中 CONSTANT_String（字面量）条目数
+    ca::i64 cls = 0;    ///< 其中 CONSTANT_Class（类名引用）条目数
+    std::string value;  ///< 字符串值（规范 UTF-8）
+};
+
+/// @brief 一次常量池字符串抽取的报告（计数面 + 去重列表；渲染与断言共用）。
+struct StringsReport
+{
+    std::string jarPath;      ///< 输入 jar 路径（原样回显）
+    std::string classFilter;  ///< --class 内部名；空 = 整 jar
+    ca::i64     classesScanned = 0; ///< 实际扫描的 class（可解析骨架）
+    ca::i64     classesSkipped = 0; ///< jar 内 class 条目 − 可解析类（畸形跳过）
+    ca::i64     occurrences    = 0; ///< 过滤后抽取条目总数（= Σ count）
+    ca::i64     uniqueValues   = 0; ///< 去重值数（= values.size()）
+    /// @brief 去重值列表：count 降序、value 升序（全序，可 diff）。
+    std::vector<StringsValue> values;
+};
+
+/// @brief 抽取常量池字符串：shared 层 StringExtractor 逐类抽取（Utf8 / String /
+///        Class 三种条目），--min-len 按规范 UTF-8 字节长度过滤，值跨类去重。
+/// @param jarPath     输入 jar
+/// @param classFilter --class 内部名（slash 形）；空 = 整 jar。类经
+///                    listClassSummaries 骨架匹配，无命中返回 ClassNotFound
+/// @param minimumLen  最短长度（字节），< 1 返回 InvalidArgument
+/// @note 契约：一个字符串字面量同时产出 CONSTANT_String 与其背书
+///       CONSTANT_Utf8 两个条目（kind 计数披露口径）；畸形 class 静默跳过并
+///       计入 classesSkipped。
+ca::Result<StringsReport, StringsError> collectStrings(const std::string& jarPath,
+                                                       const std::string& classFilter,
+                                                       ca::i64 minimumLen);
+
+/// @brief 渲染 strings 人类可读报告（i18n 头 + count 值列表；值经控制字符
+///        转义保证单行）。
+void renderStringsText(const StringsReport& report, OutputSink& sink);
+
+/// @brief 渲染 strings JSON（键稳定英文；值经 json::escape 转义）。
+void renderStringsJson(const StringsReport& report, OutputSink& sink);
+
+// ── xref ───────────────────────────────────────────────────────────
+
+/// @brief xref 命令错误：类别定退出码分支，message 为已渲染文案。
+struct XrefError
+{
+    enum class Kind
+    {
+        InvalidArgument, ///< --direction / --limit 等旗标值非法（用法 → 退出码 1）
+        ClassNotFound,   ///< -c 类在 jar 内无命中（→ 退出码 1）
+        Runtime,         ///< jar 打开 / 扫描失败（→ 退出码 2）
+    };
+    Kind        kind    = Kind::Runtime;
+    std::string message;
+};
+
+/// @brief 一次 xref 查询的报告（输出有界；渲染与断言共用）。
+struct XrefReport
+{
+    std::string jarPath;      ///< 输入 jar 路径（原样回显）
+    std::string className;    ///< -c 类内部名（原样回显）
+    std::string member;       ///< -m 成员选择器原样（空 = 类级）
+    std::string direction;    ///< "to" / "from" / "both"
+    ca::i64     limit    = 200; ///< --limit（生效值）
+    ca::i64     total    = 0;   ///< 截断前匹配总数
+    bool        truncated = false; ///< true = total > limit，references 只含前 limit 条
+    /// @brief 引用事实（workspace sortReferences 稳定序后截断；kind =
+    ///        method / field / type，target = owner.name(desc) 或类型名）。
+    std::vector<workspace::ReferenceInfo> references;
+};
+
+/// @brief 类/成员反查：workspace ReferenceScan 全量索引 → to（编码目标命中）/
+///        from（该类方法体发出）方向的引用事实。
+///
+/// 语义（reference_scan.cpp 面）：to = 类型引用目标命中 + 方法/字段引用 owner
+/// 命中（成员选择器在场时收缩到 name[/descriptor] 精确目标）；from = 该类全部
+/// 方法发出的方法/字段/类型引用（成员选择器过滤 sourceMethod[/Descriptor]）。
+/// both = 两向并集（自引用去重）。类经 listClassSummaries 骨架匹配，无命中
+/// 返回 ClassNotFound；输出必经 --limit 截断（混淆 jar 反查可达百万行）。
+ca::Result<XrefReport, XrefError> collectXref(const std::string& jarPath,
+                                              const std::string& className,
+                                              const std::string& member,
+                                              const std::string& direction, ca::i64 limit);
+
+/// @brief 渲染 xref 人类可读报告（头部计数 + 截断提示 + 引用行）。
+void renderXrefText(const XrefReport& report, OutputSink& sink);
+
+/// @brief 渲染 xref JSON（键稳定英文；文本字段经 json::escape 转义）。
+void renderXrefJson(const XrefReport& report, OutputSink& sink);
 
 }   // namespace mjt::cli
