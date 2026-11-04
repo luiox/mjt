@@ -69,7 +69,7 @@ Windows 下 exe 嵌了 `activeCodePage=UTF-8` 与 `longPathAware` 的 manifest�
 mjt/mcp/src/     MCP 服务器与工具集（核心产品代码）
 mjt/mcp/test/    MCP 层单测
 mjt/src/shared/  MCP 工具集共用的底层能力（反编译接入、jar 重映射、workspace…）
-mjt/skills/      MCP 技能定义
+skills/          MCP 技能定义
 mjt-py/src/      嵌入式 Python SDK（mjt --script 嵌入解释器与 mjt.pyd
                  pybind11 binding；--with_pysdk 门控）
 unittest/        已包化各库的单测（libjhasm、libjdk_finder）

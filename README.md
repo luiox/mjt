@@ -57,7 +57,7 @@ mjt/mcp/src/     MCP server and tool set (core product code)
 mjt/mcp/test/    MCP-layer unit tests
 mjt/src/shared/  capabilities shared across the MCP tool set
                  (decompiler integration, jar remapping, workspace…)
-mjt/skills/      MCP skill definitions
+skills/          MCP skill definitions
 mjt-py/src/      embedded Python SDK (mjt --script embedded interpreter and
                  the mjt.pyd pybind11 binding; gated by --with_pysdk)
 unittest/        suites for the packaged libraries (libjhasm, libjdk_finder)
