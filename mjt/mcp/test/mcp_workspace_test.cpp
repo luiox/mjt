@@ -70,7 +70,7 @@ TEST(McpServerTest, ExposesProjectQueriesAndTransactionalEdits)
     //project_info 报告反编译后端可用性（decompiler_list 的折叠去向）。
     const auto info = call(server, "project_info", {{"project_id", projectId}});
     ASSERT_FALSE(info.at("result").at("isError"));
-    ASSERT_EQ(2U, payload(info).at("decompilers").size());
+    ASSERT_EQ(3U, payload(info).at("decompilers").size());
 
     const auto classSearch = call(server,
                                   "search",

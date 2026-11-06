@@ -61,11 +61,11 @@ mjt.cli.err.invalid_value={0} 的值无效: {1}
 mjt.cli.err.fix_output_busy=无法替换已存在的输出文件: {0}
 
 # ── decompile ───────────────────────────────────────────────
-mjt.cli.decompile.help=反编译 jar 中的类为 Java 源码（CFR / vineflower）；单类模式对敌意类名免疫
+mjt.cli.decompile.help=反编译 jar 中的类为 Java 源码（CFR / vineflower / jcdc 实验）；单类模式对敌意类名免疫
 mjt.cli.decompile.class_help=要反编译的类内部名（slash 形，如 fixture/Alpha）；输出写 -o 或 stdout
 mjt.cli.decompile.all_help=确认整 jar 批量反编译（批量模式必填）
-mjt.cli.decompile.backend_help=反编译后端: cfr（缺省）或 vineflower
-mjt.cli.decompile.jar_help=显式反编译器 JAR 路径
+mjt.cli.decompile.backend_help=反编译后端: cfr（缺省）、vineflower 或 jcdc（实验，原生 exe、无需 Java）
+mjt.cli.decompile.jar_help=显式反编译器 JAR 路径（jcdc 为可执行文件路径）
 mjt.cli.decompile.timeout_help=子进程超时（毫秒，缺省 120000）
 mjt.cli.decompile.memory_help=后端 JVM 最大堆内存 MiB（缺省 1024）
 mjt.cli.decompile.err.need_mode=需要 -c <class>（单类模式）或 -o <outdir|.zip>（批量模式）之一

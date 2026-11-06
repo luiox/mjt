@@ -34,7 +34,7 @@ mjt 是 JVM 字节码工具集的 MCP 服务器：stdio 传输（也支持 HTTP�
 | class_query | 单类/资源精确查询：清单、结构摘要、完整元数据、原始字节、Jasm、方法详情、MANIFEST | `kind`（必填）；`class`/`uri`/`owner`+`name`(+`descriptor`)；分页 |
 | search | 统一检索：类、成员、字符串、数值、指令、资源、shadow 显示名双向解析 | `kind`（必填）；`query`+`match_mode`+各 kind 专属键；未知键拒绝 |
 | xref_query | 引用图查询：引用站点/调用边、继承关系、override 组件 | `kind`（必填）；`target`/`direction`/`resolved`/`class`/`owner`+`name`+`descriptor`/`role` |
-| decompile | 单类或单方法反编译（CFR/Vineflower），异步作业 poll/cancel/release | `class` 或 `owner`+`name`+`descriptor`；`action`（缺省 decompile）；`async`；`decompiler`/`decompiler_jar`/`java`/`timeout_ms` |
+| decompile | 单类或单方法反编译（CFR/Vineflower/jcdc 实验后端），异步作业 poll/cancel/release | `class` 或 `owner`+`name`+`descriptor`；`action`（缺省 decompile）；`async`；`decompiler`/`decompiler_jar`/`java`/`timeout_ms` |
 | edit_apply | 唯一编辑入口：structured、Jasm 及其 diff、类字节整替、优化管线、改名、mapping | `kind`（必填）；`expected_revision`/`dry_run`/`label`/`validation`；各 kind 载荷 |
 | edit_history | 台账操作：书签、恢复、单类回退、undo/redo、压缩、列览、已改类清单 | `action`（必填）；`name`/`class_uri`/`keep_recent_bookmarks`/`keep_undo_depth` |
 | project_export | 把当前编辑状态物化为派生 JAR（原子写，永不触碰主容器） | `path`（必填） |

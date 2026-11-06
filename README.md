@@ -104,7 +104,7 @@ Single-class mode fetches the target class bytes by internal name (slash form, e
 
 Batch mode hands the whole jar to the backend (CFR writes a source tree, vineflower writes a source tree or a `.zip` archive — archive entries are not bound by path limits). Entries whose names cannot be written to disk are skipped: the run continues, stderr lists the skipped entries and points to single-class mode or `mjt disasm`. `--all` confirms the whole-jar cost; batch without it exits `1` with the class count.
 
-Shared options (aligned with the MCP decompile contract): `--decompiler cfr|vineflower` (default `cfr`), `--decompiler-jar <jar>`, `--timeout-ms <n>` (default 120000), `--max-memory-mib <n>` (default 1024).
+Shared options (aligned with the MCP decompile contract): `--decompiler cfr|vineflower|jcdc` (default `cfr`), `--decompiler-jar <jar>` (for `jcdc` this carries the executable path), `--timeout-ms <n>` (default 120000), `--max-memory-mib <n>` (default 1024). `jcdc` is an experimental native backend: no JVM involved, discovered via `MJT_JCDC_EXE` / `MJT_DECOMPILER_HOME`, and always invoked with `--synthetic` so no members are silently hidden.
 
 ### `mjt strings` — constant-pool string extraction
 

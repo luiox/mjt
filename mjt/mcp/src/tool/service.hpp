@@ -32,6 +32,9 @@ struct DecompilerSessionSettings final
     std::string cfrJar;
     ///@brief Vineflower JAR；空值继续使用共享 discovery。
     std::string vineflowerJar;
+    ///@brief jcdc 可执行文件（原生件，非 JAR）；空值继续使用共享 discovery
+    ///        （MJT_JCDC_EXE / MJT_DECOMPILER_HOME / package 目录扫描）。
+    std::string jcdcExe;
     ///@brief Java 程序；空值继续使用共享 discovery。
     std::string javaProgram;
     ///@brief 子进程超时毫秒数。

@@ -139,9 +139,11 @@ mjt decompile -i <jar> -o <out.zip> --all --decompiler vineflower   # 归档输�
 继续，stderr 列出跳过清单并指向单类模式或 `mjt disasm`。`--all` 显式确认
 整 jar 成本；批量缺它时退出码 `1` 并给出类数提示。
 
-公共选项（与 MCP decompile 契约对齐）：`--decompiler cfr|vineflower`（缺省
-`cfr`）、`--decompiler-jar <jar>`、`--timeout-ms <n>`（缺省 120000）、
-`--max-memory-mib <n>`（缺省 1024）。
+公共选项（与 MCP decompile 契约对齐）：`--decompiler cfr|vineflower|jcdc`（缺省
+`cfr`）、`--decompiler-jar <jar>`（`jcdc` 时承载可执行文件路径）、
+`--timeout-ms <n>`（缺省 120000）、`--max-memory-mib <n>`（缺省 1024）。
+`jcdc` 是实验性原生后端：不经 JVM，经 `MJT_JCDC_EXE` / `MJT_DECOMPILER_HOME`
+发现，且恒传 `--synthetic`（成员全量显示，不静默隐藏）。
 
 ### `mjt strings` — 常量池字符串抽取
 

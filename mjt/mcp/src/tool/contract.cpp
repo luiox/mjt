@@ -309,7 +309,7 @@ Json toolsList()
                                                           {"minimum", 1},
                                                           {"maximum", kMaximumDecompilerSourceBytes}}}};
     Json decompiler = decompilerRuntime;
-    decompiler["decompiler"] = {{"type", "string"}, {"enum", {"cfr", "vineflower"}}};
+    decompiler["decompiler"] = {{"type", "string"}, {"enum", {"cfr", "vineflower", "jcdc"}}};
     decompiler["async"] = {{"type", "boolean"}};
     const Json pipeline = {{"pipeline", {{"type", "string"}}},
                            {"passes", {{"type", "array"}, {"items", {{"type", "string"}}}}},

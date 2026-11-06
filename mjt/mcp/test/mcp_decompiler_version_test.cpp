@@ -1,5 +1,7 @@
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -31,6 +33,58 @@ std::filesystem::path writeManifestJar(const std::string& fileName,
     mjbase::model::ResourceHelper::exportToJar(container, path.string());
     return path;
 }
+
+///@brief 写一个假的常规文件（可执行件发现/产物在场性用例的轻量 fixture）。
+std::filesystem::path writeFakeArtifact(const std::string& fileName)
+{
+    const auto path = test::getTempOutPath(fileName);
+    std::ofstream(path, std::ios::binary | std::ios::trunc) << "fake";
+    return path;
+}
+
+///@brief 进程级环境变量保存 → 清空 → 析构恢复（RAII）。
+///
+///jcdc 发现层用例要让发现序落到第 4 层 package 目录扫描，必须先让
+///MJT_JCDC_EXE / MJT_DECOMPILER_HOME 两层落空；作用域结束恢复原值，不污染
+///同进程后续用例（_putenv_s 与产品侧 _dupenv_s 同一 CRT 环境块，清空即删除）。
+class ScopedEnvironment final
+{
+public:
+    explicit ScopedEnvironment(const char* name) : name_(name)
+    {
+#if defined(_WIN32)
+        //_dupenv_s 与产品侧 environment() 同一取值面（且避开 C4996 的 getenv 弃用告警）。
+        char* value = nullptr;
+        if (_dupenv_s(&value, nullptr, name) == 0 && value != nullptr) {
+            saved_ = value;
+            std::free(value);
+        }
+#else
+        if (const char* value = std::getenv(name)) saved_ = value;
+#endif
+        set(nullptr);
+    }
+    ~ScopedEnvironment() { set(saved_ ? saved_->c_str() : nullptr); }
+
+    ScopedEnvironment(const ScopedEnvironment&)            = delete;
+    ScopedEnvironment& operator=(const ScopedEnvironment&) = delete;
+
+private:
+    void set(const char* value)
+    {
+#if defined(_WIN32)
+        _putenv_s(name_, value == nullptr ? "" : value);
+#else
+        if (value == nullptr)
+            unsetenv(name_);
+        else
+            setenv(name_, value, 1);
+#endif
+    }
+
+    const char*                name_;
+    std::optional<std::string> saved_;
+};
 
 TEST(McpDecompilerVersionTest, ReadsImplementationVersionFromManifest)
 {
@@ -135,9 +189,11 @@ TEST(McpDecompilerVersionTest, ProjectInfoSurfacesBackendVersions)
         call(server, "project_info", {{"project_id", payload(opened).at("project_id")}});
     ASSERT_FALSE(info.at("result").at("isError"));
     const auto& backends = payload(info).at("decompilers");
-    ASSERT_EQ(2U, backends.size());
+    ASSERT_EQ(3U, backends.size());
     EXPECT_TRUE(backends.at(0).at("version").is_string());
     EXPECT_TRUE(backends.at(1).at("version").is_string());
+    EXPECT_TRUE(backends.at(2).at("version").is_string());
+    EXPECT_EQ("jcdc", backends.at(2).at("id").get<std::string>());
 }
 
 
@@ -167,15 +223,82 @@ TEST(McpDecompilerVersionTest, DiscoverySourceAndOverrideEnv)
         call(server, "project_info", {{"project_id", payload(opened).at("project_id")}});
     ASSERT_FALSE(info.at("result").at("isError"));
     const auto& backends = payload(info).at("decompilers");
-    ASSERT_EQ(2U, backends.size());
+    ASSERT_EQ(3U, backends.size());
     EXPECT_EQ("MJT_CFR_JAR", backends.at(0).at("override_env").get<std::string>());
     EXPECT_EQ("MJT_VINEFLOWER_JAR", backends.at(1).at("override_env").get<std::string>());
+    EXPECT_EQ("MJT_JCDC_EXE", backends.at(2).at("override_env").get<std::string>());
     for (const auto& backend : backends) {
         EXPECT_FALSE(backend.contains("environment"));
         const auto& source = backend.at("source").get_ref<const std::string&>();
         EXPECT_TRUE(source == "explicit" || source == "env" || source == "package_dir")
             << source;
     }
+}
+
+//── jcdc（第三实验后端：原生可执行文件、非 JAR、不经 JVM；luiox/mjt#62）────
+
+//后端 ID 稳定且第三后端可解析——缓存 produced_by、报告 backend 字段、CLI 旗标
+//三处共用同一条 ID（decompilerKindId / parseDecompilerKind）。
+TEST(McpDecompilerVersionTest, JcdcBackendIdParsesAndStaysStable)
+{
+    const auto kind = parseDecompilerKind("jcdc");
+    ASSERT_TRUE(kind.is_ok());
+    EXPECT_EQ(DecompilerKind::Jcdc, kind.unwrap());
+    EXPECT_EQ("jcdc", decompilerKindId(kind.unwrap()));
+    //未知名仍报错（错误文案含期望列表，见 mjt.shared.err.unknown_decompiler）。
+    EXPECT_TRUE(parseDecompilerKind("jadx").is_err());
+}
+
+//jcdc 无 MANIFEST 可读：版本走可执行文件名回退——`jcdc-<version>.exe` 取数字段；
+//发布件 `jcdc-v<version>-<os>-<arch>.exe` 剥 `v` 取版本且平台段随版本串自述；
+//固定名 `jcdc.exe` 无数字段不冒充版本（空串，展示层以产物路径兜底）。
+//requiresJava=false：Java 缺席不拦 available、不进 unavailableReason。
+TEST(McpDecompilerVersionTest, JcdcVersionFallsBackToExecutableFileName)
+{
+    const auto versioned = writeFakeArtifact("jcdc-1.0.0.exe");
+    const auto availability =
+        inspectDecompiler(DecompilerKind::Jcdc, versioned.u8string(), "java");
+    EXPECT_TRUE(availability.artifactAvailable);
+    EXPECT_EQ("MJT_JCDC_EXE", availability.environmentVariable);
+    EXPECT_EQ("explicit", availability.discoverySource);
+    EXPECT_EQ("1.0.0", availability.version);
+    EXPECT_FALSE(availability.requiresJava);
+    EXPECT_TRUE(availability.unavailableReason.empty()) << availability.unavailableReason;
+
+    const auto release = writeFakeArtifact("jcdc-v2.3.4-windows-amd64.exe");
+    EXPECT_EQ("2.3.4-windows-amd64",
+              inspectDecompiler(DecompilerKind::Jcdc, release.u8string(), "java").version);
+
+    const auto bare = writeFakeArtifact("jcdc.exe");
+    EXPECT_EQ("", inspectDecompiler(DecompilerKind::Jcdc, bare.u8string(), "java").version);
+}
+
+//package 目录扫描（发现序第 4 层）对 jcdc 走可执行件规则：前缀 `jcdc` +
+//平台后缀（Windows 必须 .exe），文件名字典序取首个命中；同前缀旁文件
+//（.sha256 等，字典序更靠前）必须出局。前两层 env（MJT_JCDC_EXE /
+//MJT_DECOMPILER_HOME）在本用例里清空以落到扫描层，析构恢复。
+TEST(McpDecompilerVersionTest, JcdcPackageDirectoryDiscoverySkipsSidecarFiles)
+{
+    const ScopedEnvironment jcdcExeEnv("MJT_JCDC_EXE");
+    const ScopedEnvironment homeEnv("MJT_DECOMPILER_HOME");
+
+    const auto       root = test::getTempOutPath("mjt_jcdc_probe");
+    std::error_code  error;
+    std::filesystem::remove_all(root, error);
+    const auto packageDir = root / "package";
+    ASSERT_TRUE(std::filesystem::create_directories(packageDir, error)) << error.message();
+
+    const auto exePath     = writeFakeArtifact("mjt_jcdc_probe/mjt_jcdc_probe.exe");
+    const auto versioned   = packageDir / "jcdc-v9.9.9-windows-amd64.exe";
+    std::ofstream(versioned, std::ios::binary | std::ios::trunc) << "fake";
+    //同前缀旁文件：'a' < 'v' 字典序靠前，若规则失效会先命中它。
+    const auto sidecar = packageDir / "jcdc-a.sha256";
+    std::ofstream(sidecar, std::ios::binary | std::ios::trunc) << "x";
+
+    DecompileRequest request;
+    request.kind = DecompilerKind::Jcdc;
+    const auto discovery = discoverDecompilerJarDetailed(request, exePath.u8string());
+    EXPECT_EQ(versioned.lexically_normal().string(), discovery.jar);
 }
 
 }   //namespace

@@ -266,6 +266,7 @@ ca::Result<DecompilerKind, DecompileError> parseDecompilerBackendName(const std:
         lowered.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(character))));
     if (lowered == "cfr") return ca::Ok(DecompilerKind::Cfr);
     if (lowered == "vineflower") return ca::Ok(DecompilerKind::Vineflower);
+    if (lowered == "jcdc") return ca::Ok(DecompilerKind::Jcdc);
     return ca::Err(decompileError(DecompileError::Kind::UnknownBackend,
                                   "mjt.shared.err.unknown_decompiler", {name}));
 }

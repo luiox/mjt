@@ -769,9 +769,10 @@ inline std::string writePerfSrgMapping(ca::usize count)
     return text;
 }
 
-/// 后端可用性门（真后端执行用例的 SKIP 条款）：decompiler JAR 与 java 均按
-/// 与产品相同的发现序解析；env（MJT_CFR_JAR / MJT_VINEFLOWER_JAR）可在本机
-/// 注入真 jar，CI 无注入时整组用例跳过（与 probeClang 先例同口径）。
+/// 后端可用性门（真后端执行用例的 SKIP 条款）：反编译产物与 java 均按
+/// 与产品相同的发现序解析；env（MJT_CFR_JAR / MJT_VINEFLOWER_JAR /
+/// MJT_JCDC_EXE）可在本机注入真 jar / exe，CI 无注入时整组用例跳过（与
+/// probeClang 先例同口径）。
 struct BackendProbe
 {
     bool        available = false;
@@ -783,8 +784,12 @@ inline BackendProbe probeBackend(mjt::DecompilerKind kind)
 {
     BackendProbe probe;
     const auto inspect = mjt::inspectDecompiler(kind);
-    if (!inspect.artifactAvailable) probe.reason = "decompiler jar not found (set MJT_CFR_JAR / MJT_VINEFLOWER_JAR)";
-    else if (!inspect.javaAvailable) probe.reason = "java executable not found";
+    if (!inspect.artifactAvailable)
+        probe.reason = "decompiler artifact not found (set " +
+                       inspect.environmentVariable + " / MJT_DECOMPILER_HOME)";
+    //原生后端（jcdc）不依赖 Java：requiresJava=false 时不以 java 缺席拦门。
+    else if (inspect.requiresJava && !inspect.javaAvailable)
+        probe.reason = "java executable not found";
     else {
         probe.available      = true;
         probe.decompilerJar  = inspect.decompilerJar;

@@ -72,7 +72,7 @@ TEST(McpProjectTest, OpensTemporaryProjectAndRemovesItOnClose)
     EXPECT_TRUE(overview.at("ledger").at("compression").at("auto_compact").get<bool>());
     EXPECT_TRUE(overview.at("store_lock").is_object());
     EXPECT_GT(overview.at("store_lock").at("pid").get<int>(), 0);
-    EXPECT_EQ(2U, overview.at("decompilers").size());
+    EXPECT_EQ(3U, overview.at("decompilers").size());
 
     const auto closed = call(server, "project_close", {{"project_id", projectId}});
     ASSERT_FALSE(closed.at("result").at("isError")) << payload(closed).dump();

@@ -133,9 +133,13 @@ TEST(MjtCliDecompilePrecheckTest, UnknownBackendNameIsUsageError)
     auto kind = parseDecompilerBackendName("jd-cli");
     ASSERT_TRUE(kind.is_err());
     EXPECT_EQ(DecompileError::Kind::UnknownBackend, kind.unwrap_err().kind);
-    //大小写归一：CFR / Vineflower 均命中。
+    //大小写归一：CFR / Vineflower / jcdc（实验后端）均命中。
     EXPECT_TRUE(parseDecompilerBackendName("CFR").is_ok());
     EXPECT_TRUE(parseDecompilerBackendName("Vineflower").is_ok());
+    EXPECT_TRUE(parseDecompilerBackendName("JCDC").is_ok());
+    const auto jcdc = parseDecompilerBackendName("jcdc");
+    ASSERT_TRUE(jcdc.is_ok());
+    EXPECT_EQ(mjt::DecompilerKind::Jcdc, jcdc.unwrap());
 }
 
 // ── 单类模式（真后端，按发现序门控）──────────────────────────────────

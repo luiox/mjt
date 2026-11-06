@@ -61,11 +61,11 @@ mjt.cli.err.invalid_value=invalid value for {0}: {1}
 mjt.cli.err.fix_output_busy=cannot replace the existing output file: {0}
 
 # ── decompile ───────────────────────────────────────────────
-mjt.cli.decompile.help=decompile jar classes to Java sources (CFR / vineflower); single-class mode survives hostile class names
+mjt.cli.decompile.help=decompile jar classes to Java sources (CFR / vineflower / jcdc experimental); single-class mode survives hostile class names
 mjt.cli.decompile.class_help=internal name of the class to decompile (slash form, e.g. fixture/Alpha); output goes to -o or stdout
 mjt.cli.decompile.all_help=confirm whole-jar batch decompilation (required for batch mode)
-mjt.cli.decompile.backend_help=decompiler backend: cfr (default) or vineflower
-mjt.cli.decompile.jar_help=explicit decompiler JAR path
+mjt.cli.decompile.backend_help=decompiler backend: cfr (default), vineflower, or jcdc (experimental native exe, no Java needed)
+mjt.cli.decompile.jar_help=explicit decompiler JAR path (executable path for jcdc)
 mjt.cli.decompile.timeout_help=subprocess timeout in milliseconds (default 120000)
 mjt.cli.decompile.memory_help=backend JVM max heap in MiB (default 1024)
 mjt.cli.decompile.err.need_mode=either -c <class> (single class) or -o <outdir|.zip> (batch) is required

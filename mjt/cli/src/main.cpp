@@ -224,7 +224,7 @@ bool isJavaOutputPath(const std::string& path)
 }
 
 /// `mjt decompile -i <jar> -c <internalName> [-o <file.java>]
-///  | -i <jar> -o <outdir|.zip> --all [--decompiler cfr|vineflower]
+///  | -i <jar> -o <outdir|.zip> --all [--decompiler cfr|vineflower|jcdc]
 ///  [--decompiler-jar <jar>] [--timeout-ms <n>] [--max-memory-mib <n>]`。
 ///
 /// 模式：-c 在场 = 单类（短安全名方案，敌意类名免疫；-o 缺省打印 stdout）；
