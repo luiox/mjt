@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -473,6 +474,10 @@ private:
 
     std::unique_ptr<model::ResourceContainer> original_;
     std::unique_ptr<model::ResourceContainer> working_;
+    /// 源 jar 的 META-INF/MANIFEST.MF 原始字节（openJar 单次读取遍内旁路
+    /// 捕获，#74 导出保真：无 MANIFEST 编辑时导出逐字节复制源内容——行尾、
+    /// 续行、尾随内容原样）。nullopt = 源无该条目。
+    std::optional<std::vector<ca::u8>> sourceManifestBytes_;
     std::vector<SupportingResource> supporting_;
     /// 台账引擎：undo/redo = 头指针回退/前进，savepoint = 书签；
     /// 未绑定为纯内存台账（行为与旧克隆实现一致，随对象销毁蒸发）。mutable：

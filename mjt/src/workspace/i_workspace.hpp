@@ -294,6 +294,10 @@ public:
     virtual MutationResult redo(const MutationRequest& request = {}) = 0;
 
     /// @brief 将当前工作副本原子写入一个此前不存在的输出 JAR。
+    ///
+    /// 导出保真（#74）：条目集与工作副本条目集一致（源目录条目原样保留、
+    /// 不新增占位）；MANIFEST 无编辑时逐字节复制源条目字节，有编辑时只
+    /// 物化编辑后的属性集（无属性注入）。
     virtual WorkspaceResult<void> exportJar(ca::str::Utf8StringRef outputPath) const = 0;
 
     /// @brief 将单 class 工作副本原子写入一个此前不存在的输出 classfile。
