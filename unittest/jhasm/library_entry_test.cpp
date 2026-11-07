@@ -38,10 +38,12 @@ TEST(LibJhasmEntryTest, RunsPublicJvmPipeline)
 {
     auto sourceName = ca::str::Utf16String::value_of("entry.jasm");
     auto source     = ca::str::Utf16String::value_of(
-        ".super java/lang/Object\n"
-            ".class public super Entry {\n"
-            "  .method public static value ()I { code: { bipush 7\n ireturn } }\n"
-            "}\n");
+        R"JASM(.super java/lang/Object
+.class public super Entry {
+  .method public static value ()I { code: { bipush 7
+ ireturn } }
+}
+)JASM");
     auto compiled = jhasm::assemble(sourceName.ref(), source.ref());
     ASSERT_TRUE(compiled.is_ok());
     auto analysis = jhasm::analyze(compiled.get()->bytes);
@@ -57,11 +59,14 @@ TEST(LibJhasmEntryTest, DisassemblesOneMethodByExactSelector)
 {
     auto sourceName = ca::str::Utf16String::value_of("method.jasm");
     auto source     = ca::str::Utf16String::value_of(
-        ".super java/lang/Object\n"
-        ".class public super MethodSubject {\n"
-        "  .method public static value ()I { code: { bipush 7\n ireturn } }\n"
-        "  .method public static value (I)I { code: { iload 0\n ireturn } }\n"
-        "}\n");
+        R"JASM(.super java/lang/Object
+.class public super MethodSubject {
+  .method public static value ()I { code: { bipush 7
+ ireturn } }
+  .method public static value (I)I { code: { iload 0
+ ireturn } }
+}
+)JASM");
     auto compiled = jhasm::assemble(sourceName.ref(), source.ref());
     ASSERT_TRUE(compiled.is_ok());
 
@@ -83,26 +88,27 @@ TEST(LibJhasmEntryTest, CompilerUsesInjectedInheritanceForFrameWriting)
 {
     auto sourceName = ca::str::Utf16String::value_of("merge.jasm");
     auto source =
-        ca::str::Utf16String::value_of(".super java/lang/Object\n"
-                                       ".class public super MergeSubject {\n"
-                                       "  .method public static choose (Z)Ljava/lang/Object; {\n"
-                                       "    parameters: { flag },\n"
-                                       "    code: {\n"
-                                       "      iload flag\n"
-                                       "      ifeq right\n"
-                                       "      new example/Left\n"
-                                       "      dup\n"
-                                       "      invokespecial example/Left.<init> ()V\n"
-                                       "      goto join\n"
-                                       "    right:\n"
-                                       "      new example/Right\n"
-                                       "      dup\n"
-                                       "      invokespecial example/Right.<init> ()V\n"
-                                       "    join:\n"
-                                       "      areturn\n"
-                                       "    }\n"
-                                       "  }\n"
-                                       "}\n");
+        ca::str::Utf16String::value_of(R"JASM(.super java/lang/Object
+.class public super MergeSubject {
+  .method public static choose (Z)Ljava/lang/Object; {
+    parameters: { flag },
+    code: {
+      iload flag
+      ifeq right
+      new example/Left
+      dup
+      invokespecial example/Left.<init> ()V
+      goto join
+    right:
+      new example/Right
+      dup
+      invokespecial example/Right.<init> ()V
+    join:
+      areturn
+    }
+  }
+}
+)JASM");
     RecordingInheritanceChecker        checker;
     jhasm::compile::JvmCompilerOptions options;
     options.inheritance = &checker;

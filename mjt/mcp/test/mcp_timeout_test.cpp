@@ -28,11 +28,21 @@ std::filesystem::path writeWideClassFixture(const std::string& fileName,
                                             const std::string& internalName,
                                             int                methodCount)
 {
-    std::string source = ".super java/lang/Object\n.class public super " + internalName + " {\n";
+    std::string source =
+        R"JASM(.super java/lang/Object
+.class public super )JASM" + internalName +
+        R"JASM( {
+)JASM";
     for (int index = 0; index < methodCount; ++index) {
-        source += "  .method public static m" + std::to_string(index) + " ()I {\n"
-                  "    code: {\n      bipush " + std::to_string(index % 128) +
-                  "\n      ireturn\n    }\n  }\n";
+        source += R"JASM(  .method public static m)JASM" + std::to_string(index) +
+                  R"JASM( ()I {
+    code: {
+      bipush )JASM" + std::to_string(index % 128) +
+                  R"JASM(
+      ireturn
+    }
+  }
+)JASM";
     }
     source += "}\n";
     mjbase::model::ResourceContainer container;

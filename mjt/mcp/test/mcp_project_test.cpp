@@ -467,21 +467,22 @@ TEST(McpProjectTest, MountsRoleContainersWithShadowTrackingAndRoleFilters)
 {
     const auto fixture = writeFixture();
     const auto libHelper =
-        ".super java/lang/Object\n"
-        ".class public super mcp/LibHelper {\n"
-        "  .method public static help ()I {\n"
-        "    code: {\n"
-        "      bipush 7\n"
-        "      ireturn\n"
-        "    }\n"
-        "  }\n"
-        "  .method public static wrap ()I {\n"
-        "    code: {\n"
-        "      invokestatic mcp/LibHelper.help ()I\n"
-        "      ireturn\n"
-        "    }\n"
-        "  }\n"
-        "}\n";
+        R"JASM(.super java/lang/Object
+.class public super mcp/LibHelper {
+  .method public static help ()I {
+    code: {
+      bipush 7
+      ireturn
+    }
+  }
+  .method public static wrap ()I {
+    code: {
+      invokestatic mcp/LibHelper.help ()I
+      ireturn
+    }
+  }
+}
+)JASM";
     const auto sharedOne = classSourceFor("mcp/Shared", "1");
     const auto library   = writeMountedJar("mjt_mcp_role_library.jar",
                                          {{"mcp/LibHelper.class", libHelper},
@@ -575,16 +576,17 @@ TEST(McpProjectTest, MountsRoleContainersWithShadowTrackingAndRoleFilters)
     //查询覆盖 primary（Subject.value）与 library（wrap）两侧站点，role 过滤
     //按容器归位。
     const auto caller =
-        ".super java/lang/Object\n"
-        ".class public super mcp/Subject {\n"
-        "  .field public counter I\n"
-        "  .method public static value ()I {\n"
-        "    code: {\n"
-        "      invokestatic mcp/LibHelper.help ()I\n"
-        "      ireturn\n"
-        "    }\n"
-        "  }\n"
-        "}\n";
+        R"JASM(.super java/lang/Object
+.class public super mcp/Subject {
+  .field public counter I
+  .method public static value ()I {
+    code: {
+      invokestatic mcp/LibHelper.help ()I
+      ireturn
+    }
+  }
+}
+)JASM";
     const auto edited = call(server,
                              "edit_apply",
                              {{"project_id", projectId},

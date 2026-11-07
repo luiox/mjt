@@ -117,9 +117,10 @@ std::filesystem::path writeDescriptorFixture()
 {
     mjbase::jasm::JvmJasmService assembler;
     mjbase::model::ResourceContainer container;
-    const auto giftSource = utf16(".super java/lang/Object\n"
-                                  ".class public super desc/Gift {\n"
-                                  "}\n");
+    const auto giftSource = utf16(R"JASM(.super java/lang/Object
+.class public super desc/Gift {
+}
+)JASM");
     const auto giftAssembled =
         assembler.assemble(utf16("Gift.jasm").ref(), giftSource.ref());
     if (!giftAssembled.isOk())
@@ -130,21 +131,22 @@ std::filesystem::path writeDescriptorFixture()
         std::make_unique<mjbase::model::ClassResource>("desc/Gift.class",
                                                        giftAssembled.value->bytes));
     const auto holderSource = utf16(
-        ".super java/lang/Object\n"
-        ".class public super desc/Holder {\n"
-        "  .method public static take (Ldesc/Gift;)V {\n"
-        "    code: {\n"
-        "      return\n"
-        "    }\n"
-        "  }\n"
-        "  .method public static useIt ()V {\n"
-        "    code: {\n"
-        "      aconst_null\n"
-        "      invokestatic desc/Holder.take (Ldesc/Gift;)V\n"
-        "      return\n"
-        "    }\n"
-        "  }\n"
-        "}\n");
+        R"JASM(.super java/lang/Object
+.class public super desc/Holder {
+  .method public static take (Ldesc/Gift;)V {
+    code: {
+      return
+    }
+  }
+  .method public static useIt ()V {
+    code: {
+      aconst_null
+      invokestatic desc/Holder.take (Ldesc/Gift;)V
+      return
+    }
+  }
+}
+)JASM");
     const auto holderAssembled =
         assembler.assemble(utf16("Holder.jasm").ref(), holderSource.ref());
     if (!holderAssembled.isOk())

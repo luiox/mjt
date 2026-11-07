@@ -28,46 +28,47 @@ using namespace test_support;
 std::filesystem::path writeFeedbackFixture()
 {
     const auto source =
-        ".super java/lang/Object\n"
-        ".class public super mcp/feedback/Ops {\n"
-        "  .field public static flag Z\n"
-        "  .field public counter I\n"
-        "  .method public static probe (Ljava/lang/Object;)I {\n"
-        "    parameters: { target },\n"
-        "    code: {\n"
-        "      getstatic mcp/feedback/Ops.flag Z\n"
-        "      ifeq skip\n"
-        "      aload target\n"
-        "      pop\n"
-        "      goto join\n"
-        "    skip:\n"
-        "      aload target\n"
-        "      invokevirtual java/lang/Object.hashCode ()I\n"
-        "      goto join2\n"
-        "    join:\n"
-        "      bipush 3\n"
-        "      ireturn\n"
-        "    join2:\n"
-        "      new java/lang/StringBuilder\n"
-        "      dup\n"
-        "      invokespecial java/lang/StringBuilder.<init> ()V\n"
-        "      ldc \"feedback\"\n"
-        "      invokevirtual java/lang/StringBuilder.append (Ljava/lang/String;)Ljava/lang/StringBuilder;\n"
-        "      pop\n"
-        "      bipush 5\n"
-        "      ireturn\n"
-        "    }\n"
-        "  }\n"
-        "  .method public static mention ()V {\n"
-        "    code: {\n"
-        "      aconst_null\n"
-        "      pop\n"
-        "      getstatic mcp/feedback/Ops.flag Z\n"
-        "      pop\n"
-        "      return\n"
-        "    }\n"
-        "  }\n"
-        "}\n";
+        R"JASM(.super java/lang/Object
+.class public super mcp/feedback/Ops {
+  .field public static flag Z
+  .field public counter I
+  .method public static probe (Ljava/lang/Object;)I {
+    parameters: { target },
+    code: {
+      getstatic mcp/feedback/Ops.flag Z
+      ifeq skip
+      aload target
+      pop
+      goto join
+    skip:
+      aload target
+      invokevirtual java/lang/Object.hashCode ()I
+      goto join2
+    join:
+      bipush 3
+      ireturn
+    join2:
+      new java/lang/StringBuilder
+      dup
+      invokespecial java/lang/StringBuilder.<init> ()V
+      ldc "feedback"
+      invokevirtual java/lang/StringBuilder.append (Ljava/lang/String;)Ljava/lang/StringBuilder;
+      pop
+      bipush 5
+      ireturn
+    }
+  }
+  .method public static mention ()V {
+    code: {
+      aconst_null
+      pop
+      getstatic mcp/feedback/Ops.flag Z
+      pop
+      return
+    }
+  }
+}
+)JASM";
     const auto assembled =
         assembleFixtureClass("mcp/feedback/Ops", source);
     mjbase::model::ResourceContainer container;
@@ -84,21 +85,22 @@ std::filesystem::path writeFeedbackFixture()
 std::filesystem::path writeOverloadFixture()
 {
     const auto source =
-        ".super java/lang/Object\n"
-        ".class public super mcp/feedback/Dup {\n"
-        "  .field public tag I\n"
-        "  .method public static probe ()V {\n"
-        "    code: {\n"
-        "      return\n"
-        "    }\n"
-        "  }\n"
-        "  .method public static probe ()I {\n"
-        "    code: {\n"
-        "      bipush 7\n"
-        "      ireturn\n"
-        "    }\n"
-        "  }\n"
-        "}\n";
+        R"JASM(.super java/lang/Object
+.class public super mcp/feedback/Dup {
+  .field public tag I
+  .method public static probe ()V {
+    code: {
+      return
+    }
+  }
+  .method public static probe ()I {
+    code: {
+      bipush 7
+      ireturn
+    }
+  }
+}
+)JASM";
     const auto assembled =
         assembleFixtureClass("mcp/feedback/Dup", source);
     mjbase::model::ResourceContainer container;
@@ -1109,15 +1111,16 @@ TEST(McpToolFeedbackTest, DiagnosticsCarryGateAttribution)
 TEST(McpToolFeedbackTest, LibraryMountRegistersSingleRecord)
 {
     const auto source =
-        ".super java/lang/Object\n"
-        ".class public super mcp/feedback/LibPoint {\n"
-        "  .method public static point ()I {\n"
-        "    code: {\n"
-        "      bipush 1\n"
-        "      ireturn\n"
-        "    }\n"
-        "  }\n"
-        "}\n";
+        R"JASM(.super java/lang/Object
+.class public super mcp/feedback/LibPoint {
+  .method public static point ()I {
+    code: {
+      bipush 1
+      ireturn
+    }
+  }
+}
+)JASM";
     const auto assembled = assembleFixtureClass("mcp/feedback/LibPoint", source);
     mjbase::model::ResourceContainer container;
     container.addResource("mcp/feedback/LibPoint.class",

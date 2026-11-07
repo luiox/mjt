@@ -31,26 +31,26 @@ using namespace test_support;
 ///        value 的返回指令整行由 @p returnLine 控制（坏帧偏差即翻这一条）。
 std::string gateClassSource(const std::string& name, const char* returnLine)
 {
-    return ".super java/lang/Object\n"
-           ".class public super " +
-           name +
-           " {\n"
-           "  .field public counter I\n"
-           "  .method public static value ()I {\n"
-           "    code: {\n"
-           "      iconst_0\n" +
-           returnLine +
-           "\n"
-           "    }\n"
-           "  }\n"
-           "  .method public static seed ()V {\n"
-           "    code: {\n"
-           "      iconst_1\n"
-           "      pop\n"
-           "      return\n"
-           "    }\n"
-           "  }\n"
-           "}\n";
+    return R"JASM(.super java/lang/Object
+.class public super )JASM" + name +
+           R"JASM( {
+  .field public counter I
+  .method public static value ()I {
+    code: {
+      iconst_0
+)JASM" + returnLine +
+           R"JASM(
+    }
+  }
+  .method public static seed ()V {
+    code: {
+      iconst_1
+      pop
+      return
+    }
+  }
+}
+)JASM";
 }
 
 /// @brief 好类 → 先在坏帧类（最小偏差单字节翻位，写回经 libjbc 会话面）。
@@ -112,21 +112,22 @@ std::filesystem::path writeGateFixture()
 ///        源本身携带坏帧，jasm 编辑照旧被拒）。
 const char* badFrameJasmSource()
 {
-    return ".super java/lang/Object\n"
-           ".class public super gate/Bad {\n"
-           "  .field public counter I\n"
-           "  .method public static value ()I {\n"
-           "    code: {\n"
-           "      iconst_0\n"
-           "      areturn\n"
-           "    }\n"
-           "  }\n"
-           "  .method public static seed ()V {\n"
-           "    code: {\n"
-           "      return\n"
-           "    }\n"
-           "  }\n"
-           "}\n";
+    return R"JASM(.super java/lang/Object
+.class public super gate/Bad {
+  .field public counter I
+  .method public static value ()I {
+    code: {
+      iconst_0
+      areturn
+    }
+  }
+  .method public static seed ()V {
+    code: {
+      return
+    }
+  }
+}
+)JASM";
 }
 
 void gateSession(McpSessionHarness& server, std::string& projectId)

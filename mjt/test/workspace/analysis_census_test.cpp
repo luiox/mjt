@@ -57,31 +57,34 @@ std::vector<ca::u8> assembleFixtureClass(const std::string& source)
 std::filesystem::path writeCensusFixture()
 {
     const std::string alphaSource =
-        ".super java/lang/Object\n"
-        ".implements census/Api\n"
-        ".class public super census/Alpha {\n"
-        "  .field private state I\n"
-        "  .method public static act ()V {\n"
-        "    code: {\n"
-        "      return\n"
-        "    }\n"
-        "  }\n"
-        "  .method public static native probe ()J {}\n"
-        "}\n";
+        R"JASM(.super java/lang/Object
+.implements census/Api
+.class public super census/Alpha {
+  .field private state I
+  .method public static act ()V {
+    code: {
+      return
+    }
+  }
+  .method public static native probe ()J {}
+}
+)JASM";
     const std::string apiSource =
-        ".class public abstract interface census/Api {\n"
-        "  .method public abstract act ()V {}\n"
-        "}\n";
+        R"JASM(.class public abstract interface census/Api {
+  .method public abstract act ()V {}
+}
+)JASM";
     const std::string colorSource =
-        ".super java/lang/Enum\n"
-        ".class public final enum census/Color {\n"
-        "  .method public static values ()[Lcensus/Color; {\n"
-        "    code: {\n"
-        "      aconst_null\n"
-        "      areturn\n"
-        "    }\n"
-        "  }\n"
-        "}\n";
+        R"JASM(.super java/lang/Enum
+.class public final enum census/Color {
+  .method public static values ()[Lcensus/Color; {
+    code: {
+      aconst_null
+      areturn
+    }
+  }
+}
+)JASM";
 
     mjbase::model::ResourceContainer container;
     container.addResource("census/Alpha.class",

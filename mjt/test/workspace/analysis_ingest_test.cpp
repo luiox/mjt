@@ -39,56 +39,59 @@ std::vector<ca::u8> assemble(const std::string& name, const std::string& sourceT
 
 const char* subjectSource()
 {
-    return ".super java/lang/Object\n"
-           ".class public super workspace/Subject {\n"
-           "  .field public counter I\n"
-           "  .method public static value ()I {\n"
-           "    code: {\n"
-           "      bipush 7\n"
-           "      ireturn\n"
-           "    }\n"
-           "  }\n"
-           "  .method public virtualValue ()I {\n"
-           "    code: {\n"
-           "      iconst_0\n"
-           "      ireturn\n"
-           "    }\n"
-           "  }\n"
-           "}\n";
+    return R"JASM(.super java/lang/Object
+.class public super workspace/Subject {
+  .field public counter I
+  .method public static value ()I {
+    code: {
+      bipush 7
+      ireturn
+    }
+  }
+  .method public virtualValue ()I {
+    code: {
+      iconst_0
+      ireturn
+    }
+  }
+}
+)JASM";
 }
 
 const char* callerSource()
 {
-    return ".super java/lang/Object\n"
-           ".class public super workspace/Caller {\n"
-           "  .method public static call ()I {\n"
-           "    code: {\n"
-           "      getstatic workspace/Subject.counter I\n"
-           "      invokestatic workspace/Subject.value ()I\n"
-           "      iadd\n"
-           "      ireturn\n"
-           "    }\n"
-           "  }\n"
-           "}\n";
+    return R"JASM(.super java/lang/Object
+.class public super workspace/Caller {
+  .method public static call ()I {
+    code: {
+      getstatic workspace/Subject.counter I
+      invokestatic workspace/Subject.value ()I
+      iadd
+      ireturn
+    }
+  }
+}
+)JASM";
 }
 
 const char* childSource()
 {
-    return ".super workspace/Subject\n"
-           ".implements java/lang/Runnable\n"
-           ".class public super workspace/Child {\n"
-           "  .method public virtualValue ()I {\n"
-           "    code: {\n"
-           "      iconst_1\n"
-           "      ireturn\n"
-           "    }\n"
-           "  }\n"
-           "  .method public run ()V {\n"
-           "    code: {\n"
-           "      return\n"
-           "    }\n"
-           "  }\n"
-           "}\n";
+    return R"JASM(.super workspace/Subject
+.implements java/lang/Runnable
+.class public super workspace/Child {
+  .method public virtualValue ()I {
+    code: {
+      iconst_1
+      ireturn
+    }
+  }
+  .method public run ()V {
+    code: {
+      return
+    }
+  }
+}
+)JASM";
 }
 
 std::filesystem::path writeFixtureJar()

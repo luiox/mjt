@@ -98,17 +98,18 @@ TEST(JhasmJvmPrinterTest, RoundTripsAllUpstreamLegalJvmFixtures)
 
 TEST(JhasmJvmPrinterTest, ReattachesLineNumbersToTheirOriginalLabels)
 {
-    auto first = compile(".super java/lang/Object\n"
-                         ".class public super LineNumbers {\n"
-                         "  .method public static value ()I { code: {\n"
-                         "    L0:\n"
-                         "    line 10\n"
-                         "    bipush 41\n"
-                         "    L1:\n"
-                         "    line 11\n"
-                         "    ireturn\n"
-                         "  } }\n"
-                         "}\n");
+    auto first = compile(R"JASM(.super java/lang/Object
+.class public super LineNumbers {
+  .method public static value ()I { code: {
+    L0:
+    line 10
+    bipush 41
+    L1:
+    line 11
+    ireturn
+  } }
+}
+)JASM");
     ASSERT_TRUE(first.is_ok()) << firstError(first.errors());
 
     auto printed = jhasm::printer::JvmPrinter{}.print(first.get()->bytes);

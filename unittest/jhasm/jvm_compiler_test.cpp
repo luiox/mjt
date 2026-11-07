@@ -44,10 +44,12 @@ jhasm::error::Result<jhasm::compile::JvmCompileResult> compile(const std::string
 
 TEST(JhasmJvmCompilerTest, WritesReadableClassBytes)
 {
-    auto result = compile(".super java/lang/Object\n"
-                          ".class public super Example {\n"
-                          "  .method public static value ()I { code: { bipush 42\n ireturn } }\n"
-                          "}\n");
+    auto result = compile(R"JASM(.super java/lang/Object
+.class public super Example {
+  .method public static value ()I { code: { bipush 42
+ ireturn } }
+}
+)JASM");
     ASSERT_TRUE(result.is_ok())
         << (result.errors().empty()
                 ? ""

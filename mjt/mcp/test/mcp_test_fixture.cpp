@@ -157,15 +157,16 @@ std::filesystem::path writeFixture()
 
 std::filesystem::path writeQuerySupportingFixture()
 {
-    const auto source = ".super mcp/Subject\n"
-                        ".class public super support/McpLibrary {\n"
-                        "  .method public static call ()I {\n"
-                        "    code: {\n"
-                        "      invokestatic mcp/Subject.value ()I\n"
-                        "      ireturn\n"
-                        "    }\n"
-                        "  }\n"
-                        "}\n";
+    const auto source = R"JASM(.super mcp/Subject
+.class public super support/McpLibrary {
+  .method public static call ()I {
+    code: {
+      invokestatic mcp/Subject.value ()I
+      ireturn
+    }
+  }
+}
+)JASM";
     mjbase::jasm::JvmJasmService assembler;
     auto sourceName = utf16("support/McpLibrary.jasm");
     auto sourceText = utf16(source);
@@ -194,93 +195,98 @@ std::vector<ca::u8> assembleFixtureClass(const std::string& sourceName, const st
 
 std::string annotationSource()
 {
-    return ".visible-annotation mcp/parity/TestAnnotation {\n"
-           "  number: 15,\n"
-           "  nested: .annotation mcp/parity/NestedAnnotation { value: \"fixture\" }\n"
-           "}\n"
-           ".invisible-annotation mcp/parity/TestAnnotation { value: \"hidden\" }\n"
-           ".super java/lang/Object\n"
-           ".class public super mcp/parity/Annotated {\n"
-           "  .method public static value ()I {\n"
-           "    code: {\n"
-           "      bipush 7\n"
-           "      ireturn\n"
-           "    }\n"
-           "  }\n"
-           "}\n";
+    return R"JASM(.visible-annotation mcp/parity/TestAnnotation {
+  number: 15,
+  nested: .annotation mcp/parity/NestedAnnotation { value: "fixture" }
+}
+.invisible-annotation mcp/parity/TestAnnotation { value: "hidden" }
+.super java/lang/Object
+.class public super mcp/parity/Annotated {
+  .method public static value ()I {
+    code: {
+      bipush 7
+      ireturn
+    }
+  }
+}
+)JASM";
 }
 
 std::string invokeDynamicSource()
 {
-    return ".super java/lang/Object\n"
-           ".class public super mcp/parity/Indy {\n"
-           "  .method public static run ()V {\n"
-           "    code: {\n"
-           "      new java/util/ArrayList\n"
-           "      dup\n"
-           "      invokespecial java/util/ArrayList.<init> ()V\n"
-           "      astore values\n"
-           "      aload values\n"
-           "      invokedynamic accept ()Ljava/util/function/Consumer; LambdaMetafactory.metafactory { (Ljava/lang/Object;)V, { invokestatic, mcp/parity/Indy.lambda$run$0, (Ljava/lang/String;)V }, (Ljava/lang/String;)V }\n"
-           "      invokevirtual java/util/ArrayList.forEach (Ljava/util/function/Consumer;)V\n"
-           "      return\n"
-           "    }\n"
-           "  }\n"
-           "  .method private static synthetic lambda$run$0 (Ljava/lang/String;)V {\n"
-           "    code: {\n"
-           "      return\n"
-           "    }\n"
-           "  }\n"
-           "}\n";
+    return R"JASM(.super java/lang/Object
+.class public super mcp/parity/Indy {
+  .method public static run ()V {
+    code: {
+      new java/util/ArrayList
+      dup
+      invokespecial java/util/ArrayList.<init> ()V
+      astore values
+      aload values
+      invokedynamic accept ()Ljava/util/function/Consumer; LambdaMetafactory.metafactory { (Ljava/lang/Object;)V, { invokestatic, mcp/parity/Indy.lambda$run$0, (Ljava/lang/String;)V }, (Ljava/lang/String;)V }
+      invokevirtual java/util/ArrayList.forEach (Ljava/util/function/Consumer;)V
+      return
+    }
+  }
+  .method private static synthetic lambda$run$0 (Ljava/lang/String;)V {
+    code: {
+      return
+    }
+  }
+}
+)JASM";
 }
 
 std::string constantDynamicSource()
 {
-    return ".super java/lang/Object\n"
-           ".class public super mcp/parity/Condy {\n"
-           "  .method public static value ()V {\n"
-           "    code: {\n"
-           "      ldc { fixtureConstant, Ljava/lang/String;, { invokestatic, mcp/parity/Bootstrap.get, (II)Ljava/lang/String; }, { 1, 2 } }\n"
-           "      pop\n"
-           "      return\n"
-           "    }\n"
-           "  }\n"
-           "}\n";
+    return R"JASM(.super java/lang/Object
+.class public super mcp/parity/Condy {
+  .method public static value ()V {
+    code: {
+      ldc { fixtureConstant, Ljava/lang/String;, { invokestatic, mcp/parity/Bootstrap.get, (II)Ljava/lang/String; }, { 1, 2 } }
+      pop
+      return
+    }
+  }
+}
+)JASM";
 }
 
 std::string reflectionSource()
 {
-    return ".super java/lang/Object\n"
-           ".class public super mcp/parity/ReflectionUser {\n"
-           "  .method public static load ()V {\n"
-           "    code: {\n"
-           "      ldc \"mcp.parity.ReflectionTarget\"\n"
-           "      invokestatic java/lang/Class.forName (Ljava/lang/String;)Ljava/lang/Class;\n"
-           "      pop\n"
-           "      return\n"
-           "    }\n"
-           "  }\n"
-           "}\n";
+    return R"JASM(.super java/lang/Object
+.class public super mcp/parity/ReflectionUser {
+  .method public static load ()V {
+    code: {
+      ldc "mcp.parity.ReflectionTarget"
+      invokestatic java/lang/Class.forName (Ljava/lang/String;)Ljava/lang/Class;
+      pop
+      return
+    }
+  }
+}
+)JASM";
 }
 
 std::string complexFrameSource()
 {
-    return ".super java/lang/Object\n"
-           ".class public super mcp/parity/FrameSubject {\n"
-           "  .method public static choose (Z)I {\n"
-           "    parameters: { flag },\n"
-           "    code: {\n"
-           "      iload flag\n"
-           "      ifeq right\n"
-           "      bipush 1\n"
-           "      goto join\n"
-           "    right:\n"
-           "      bipush 2\n"
-           "    join:\n"
-           "      ireturn\n"
-           "    }\n"
-           "  }\n"
-           "}\n";
+    return R"JASM(.super java/lang/Object
+.class public super mcp/parity/FrameSubject {
+  .method public static choose (Z)I {
+    parameters: { flag },
+    code: {
+      iload flag
+      ifeq right
+      bipush 1
+      goto join
+    right:
+      bipush 2
+    join:
+      ireturn
+    }
+  }
+}
+)JASM";
 }
 
 //==== 长名 fixture ====

@@ -103,23 +103,24 @@ TEST(MjtCliDisasmTest, RuntimeWithFirstErrorDiagnosticWhenDisassemblyFails)
     // 码 2 + 诊断取首条 Error」聚合分支（getJasm 失败面此前零覆盖）。
     const auto bytes = cli_fixture::withCorruptAttribute(
         cli_fixture::assembleClass(
-            ".super java/lang/Object\n"
-            ".class public super fixture/DisasmFail {\n"
-            "  .method public static act (I)I {\n"
-            "    code: {\n"
-            "    L0:\n"
-            "      line 10\n"
-            "      iload 0\n"
-            "      line 11\n"
-            "      ifeq L1\n"
-            "      iconst_1\n"
-            "      ireturn\n"
-            "    L1:\n"
-            "      iconst_2\n"
-            "      ireturn\n"
-            "    }\n"
-            "  }\n"
-            "}\n"),
+            R"JASM(.super java/lang/Object
+.class public super fixture/DisasmFail {
+  .method public static act (I)I {
+    code: {
+    L0:
+      line 10
+      iload 0
+      line 11
+      ifeq L1
+      iconst_1
+      ireturn
+    L1:
+      iconst_2
+      ireturn
+    }
+  }
+}
+)JASM"),
         "LineNumberTable");
     mjbase::model::ResourceContainer container;
     container.addResource("fixture/DisasmFail.class",

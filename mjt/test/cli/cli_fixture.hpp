@@ -259,31 +259,34 @@ inline std::filesystem::path writeTextFile(const std::string& name, const std::s
 namespace {
 
 const std::string kAlphaSource =
-    ".super java/lang/Object\n"
-    ".class public super fixture/Alpha {\n"
-    "  .field private state I\n"
-    "  .method public static act (I)V {\n"
-    "    code: {\n"
-    "      return\n"
-    "    }\n"
-    "  }\n"
-    "}\n";
+    R"JASM(.super java/lang/Object
+.class public super fixture/Alpha {
+  .field private state I
+  .method public static act (I)V {
+    code: {
+      return
+    }
+  }
+}
+)JASM";
 
 const std::string kApiSource =
-    ".class public abstract interface fixture/Api {\n"
-    "  .method public abstract act (I)V {}\n"
-    "}\n";
+    R"JASM(.class public abstract interface fixture/Api {
+  .method public abstract act (I)V {}
+}
+)JASM";
 
 const std::string kColorSource =
-    ".super java/lang/Enum\n"
-    ".class public final enum fixture/Color {\n"
-    "  .method public static values ()[Lfixture/Color; {\n"
-    "    code: {\n"
-    "      aconst_null\n"
-    "      areturn\n"
-    "    }\n"
-    "  }\n"
-    "}\n";
+    R"JASM(.super java/lang/Enum
+.class public final enum fixture/Color {
+  .method public static values ()[Lfixture/Color; {
+    code: {
+      aconst_null
+      areturn
+    }
+  }
+}
+)JASM";
 
 }   // namespace
 
@@ -399,42 +402,44 @@ inline std::vector<std::string> jarEntryUris(const std::filesystem::path& jar)
 inline std::vector<ca::u8> assembleWordsClass()
 {
     return assembleClass(
-        ".super java/lang/Object\n"
-        ".class public super fixture/Words {\n"
-        "  .method public static first ()Ljava/lang/String; {\n"
-        "    code: {\n"
-        "      ldc \"hello world\"\n"
-        "      areturn\n"
-        "    }\n"
-        "  }\n"
-        "  .method public static second ()Ljava/lang/String; {\n"
-        "    code: {\n"
-        "      ldc \"zeta_payload_xyz\"\n"
-        "      areturn\n"
-        "    }\n"
-        "  }\n"
-        "}\n");
+        R"JASM(.super java/lang/Object
+.class public super fixture/Words {
+  .method public static first ()Ljava/lang/String; {
+    code: {
+      ldc "hello world"
+      areturn
+    }
+  }
+  .method public static second ()Ljava/lang/String; {
+    code: {
+      ldc "zeta_payload_xyz"
+      areturn
+    }
+  }
+}
+)JASM");
 }
 
 /// strings 语料源 B：复用 "hello world" + 一个长密文形字面量（--min-len 观察点）。
 inline std::vector<ca::u8> assembleEchoClass()
 {
     return assembleClass(
-        ".super java/lang/Object\n"
-        ".class public super fixture/Echo {\n"
-        "  .method public static echo ()Ljava/lang/String; {\n"
-        "    code: {\n"
-        "      ldc \"hello world\"\n"
-        "      areturn\n"
-        "    }\n"
-        "  }\n"
-        "  .method public static blob ()Ljava/lang/String; {\n"
-        "    code: {\n"
-        "      ldc \"ENCRYPTED_BLOB_0123456789abcdef\"\n"
-        "      areturn\n"
-        "    }\n"
-        "  }\n"
-        "}\n");
+        R"JASM(.super java/lang/Object
+.class public super fixture/Echo {
+  .method public static echo ()Ljava/lang/String; {
+    code: {
+      ldc "hello world"
+      areturn
+    }
+  }
+  .method public static blob ()Ljava/lang/String; {
+    code: {
+      ldc "ENCRYPTED_BLOB_0123456789abcdef"
+      areturn
+    }
+  }
+}
+)JASM");
 }
 
 /// strings 语料 jar：Words + Echo 两类（无资源条目）。
@@ -458,49 +463,52 @@ inline std::filesystem::path writeStringsJar()
 inline std::vector<ca::u8> assembleNodeClass()
 {
     return assembleClass(
-        ".super java/lang/Object\n"
-        ".class public super fixture/Node {\n"
-        "  .field public static flag Z\n"
-        "  .method public static run ()V {\n"
-        "    code: {\n"
-        "      invokestatic fixture/Node.run ()V\n"
-        "      return\n"
-        "    }\n"
-        "  }\n"
-        "}\n");
+        R"JASM(.super java/lang/Object
+.class public super fixture/Node {
+  .field public static flag Z
+  .method public static run ()V {
+    code: {
+      invokestatic fixture/Node.run ()V
+      return
+    }
+  }
+}
+)JASM");
 }
 
 /// xref 语料源 Caller：call 发出方法/字段引用，pick 发出 checkcast 类型引用。
 inline std::vector<ca::u8> assembleCallerClass()
 {
     return assembleClass(
-        ".super java/lang/Object\n"
-        ".class public super fixture/Caller {\n"
-        "  .method public static call ()V {\n"
-        "    code: {\n"
-        "      invokestatic fixture/Node.run ()V\n"
-        "      getstatic fixture/Node.flag Z\n"
-        "      pop\n"
-        "      return\n"
-        "    }\n"
-        "  }\n"
-        "  .method public static pick (Ljava/lang/Object;)Ljava/lang/Object; {\n"
-        "    code: {\n"
-        "      aload_0\n"
-        "      checkcast fixture/Node\n"
-        "      areturn\n"
-        "    }\n"
-        "  }\n"
-        "}\n");
+        R"JASM(.super java/lang/Object
+.class public super fixture/Caller {
+  .method public static call ()V {
+    code: {
+      invokestatic fixture/Node.run ()V
+      getstatic fixture/Node.flag Z
+      pop
+      return
+    }
+  }
+  .method public static pick (Ljava/lang/Object;)Ljava/lang/Object; {
+    code: {
+      aload_0
+      checkcast fixture/Node
+      areturn
+    }
+  }
+}
+)JASM");
 }
 
 /// xref 语料源 NodeImpl：super 头声明命中 Node（类头类型引用观察点）。
 inline std::vector<ca::u8> assembleNodeImplClass()
 {
     return assembleClass(
-        ".super fixture/Node\n"
-        ".class public super fixture/NodeImpl {\n"
-        "}\n");
+        R"JASM(.super fixture/Node
+.class public super fixture/NodeImpl {
+}
+)JASM");
 }
 
 /// xref 语料 jar：Node（目标）/ Caller（调用方）/ NodeImpl（子类）三类。
@@ -527,19 +535,20 @@ inline std::filesystem::path writeXrefJar()
 inline std::vector<ca::u8> assembleNativeHostClass()
 {
     return assembleClass(
-        ".super java/lang/Object\n"
-        ".class public super fixture/Native {\n"
-        "  .field private token J\n"
-        "  .method public native probe (I)V {}\n"
-        "  .method public static calc (II)I {\n"
-        "    code: {\n"
-        "      iload_0\n"
-        "      iload_1\n"
-        "      iadd\n"
-        "      ireturn\n"
-        "    }\n"
-        "  }\n"
-        "}\n");
+        R"JASM(.super java/lang/Object
+.class public super fixture/Native {
+  .field private token J
+  .method public native probe (I)V {}
+  .method public static calc (II)I {
+    code: {
+      iload_0
+      iload_1
+      iadd
+      ireturn
+    }
+  }
+}
+)JASM");
 }
 
 /// classes/subs/disasm 语料 jar：九类覆盖六形态（class / interface / enum /
@@ -551,18 +560,19 @@ inline std::filesystem::path writeClassesJar()
 {
     mjbase::model::ResourceContainer container;
     const std::string alphaSource =
-        ".super java/lang/Object\n"
-        ".class public super fixture/Alpha {\n"
-        "  .field private state I\n"
-        "  .method public static act (I)I {\n"
-        "    code: {\n"
-        "      iload_0\n"
-        "      iconst_2\n"
-        "      imul\n"
-        "      ireturn\n"
-        "    }\n"
-        "  }\n"
-        "}\n";
+        R"JASM(.super java/lang/Object
+.class public super fixture/Alpha {
+  .field private state I
+  .method public static act (I)I {
+    code: {
+      iload_0
+      iconst_2
+      imul
+      ireturn
+    }
+  }
+}
+)JASM";
     container.addResource("fixture/Alpha.class",
                           std::make_unique<mjbase::model::ClassResource>(
                               "fixture/Alpha.class", assembleClass(alphaSource)));
@@ -575,37 +585,41 @@ inline std::filesystem::path writeClassesJar()
     container.addResource("fixture/Anno.class",
                           std::make_unique<mjbase::model::ClassResource>(
                               "fixture/Anno.class",
-                              assembleClass(".class public abstract interface annotation "
-                                            "fixture/Anno {\n"
-                                            "  .method public abstract value ()I {}\n"
-                                            "}\n")));
+                              assembleClass(R"JASM(.class public abstract interface annotation fixture/Anno {
+  .method public abstract value ()I {}
+}
+)JASM")));
     container.addResource("fixture/Pair.class",
                           std::make_unique<mjbase::model::ClassResource>(
                               "fixture/Pair.class",
-                              assembleClass(".super java/lang/Record\n"
-                                            ".class public final record fixture/Pair {\n"
-                                            "  .field private final a I\n"
-                                            "}\n")));
+                              assembleClass(R"JASM(.super java/lang/Record
+.class public final record fixture/Pair {
+  .field private final a I
+}
+)JASM")));
     container.addResource("fixture/Native.class",
                           std::make_unique<mjbase::model::ClassResource>(
                               "fixture/Native.class", assembleNativeHostClass()));
     container.addResource("com/google/gson/Stub.class",
                           std::make_unique<mjbase::model::ClassResource>(
                               "com/google/gson/Stub.class",
-                              assembleClass(".super java/lang/Object\n"
-                                            ".class public super com/google/gson/Stub {\n"
-                                            "}\n")));
+                              assembleClass(R"JASM(.super java/lang/Object
+.class public super com/google/gson/Stub {
+}
+)JASM")));
     container.addResource("sun/misc/Stub.class",
                           std::make_unique<mjbase::model::ClassResource>(
                               "sun/misc/Stub.class",
-                              assembleClass(".super java/lang/Object\n"
-                                            ".class public super sun/misc/Stub {\n"
-                                            "}\n")));
+                              assembleClass(R"JASM(.super java/lang/Object
+.class public super sun/misc/Stub {
+}
+)JASM")));
     container.addResource("module-info.class",
                           std::make_unique<mjbase::model::ClassResource>(
                               "module-info.class",
-                              assembleClass(".class module module-info {\n"
-                                            "}\n")));
+                              assembleClass(R"JASM(.class module module-info {
+}
+)JASM")));
     container.addResource("data/notes.txt",
                           std::make_unique<mjbase::model::UnknownResource>(
                               "data/notes.txt", std::vector<ca::u8>{'o', 'k'}));
@@ -627,18 +641,19 @@ inline std::string hostileInternalName() { return std::string(kHostileNameLength
 inline std::vector<ca::u8> assembleRenamedClass(const std::string& internalName)
 {
     const std::string source =
-        ".super java/lang/Object\n"
-        ".class public super fixture/Template {\n"
-        "  .field public counter I\n"
-        "  .method public static act (I)I {\n"
-        "    code: {\n"
-        "      iload_0\n"
-        "      iconst_1\n"
-        "      iadd\n"
-        "      ireturn\n"
-        "    }\n"
-        "  }\n"
-        "}\n";
+        R"JASM(.super java/lang/Object
+.class public super fixture/Template {
+  .field public counter I
+  .method public static act (I)I {
+    code: {
+      iload_0
+      iconst_1
+      iadd
+      ireturn
+    }
+  }
+}
+)JASM";
     const auto templateBytes = assembleClass(source);
     //this_class 改写（libjbc 会话面；模板方法体零触碰，与 MCP fixture 同款）。
     auto opened = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(templateBytes));
@@ -659,18 +674,19 @@ inline std::filesystem::path writeDecompileJar()
 {
     mjbase::model::ResourceContainer container;
     const std::string alphaSource =
-        ".super java/lang/Object\n"
-        ".class public super fixture/Alpha {\n"
-        "  .field private partner Lfixture/Api;\n"
-        "  .method public static act (I)I {\n"
-        "    code: {\n"
-        "      iload_0\n"
-        "      iconst_2\n"
-        "      imul\n"
-        "      ireturn\n"
-        "    }\n"
-        "  }\n"
-        "}\n";
+        R"JASM(.super java/lang/Object
+.class public super fixture/Alpha {
+  .field private partner Lfixture/Api;
+  .method public static act (I)I {
+    code: {
+      iload_0
+      iconst_2
+      imul
+      ireturn
+    }
+  }
+}
+)JASM";
     container.addResource("fixture/Alpha.class",
                           std::make_unique<mjbase::model::ClassResource>(
                               "fixture/Alpha.class", assembleClass(alphaSource)));

@@ -49,57 +49,60 @@ std::vector<ca::u8> assemble(const std::string& name, const std::string& sourceT
 /// @brief 基线 Subject：value 载 iconst_0，virtualValue 载 iconst_1。
 const char* subjectSource()
 {
-    return ".super java/lang/Object\n"
-           ".class public super workspace/Subject {\n"
-           "  .field public counter I\n"
-           "  .method public static value ()I {\n"
-           "    code: {\n"
-           "      iconst_0\n"
-           "      ireturn\n"
-           "    }\n"
-           "  }\n"
-           "  .method public virtualValue ()I {\n"
-           "    code: {\n"
-           "      iconst_1\n"
-           "      ireturn\n"
-           "    }\n"
-           "  }\n"
-           "}\n";
+    return R"JASM(.super java/lang/Object
+.class public super workspace/Subject {
+  .field public counter I
+  .method public static value ()I {
+    code: {
+      iconst_0
+      ireturn
+    }
+  }
+  .method public virtualValue ()I {
+    code: {
+      iconst_1
+      ireturn
+    }
+  }
+}
+)JASM";
 }
 
 /// @brief 整类替换用 Subject：value 载 iconst_2，virtualValue 载 iconst_3
 ///        （两个方法语义都变）。
 const char* replacedSubjectSource()
 {
-    return ".super java/lang/Object\n"
-           ".class public super workspace/Subject {\n"
-           "  .field public counter I\n"
-           "  .method public static value ()I {\n"
-           "    code: {\n"
-           "      iconst_2\n"
-           "      ireturn\n"
-           "    }\n"
-           "  }\n"
-           "  .method public virtualValue ()I {\n"
-           "    code: {\n"
-           "      iconst_3\n"
-           "      ireturn\n"
-           "    }\n"
-           "  }\n"
-           "}\n";
+    return R"JASM(.super java/lang/Object
+.class public super workspace/Subject {
+  .field public counter I
+  .method public static value ()I {
+    code: {
+      iconst_2
+      ireturn
+    }
+  }
+  .method public virtualValue ()I {
+    code: {
+      iconst_3
+      ireturn
+    }
+  }
+}
+)JASM";
 }
 
 const char* callerSource()
 {
-    return ".super java/lang/Object\n"
-           ".class public super workspace/Caller {\n"
-           "  .method public static call ()I {\n"
-           "    code: {\n"
-           "      invokestatic workspace/Subject.value ()I\n"
-           "      ireturn\n"
-           "    }\n"
-           "  }\n"
-           "}\n";
+    return R"JASM(.super java/lang/Object
+.class public super workspace/Caller {
+  .method public static call ()I {
+    code: {
+      invokestatic workspace/Subject.value ()I
+      ireturn
+    }
+  }
+}
+)JASM";
 }
 
 std::filesystem::path writeFixtureJar()

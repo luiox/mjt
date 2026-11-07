@@ -44,13 +44,14 @@ std::string readFile(const std::filesystem::path& path)
 
 TEST(JhasmASTProcessorTest, ProcessesClassFieldAndMethod)
 {
-    auto result = process(".super java/lang/Object\n"
-                          ".class public super HelloWorld {\n"
-                          "  .field public static final answer I {value: 42}\n"
-                          "  .method public static main ([Ljava/lang/String;)V {\n"
-                          "    parameters: {args}, code: { return }\n"
-                          "  }\n"
-                          "}\n");
+    auto result = process(R"JASM(.super java/lang/Object
+.class public super HelloWorld {
+  .field public static final answer I {value: 42}
+  .method public static main ([Ljava/lang/String;)V {
+    parameters: {args}, code: { return }
+  }
+}
+)JASM");
     ASSERT_FALSE(result.has_err());
     ASSERT_NE(nullptr, result.get());
     ASSERT_EQ(1U, result.get()->size());

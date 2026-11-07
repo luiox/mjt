@@ -44,10 +44,14 @@ jhasm::error::Result<jhasm::compile::JvmCompileResult> compile(const std::string
 TEST(JhasmJvmAnalyzerTest, ReturnsOwningFramesForValidMethod)
 {
     auto compiled = compile(
-        ".super java/lang/Object\n"
-        ".class public super Example {\n"
-        "  .method public static value (I)I { code: { iload 0\n iconst_1\n iadd\n ireturn } }\n"
-        "}\n");
+        R"JASM(.super java/lang/Object
+.class public super Example {
+  .method public static value (I)I { code: { iload 0
+ iconst_1
+ iadd
+ ireturn } }
+}
+)JASM");
     ASSERT_TRUE(compiled.is_ok());
     auto analysis = jhasm::analysis::JvmAnalyzer{}.analyze(compiled.get()->bytes);
     ASSERT_TRUE(analysis.is_ok())
@@ -64,12 +68,15 @@ TEST(JhasmJvmAnalyzerTest, ReturnsOwningFramesForValidMethod)
 
 TEST(JhasmJvmAnalyzerTest, KeepsArrayParameterDescriptorsAliveInFrames)
 {
-    auto compiled = compile(".super java/lang/Object\n"
-                            ".class public super Example {\n"
-                            "  .method public static main ([Ljava/lang/String;)V {\n"
-                            "    code: { aload 0\n pop\n return }\n"
-                            "  }\n"
-                            "}\n");
+    auto compiled = compile(R"JASM(.super java/lang/Object
+.class public super Example {
+  .method public static main ([Ljava/lang/String;)V {
+    code: { aload 0
+ pop
+ return }
+  }
+}
+)JASM");
     ASSERT_TRUE(compiled.is_ok());
     auto analysis = jhasm::analysis::JvmAnalyzer{}.analyze(compiled.get()->bytes);
     ASSERT_TRUE(analysis.is_ok())
