@@ -13,6 +13,12 @@ target("mjt_shared")
 
     add_packages("mjbase", {public = true})
     add_packages("libjhasm")
+    -- 注：workspace 导出面（#74）直接使用 jzip 面，但不在本 target 挂
+    -- libjzip 包——头路径经 mjbase 公开依赖链传递（同 mjt/test/cli/
+    -- cli_fixture.hpp 惯例），符号经各 binary 的 add_links 闭包解析。
+    -- 显式挂包会引入 libjzip 0.0.3 实例（根 require 版本）与 mjbase 包
+    -- 链解析的 0.0.5 实例并存，扰动链接取档：0 字节 STORED 条目在
+    -- 0.0.3 读路径回天花板扫描垃圾字节（mjt CI 实证，mask 语料炸串）。
 
     add_includedirs("src", {public = true})
 

@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <iomanip>
 #include <iterator>
@@ -53,7 +54,11 @@
 #include "mjbase/spi/pass_registry.hpp"
 #include "mjbase/spi/pipeline_builder.hpp"
 #include "mjbase/spi/strict_type_resolver.hpp"
+#include "jzip/decompressor.hpp"
+#include "jzip/zip_io.hpp"
+#include "libca/zip/checksum.hpp"
 #include "analysis_edit.hpp"
+#include "export_manifest.hpp"
 #include "class_mutation_service.hpp"
 #include "classfile_support.hpp"
 #include "reference_scan.hpp"
@@ -1098,7 +1103,64 @@ WorkspaceResult<std::filesystem::path> validateExportDestination(
     return ca::core::Ok(output);
 }
 
+// ── 导出 jar 物化（#74 保真口径）───────────────────────────────────────
+// 不再经 mjbase::model::ResourceHelper::exportToJar：其三处副作用与导出保真
+// 契约冲突——1) ensureMultiReleaseManifest 检测到 versions/ 条目就给 MANIFEST
+// 注入 Multi-Release:true（激活源 jar 里本惰性的版本化覆盖，语义级副作用，
+// 且注入原地写进传入容器）；2) ManifestResource 经 Manifest::toBytes 重序列
+// 化，行尾恒 CRLF、主属性段外尾随内容被丢弃；3) JarWriter 为每个条目逐级补
+// STORED 父目录占位，产物条目集与源不一致。改为本侧自装 zip：条目集 = 容器
+// 条目集（源目录条目原样保留、不新增占位）；MANIFEST 字节经
+// resolveExportManifestBytes 决策（无编辑逐字节复制源字节，有编辑物化编辑）。
+// 条目名按容器 URI 原始字节直写（与源条目名逐字节一致，不做路径规范化改写）。
+// 压缩/头装配口径与 mjbase JarWriter 一致（DEFLATE + CRC32 + UTF-8 flag
+// 0x0800；空载荷含目录条目 STORED），时间戳取 DOS 纪元固定值保证可重现。
+
+/// @brief 导出条目载荷：条目名 = 容器 URI 原始字节，data = 资源字节。
+struct FidelityJarEntry
+{
+    std::string         name;
+    std::vector<ca::u8> data;
+};
+
+/// @brief 收集保真导出条目：容器资源原样展开，MANIFEST 用保真决策字节。
+WorkspaceResult<std::vector<FidelityJarEntry>> collectFidelityJarEntries(
+    model::ResourceContainer& container, const model::ResourceContainer* baseline,
+    const std::optional<std::vector<ca::u8>>& sourceManifestBytes)
+{
+    auto manifestBytes = resolveExportManifestBytes(container, baseline, sourceManifestBytes);
+    if (manifestBytes.is_err()) return ca::core::Err(std::move(manifestBytes).unwrap_err());
+    auto resolvedManifest = std::move(manifestBytes).unwrap();
+
+    std::vector<FidelityJarEntry> entries;
+    WorkspaceErrorInfo            collectError;
+    container.visitResources([&](std::string_view uri, const model::IResource& resource) {
+        if (collectError.is_err()) return;
+        if (ca::core::tag_cast::dyn_cast<const model::ManifestResource>(&resource) != nullptr) {
+            // MANIFEST 条目：决策器对含 ManifestResource 的容器必返回字节。
+            if (resolvedManifest.has_value())
+                entries.push_back({std::string(uri), std::move(*resolvedManifest)});
+            return;
+        }
+        auto bytes = bytesOf(resource);
+        if (bytes.is_err()) {
+            collectError = std::move(bytes).unwrap_err();
+            return;
+        }
+        entries.push_back({std::string(uri), std::move(bytes).unwrap()});
+    });
+    if (collectError.is_err()) return ca::core::Err(std::move(collectError));
+    std::sort(entries.begin(), entries.end(), [](const FidelityJarEntry& left,
+                                                 const FidelityJarEntry& right) {
+        return left.name < right.name;
+    });
+    return ca::core::Ok(std::move(entries));
+}
+
+/// @brief 按保真口径把容器物化为 jar（原子写：临时文件 + rename）。
 WorkspaceErrorInfo exportContainerToJar(model::ResourceContainer& container,
+                                        const model::ResourceContainer* baseline,
+                                        const std::optional<std::vector<ca::u8>>& sourceManifestBytes,
                                         const std::string& sourcePath,
                                         const std::string& outputPath, ca::u64 revision)
 {
@@ -1107,17 +1169,62 @@ WorkspaceErrorInfo exportContainerToJar(model::ResourceContainer& container,
     if (output.is_err()) return std::move(output).unwrap_err();
     const auto destination = std::move(output).unwrap();
 
+    auto collected = collectFidelityJarEntries(container, baseline, sourceManifestBytes);
+    if (collected.is_err()) return std::move(collected).unwrap_err();
+    const auto entries = std::move(collected).unwrap();
+
     std::error_code filesystemError;
     auto            temporary = destination;
     temporary += ".mjt-tmp-" + std::to_string(revision);
     if (fs::exists(temporary))
         return error(WorkspaceError::AlreadyExists, "export JAR", pathToUtf8(temporary));
     try {
-        auto written = model::ResourceHelper::exportToJar(container, pathToUtf8(temporary));
-        if (written.is_err()) {
-            fs::remove(temporary, filesystemError);
-            return modelFailure("export JAR", std::move(written).unwrap_err());
+        // DOS 纪元（1980-01-01 00:00:00）固定时间戳：产物字节可重现，JVM
+        // 不读条目时间戳。
+        constexpr ca::u16 kDosEpochTime = 0;
+        constexpr ca::u16 kDosEpochDate = 0x0021;
+        jzip::ZipArchive  archive;
+        for (const auto& entry : entries) {
+            auto local = std::make_unique<jzip::LocalFileHeader>();
+            local->setFileName(entry.name);
+            local->setGeneralPurposeBitFlag(0x0800);   // bit11 = UTF-8
+            local->setLastModFileTime(kDosEpochTime);
+            local->setLastModFileDate(kDosEpochDate);
+            local->setOffset(0);
+            if (entry.data.empty()) {
+                // 零载荷条目（源目录条目等）STORED 原样保留。
+                local->setCompressionMethod(0);
+                local->setCompressedSize(0);
+                local->setUncompressedSize(0);
+                local->setCrc32(0);
+            }
+            else {
+                ca::zip::Crc32 crc;
+                crc.update(entry.data.data(), entry.data.size());
+                auto compressed = jzip::DeflateCompressor().compress(entry.data);
+                local->setCompressionMethod(8);
+                local->setCompressedSize(static_cast<ca::u32>(compressed.size()));
+                local->setUncompressedSize(static_cast<ca::i64>(entry.data.size()));
+                local->setCrc32(crc.value());
+                local->setFileData(std::move(compressed));
+            }
+            archive.addPart(std::move(local));
         }
+        const auto archiveBytes = jzip::ZipIO::writeDirect(archive);
+        std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
+        if (!out)
+            return error(WorkspaceError::Internal, "export JAR",
+                         "failed to open temporary archive: " + pathToUtf8(temporary));
+        out.write(reinterpret_cast<const char*>(archiveBytes.data()),
+                  static_cast<std::streamsize>(archiveBytes.size()));
+        out.flush();
+        if (!out) {
+            out.close();
+            fs::remove(temporary, filesystemError);
+            return error(WorkspaceError::Internal, "export JAR",
+                         "failed to write temporary archive");
+        }
+        out.close();
         if (!fs::exists(temporary) || fs::file_size(temporary) == 0) {
             fs::remove(temporary, filesystemError);
             return error(WorkspaceError::Internal, "export JAR",
@@ -1257,6 +1364,54 @@ WorkspaceBase::~WorkspaceBase() = default;
 
 // ── 打开 / supporting ───────────────────────────────────────────────────
 
+/// @brief 源 jar MANIFEST 原始字节捕获装饰器（#74 导出保真）。
+///
+/// 包住本次打开的读取器，在同一个读取遍里把 META-INF/MANIFEST.MF 条目的
+/// 原始字节旁路写入 @p sink（ManifestResource 解析物不含行尾/续行/尾随
+/// 内容，导出逐字节复制需要源字节）。转发 read/readWithProgress 两个入口，
+/// 进度变体也捕获（两个读取入口都可能被消费面走到）。捕获名 = 解码后
+/// 规范名，与容器内 ManifestResource 的 URI 同口径。
+class SourceManifestCapture final : public mjbase::jar::IJarReader
+{
+public:
+    SourceManifestCapture(std::unique_ptr<mjbase::jar::IJarReader> inner,
+                          std::optional<std::vector<ca::u8>>& sink)
+        : inner_(std::move(inner))
+        , sink_(sink)
+    {}
+    ca::core::Result<void, mjbase::jar::JarError> read(
+        const std::function<void(const ca::str::Utf8String&, const std::vector<ca::u8>&)>&
+            consumer) override
+    {
+        return inner_->read(
+            [&](const ca::str::Utf8String& name, const std::vector<ca::u8>& data) {
+                capture(name, data);
+                consumer(name, data);
+            });
+    }
+    ca::core::Result<void, mjbase::jar::JarError> readWithProgress(
+        const mjbase::jar::IJarReader::ProgressConsumer& consumer) override
+    {
+        return inner_->readWithProgress(
+            [&](int index, int total, const ca::str::Utf8String& name,
+                const std::vector<ca::u8>& data) {
+                capture(name, data);
+                consumer(index, total, name, data);
+            });
+    }
+
+private:
+    void capture(const ca::str::Utf8String& name, const std::vector<ca::u8>& data)
+    {
+        if (sink_.has_value()) return;
+        if (name.ref() ==
+            ca::str::Utf8StringRef::from_cstr(mjbase::jar::JarUtil::kManifestFileName))
+            sink_ = data;
+    }
+    std::unique_ptr<mjbase::jar::IJarReader> inner_;
+    std::optional<std::vector<ca::u8>>&      sink_;
+};
+
 WorkspaceResult<void> WorkspaceBase::openJar(ca::str::Utf8StringRef pathRef)
 {
     const std::string path = pathRef.to_std_string();
@@ -1281,7 +1436,13 @@ WorkspaceResult<void> WorkspaceBase::openJar(
 
     try {
         model::ResourceContainer loaded;
-        auto imported = model::ResourceHelper::importFromJar(loaded, path, decoder);
+        // 单次读取遍内旁路捕获源 MANIFEST 原始字节（#74 导出保真）。
+        std::optional<std::vector<ca::u8>> sourceManifest;
+        auto                               reader = std::make_unique<mjbase::jar::JvmJarReader>(utf8Ref(path));
+        if (decoder) reader->setEntryNameDecoder(decoder);
+        auto imported = model::ResourceHelper::importFromJar(
+            loaded, path,
+            std::make_unique<SourceManifestCapture>(std::move(reader), sourceManifest));
         if (imported.is_err())
             return ca::core::Err(modelFailure("open JAR", std::move(imported).unwrap_err()));
         auto original = cloneContainer(loaded);
@@ -1289,11 +1450,12 @@ WorkspaceResult<void> WorkspaceBase::openJar(
         auto working = cloneContainer(loaded);
         if (working.is_err()) return ca::core::Err(std::move(working).unwrap_err());
 
-        original_         = std::move(original).unwrap();
-        working_          = std::move(working).unwrap();
-        artifactKind_     = ArtifactKind::Jar;
-        sourcePath_       = utf8(path);
-        primaryClassUri_  = ca::str::Utf8String{};
+        original_            = std::move(original).unwrap();
+        working_             = std::move(working).unwrap();
+        artifactKind_        = ArtifactKind::Jar;
+        sourcePath_          = utf8(path);
+        primaryClassUri_     = ca::str::Utf8String{};
+        sourceManifestBytes_ = std::move(sourceManifest);
         supporting_.clear();
         // 会话史清零（旧语义：打开新主资源丢弃 undo/redo/savepoint）。绑定态
         // 先落盘旧容器台账再重置链（新容器台账随下次 flush 落盘；旧容器已落盘
@@ -1383,11 +1545,12 @@ WorkspaceResult<void> WorkspaceBase::openClass(ca::str::Utf8StringRef pathRef)
         auto working = cloneContainer(loaded);
         if (working.is_err()) return ca::core::Err(std::move(working).unwrap_err());
 
-        original_         = std::move(original).unwrap();
-        working_          = std::move(working).unwrap();
-        artifactKind_     = ArtifactKind::Class;
-        sourcePath_       = utf8(path);
-        primaryClassUri_  = utf8(uri);
+        original_            = std::move(original).unwrap();
+        working_             = std::move(working).unwrap();
+        artifactKind_        = ArtifactKind::Class;
+        sourcePath_          = utf8(path);
+        primaryClassUri_     = utf8(uri);
+        sourceManifestBytes_ = std::nullopt;   // class 工件无 jar 保真面
         supporting_.clear();
         auto digest = ledgerBaseDigest();
         if (digest.is_err()) return ca::core::Err(std::move(digest).unwrap_err());
@@ -4007,7 +4170,8 @@ WorkflowResult WorkspaceBase::runWorkflow(const WorkflowRequest& workflow,
                 return fail("candidate_artifact", std::move(artifactPath).unwrap_err());
             ScopedWorkflowCandidateJar artifact(std::move(artifactPath).unwrap());
             const auto exportStatus =
-                exportContainerToJar(*candidate, sourcePath_.to_std_string(),
+                exportContainerToJar(*candidate, original_.get(), sourceManifestBytes_,
+                                     sourcePath_.to_std_string(),
                                      pathToUtf8(artifact.path()), revision_);
             if (exportStatus.is_err()) return fail("candidate_artifact", exportStatus);
             const auto stageStatus = workflow.candidateJarConsumer(pathToUtf8(artifact.path()));
@@ -4031,8 +4195,8 @@ WorkflowResult WorkspaceBase::runWorkflow(const WorkflowRequest& workflow,
             result.exportPath = utf8(pathToUtf8(destination.unwrap()));
             if (!request.dryRun) {
                 const auto exportStatus = exportContainerToJar(
-                    *candidate, sourcePath_.to_std_string(), result.exportPath.to_std_string(),
-                    revision_);
+                    *candidate, original_.get(), sourceManifestBytes_,
+                    sourcePath_.to_std_string(), result.exportPath.to_std_string(), revision_);
                 if (exportStatus.is_err()) return fail("export", exportStatus);
                 result.exported = true;
             }
@@ -4307,8 +4471,8 @@ WorkflowCandidateCommitResult WorkspaceBase::commitWorkflowCandidateJar(
             result.exportPath = utf8(pathToUtf8(destination.unwrap()));
             if (!request.dryRun) {
                 const WorkspaceErrorInfo exportStatus = exportContainerToJar(
-                    *candidate, sourcePath_.to_std_string(), result.exportPath.to_std_string(),
-                    revision_);
+                    *candidate, original_.get(), sourceManifestBytes_,
+                    sourcePath_.to_std_string(), result.exportPath.to_std_string(), revision_);
                 if (exportStatus.is_err()) {
                     result.mutation = stateFailure(exportStatus);
                     return result;
@@ -4670,7 +4834,8 @@ WorkspaceResult<void> WorkspaceBase::exportJar(ca::str::Utf8StringRef outputPath
             return ca::core::Err(ledgerFailure("export JAR", std::move(flushed).unwrap_err()));
     }
     const WorkspaceErrorInfo exported =
-        exportContainerToJar(*working_, sourcePath_.to_std_string(), outputPath, revision_);
+        exportContainerToJar(*working_, original_.get(), sourceManifestBytes_,
+                             sourcePath_.to_std_string(), outputPath, revision_);
     if (exported.is_err()) return ca::core::Err(std::move(exported));
     return ca::core::Ok();
 }
