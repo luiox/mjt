@@ -47,20 +47,24 @@ std::string encodeBase64(const std::vector<ca::u8>& value)
 
 std::string classSourceFor(const std::string& name, const std::string& value)
 {
-    return ".super java/lang/Object\n"
-           ".class public super " +
+    // jasm 文本 raw string 定版（用户定 fixture 规范，同 mjbase
+    // doc/test-fixtures.rst）：大段 R"JASM 定版，仅插值点最小段拼接，
+    // 禁逐行 ".x\n" 拼接与转义引号。拼接顺序与历史模板逐字节一致。
+    return std::string{R"JASM(.super java/lang/Object
+.class public super )JASM"} +
            name +
-           " {\n"
-           "  .field public counter I\n"
-           "  .method public static value ()I {\n"
-           "    code: {\n"
-           "      bipush " +
+           R"JASM( {
+  .field public counter I
+  .method public static value ()I {
+    code: {
+      bipush )JASM" +
            value +
-           "\n"
-           "      ireturn\n"
-           "    }\n"
-           "  }\n"
-           "}\n";
+           R"JASM(
+      ireturn
+    }
+  }
+}
+)JASM";
 }
 
 std::string classSource(const std::string& value)
