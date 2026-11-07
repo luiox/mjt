@@ -13,6 +13,10 @@ target("mjt_shared")
 
     add_packages("mjbase", {public = true})
     add_packages("libjhasm")
+    -- libjzip：workspace 导出面自装 zip（#74 导出保真，绕开 mjbase JarWriter
+    -- 的目录占位合成与 Multi-Release 注入）；mjbase 公开头（jar_reader.hpp）
+    -- 本就暴露 jzip 面，此处按直接使用显式挂包。
+    add_packages("libjzip")
 
     add_includedirs("src", {public = true})
 

@@ -38,6 +38,14 @@
 
 ### Fixed
 
+- `project_export` 导出保真（#74）：MANIFEST 无编辑时产物逐字节复制源条目
+  （LF 行尾、续行折行、主属性段外尾随内容原样，不再被 CRLF 重序列化改写）；
+  移除「检测到 `META-INF/versions/` 条目就自动注入 `Multi-Release: true`」
+  的推断——源 jar 里处于惰性状态的版本化覆盖不再被导出激活；产物条目集
+  与工作副本一致，不再为文件条目合成无内容目录占位。源 jar 无 MANIFEST
+  条目且含 JEP 238 版本化类（≥9）时维持补最小 MANIFEST 的收口契约，其余
+  无 MANIFEST 形态产物照旧不带该条目；导出不再原地改写会话内工作副本的
+  MANIFEST 资源。
 - `edit_apply` 结构化编辑的写回校验门按 mutation 种类分档：不触碰方法体的
   旗标/成员表面编辑（访问位、成员表增删、注解、局部名）不再被整类
   rebuild-validate 拒绝——类内先在坏帧此前会让这类编辑在 `validation`
