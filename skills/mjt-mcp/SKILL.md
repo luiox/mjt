@@ -48,6 +48,7 @@ mjt 是 JVM 字节码工具集的 MCP 服务器：stdio 传输（也支持 HTTP�
 - 寻址：类名一律 JVM internal name（`a/b/C` 形态），也接受精确类资源 URI（`a/b/C.class`）。成员按 `owner`+`name`(+`descriptor`) 寻址；descriptor 省略时按成员名在宿主类内唯一解析回填，真重载报歧义并列出全部候选描述符，名字不存在报缺失。
 - 业务错误走 `isError=true` 的结构化文档：`error`/`status`/`status_code`/`operation`/`project_id`/`revision`/`diagnostics`。这不是传输故障，按文案修正参数重发即可。
 - Jasm：`class_query(kind=jasm|method_jasm)` 返回规范化全文，也是 `edit_apply` 的 diff 基线；指令的结构化 `instructions[]` 节点类型是粗粒度语义标签，操作数、跳转目标与行号以 jasm 文本为权威。方言细节见 [../../../docs/jasm-syntax.md](../../../docs/jasm-syntax.md)。
+- 字节码证据只从本工具面取：`javap`、自写 classfile 解析器等旁路工具一律不用——它们的输出形态与工作副本指令索引对不上，取证后无法回指补丁位置，结论也不可复核。
 
 ## 典型工作流
 
@@ -64,6 +65,7 @@ census（全量普查）不在 11 工具面内：jar 级类普查导出（`class
 
 - fail-loud 是契约：宁要结构化报错不要静默错数据。报错先读 `error` 与 `diagnostics` 文案，修正参数重发，不要原样重试。
 - 超时面：project_open / class_query / search / xref_query 接受 `timeout_ms`（缺省 180000，上限 300000）。超时返回结构化错误并带 `partial=true`/`reason=timeout`；操作转孤儿继续执行至自然完成，stdio 通道、会话与其余工具不受阻塞。
+- 大容器超时豁免面：宽检索（`search` 全库宽词）与大类 jasm/反编译全量输出在大容器上可能挂满 deadline，但单类粒度的 `class_query`、`xref_query`、`edit_apply` 不受影响——宽检索改用包前缀限定或收窄查询词分页推进，大类证据按类拆小取；超时不构成启用旁路工具（javap、自写解析器）的理由。
 - 单工程互斥：工程 bundle 的 `store.lock` 是单写者锁，同一 `project_dir` 的第二个 project_open 失败（含跨进程）；同进程内工作区工具经执行锁串行，长工具不阻塞 project_close 与反编译作业轮询。
 - 容量上限：同时最多 16 个打开工程，异步反编译作业最多 64 个；超限先 close 再开。
 - close/export 前自动 flush pending 台账与分析缓存；flush 失败不关闭（数据安全优先于会话回收）。
