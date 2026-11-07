@@ -67,6 +67,42 @@ jbc::core::MemberInfo* findField(jbc::core::ClassFile& cf, const MemberSelector&
     return nullptr;
 }
 
+// ── 整类门分档（#73）──────────────────────────────────────────
+
+/// @brief 该 mutation 是否触碰方法体（Code 可执行内容面）。
+///
+/// 写回后的整类 rebuild-validate 校验全类字节（含所有方法的帧/类型流）。类内
+/// 先在坏帧会让该门无差别拒掉一切编辑（#73）——旗标/成员表面编辑不改任何方法
+/// 的可执行内容，整类门对它们只可能复述先在问题，应跳过；触碰方法体的
+/// mutation（换体/指令编辑/新建方法体）维持整类门。判定口径：只动访问位、
+/// 成员表（增删字段/方法）、注解属性、Deprecated 属性或 LVT/LNT 名字 CP 引用
+/// 的 kind 都不算触碰；凡经 promote/lower 或 buildMethodBody 落新 Code 内容
+/// 的 kind 都算触碰。新增 kind 落错档 = 门漏放，宁可拒不可放。
+bool mutationTouchesMethodBody(ClassMutationKind kind) noexcept
+{
+    switch (kind) {
+    case ClassMutationKind::SetClassAccess:
+    case ClassMutationKind::ChangeClassAccess:
+    case ClassMutationKind::SetFieldAccess:
+    case ClassMutationKind::SetMethodAccess:
+    case ClassMutationKind::AddField:
+    case ClassMutationKind::RemoveField:
+    case ClassMutationKind::RemoveMethod:
+    case ClassMutationKind::RenameLocal:
+    case ClassMutationKind::AddMarkerAnnotation:
+    case ClassMutationKind::RemoveAnnotation:
+        return false;
+    case ClassMutationKind::ReplaceTryCatchBlocks:
+    case ClassMutationKind::ReplaceMethodBody:
+    case ClassMutationKind::InsertInstruction:
+    case ClassMutationKind::ReplaceInstruction:
+    case ClassMutationKind::RemoveInstruction:
+    case ClassMutationKind::AddMethod:
+        return true;
+    }
+    return true;
+}
+
 // ── 访问位校验 ────────────────────────────────────────────────
 
 WorkspaceErrorInfo validateVisibility(ca::i32 access, const std::string& operation)
@@ -1533,22 +1569,34 @@ ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation,
         }
         if (status.is_err()) return failure(std::move(status));
 
-        // 写回：jbc 序列化 → Jasm 验证（写回后整类门，档位随请求：off
-        // 直通，与 jasm 重建路径同语义）→ spi 两阶段提交。
+        // 写回：jbc 序列化 → Jasm 验证（写回后整类门）→ spi 两阶段提交。
         auto written = jbc::core::writeClass(cf);
         if (written.is_err())
             return failure(error(WorkspaceError::Internal, "mutate class",
                                  "class serialization failed"));
         std::vector<ca::u8> bytes = std::move(written).unwrap();
 
+        // 整类门分档（#73）：不触碰方法体的旗标/表面编辑跳过整类校验（全类
+        // 门会被类内先在坏帧无差别拒掉，见 mutationTouchesMethodBody）；
+        // 方法体面编辑档位随请求（off 直通，与 jasm 重建路径同语义）。
         jasm::JvmJasmContext gateContext;
-        gateContext.validationMode = validationMode;
+        gateContext.validationMode = mutationTouchesMethodBody(mutation.kind)
+                                         ? validationMode
+                                         : jasm::ValidationMode::Off;
         jasm::JvmJasmService validator;
         auto                 validated = validator.validate(bytes, gateContext);
         if (!validated.isOk()) {
             ClassMutationOutcome result;
-            result.status = error(WorkspaceError::InvalidArgument, "mutate class",
-                                  "candidate class did not pass validation");
+            // 归因保底：同档位重验先在字节。先在字节同样不过门 → 拒因是类内
+            // 先在问题（本次编辑前即已失败），错误信息注明归因，避免误判为
+            // 本次编辑引入；候选诊断原样保留供定位。
+            const auto preExisting = validator.validate(resource->get(), gateContext);
+            result.status          = error(
+                WorkspaceError::InvalidArgument, "mutate class",
+                preExisting.isOk()
+                    ? "candidate class did not pass validation"
+                    : "candidate class did not pass validation (pre-existing: the class "
+                      "already failed the same gate before this edit)");
             result.diagnostics = std::move(validated.diagnostics);
             return result;
         }

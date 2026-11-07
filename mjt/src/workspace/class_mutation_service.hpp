@@ -376,8 +376,12 @@ public:
                                                    = jasm::ValidationMode::Relaxed);
 
     /// @brief 应用一项结构化修改；失败时不会替换目标 ClassResource 的字节。
-    ///        validationMode 控制写回后的整类校验门（off 同样跳过），与
-    ///        jasm 重建路径同档位语义。
+    ///        validationMode 控制写回后的整类校验门（off 同样跳过）。分档
+    ///        （#73）：不触碰方法体的旗标/成员表面编辑（访问位、成员表增删、
+    ///        注解、局部名）跳过整类门——全类校验会被类内先在坏帧无差别拒掉；
+    ///        触碰方法体的 mutation（换体/指令编辑/新建方法体）档位照常生效，
+    ///        与 jasm 重建路径同档位语义。门失败时同档位重验先在字节，先在
+    ///        字节同样不过门则错误信息注明归因（先在问题，非本次编辑引入）。
     ClassMutationOutcome apply(const ClassMutation& mutation,
                                jasm::ValidationMode validationMode
                                    = jasm::ValidationMode::Relaxed);
