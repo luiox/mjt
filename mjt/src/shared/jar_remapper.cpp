@@ -122,7 +122,8 @@ mjt::workspace::WorkspaceErrorInfo buildPlan(const std::vector<std::string>& cla
                                                 const std::string&              format,
                                                 const std::string&              mappingText,
                                                 const std::string&              policyName,
-                                                MemberRemapPlan& plan, RemapPolicy& policy)
+                                                MemberRemapPlan& plan, RemapPolicy& policy,
+                                                IntermediateMapping* parsedMappings)
 {
     if (format.empty() || mappingText.empty()) {
         return errInfo(mjt::workspace::WorkspaceError::InvalidArgument,
@@ -152,6 +153,7 @@ mjt::workspace::WorkspaceErrorInfo buildPlan(const std::vector<std::string>& cla
     addExplicitClassMappings(mappings, plan);
     addPackageClassMappings(classNames, mappings, plan);
     addMemberMappings(mappings, plan);
+    if (parsedMappings) *parsedMappings = std::move(mappings);
     return {};
 }
 
@@ -248,12 +250,13 @@ ca::StatusOr<bool> remapJar(const JarRemapRequest& request)
 
 mjt::workspace::WorkspaceErrorInfo buildWorkspaceRemapPlan(
     mjt::workspace::IWorkspace& workspace, const WorkspaceRemapRequest& request,
-    MemberRemapPlan& plan, RemapPolicy& policy)
+    MemberRemapPlan& plan, RemapPolicy& policy, IntermediateMapping* mappings)
 {
     mjt::workspace::WorkspaceErrorInfo status;
     auto names = classNames(workspace, status);
     if (status.is_err()) return status;
-    return buildPlan(names, request.format, request.mappingText, request.policy, plan, policy);
+    return buildPlan(names, request.format, request.mappingText, request.policy, plan, policy,
+                     mappings);
 }
 
 mjt::workspace::ImpactAnalysis analyzeWorkspaceRemap(
@@ -268,23 +271,6 @@ mjt::workspace::ImpactAnalysis analyzeWorkspaceRemap(
         return result;
     }
     return workspace.analyzeRemap(plan, policy);
-}
-
-mjt::workspace::MutationResult applyWorkspaceRemap(
-    mjt::workspace::IWorkspace& workspace, const WorkspaceRemapRequest& request,
-    const mjt::workspace::MutationRequest& mutation)
-{
-    MemberRemapPlan plan;
-    RemapPolicy     policy;
-    auto status = buildWorkspaceRemapPlan(workspace, request, plan, policy);
-    if (status.is_err()) {
-        mjt::workspace::MutationResult result;
-        result.status     = std::move(status);
-        result.revision   = workspace.revision();
-        result.exportable = workspace.canExport();
-        return result;
-    }
-    return workspace.applyRemap(plan, policy, mutation);
 }
 
 }   //namespace mjt

@@ -5,8 +5,11 @@
 
 #include <nlohmann/json.hpp>
 
+#include "mjbase/asm/remapper/member_remap_plan.hpp"
+#include "mjbase/mapping/intermediate_mapping.hpp"
 #include "mjbase/renamer/shadow_alias.hpp"
 #include "mjbase/renamer/shadow_token.hpp"
+#include "workspace/workspace_types.hpp"
 
 namespace mjt::workspace {
 class IWorkspace;
@@ -143,6 +146,63 @@ bool resolveJasmBodyArgument(const WorkspaceShadowTable& slots,
                              const std::string&          input,
                              std::string&                out,
                              Json&                       error);
+
+///@brief patch_apply 结构化实参的嵌套引用就地改写（Json 子树面）。
+///
+///覆盖（值含 `${` 引用形状才动作，raw 零漂移直通）：
+///- `member_descriptor`——全 kind 提升：add_field/add_method 的新成员
+///  类型描述符内嵌类名也是引用语义（member_name 仍按新符号字面量豁免）；
+///- `annotation_descriptor` / `local_variables[].descriptor`——Descriptor 槽
+///  （`L…;` 类型位展开）；
+///- `exceptions[]` / `try_catch_blocks[].type`——Name 槽（开放类名面：
+///  verifyRaw=false，表外 raw 如 JDK 类直通）；
+///- `field_value` 常量树——kind=type 的 descriptor（裸内部类名 → Name 槽）、
+///  kind=dynamic 的 descriptor（真描述符）、handle 的 owner+name+descriptor、
+///  handle/bootstrap_method 子对象、bootstrap_arguments 递归；dynamic 的
+///  name 是 linkage 字面量（新符号），不接成员槽；
+///- `instruction` / `initial_instructions[]`——owner 全类指令接 Name 槽；
+///  descriptor 按位置分槽（type/ldc_type 裸内部类名走 Name 槽，field/
+///  method/multianewarray 等真描述符走 Descriptor 槽）；name 仅 field/method
+///  指令接成员槽（ldc_dynamic/invokedynamic 的 name 是 call site linkage
+///  字面量，不按成员解析）。
+///
+///`signature`（类/成员/局部变量）刻意不接：Descriptor 槽对泛型 `<>`
+///fail-loud，泛型签名展开是 mjbase v2 挂账。
+///@return false 时 `error` 已填结构化 toolError。
+bool resolveStructuredMutationRefs(const WorkspaceShadowTable& slots,
+                                   Json&                      args,
+                                   Json&                      error);
+
+///@brief rename/mapping 落盘后的 shadow sidecar 同步报告。
+struct ShadowSyncReport
+{
+    bool        present = false;   ///< sidecar 是否存在（false = 零操作）
+    ca::usize   rebound = 0;       ///< 实际重绑定条数（rebindShadowRawNames 返回值）
+    std::string path;              ///< sidecar 路径（present 时有效）
+    std::string warning;           ///< 非空 = 表已改但落盘失败（调用方应回显）
+};
+
+///@brief rename_apply 落盘后同步 sidecar：raw 面跟随真名，shadow 名与
+///token8 一律不变（显示身份跨 rename 连续）。
+///
+///kind=class/field/method 由请求直接成规格；kind=package 按表内类条目
+///前缀展开为逐类规格（成员 owner 由类规格级联改写）；kind=local 无表面
+///零操作。cascade_overrides 级联改名的旁支成员不在请求内，其过期条目交
+///prune 容错。无 sidecar 零操作（不凭空造表）。
+///@note undo/redo/revert 回滚 rename 不回滚 sidecar（台账未感知 shadow 面）；
+///成员条目 desc 内嵌类名随类改名不重写是 mjbase rebind 既有语义。
+ShadowSyncReport syncShadowAfterRename(mjt::workspace::IWorkspace&      workspace,
+                                       const mjt::workspace::RenameRequest& request);
+
+///@brief mapping_apply 落盘后同步 sidecar（语义同 syncShadowAfterRename）。
+///
+///类规格 = 工作区类逐一经 plan.mapInternalName 的改名对（覆盖显式类映射
+///与包规则展开）；成员规格 = mapping 解析产物 field/method 条目的
+///oldName→newName（owner 填类改名后的新内部名，desc 用旧值——表条目身份
+///键仍按旧 desc 匹配）。类规格先于成员规格（级联改写 owner 的处理序要求）。
+ShadowSyncReport syncShadowAfterRemap(mjt::workspace::IWorkspace& workspace,
+                                      const mjbase::asm_remapper::MemberRemapPlan& plan,
+                                      const mjbase::mapping::IntermediateMapping&  mappings);
 
 ///@brief 显式描述符失配诊断：name 在宿主类存在但 descriptor 与任一候选都
 ///不符时，给结构化错误并列出该名全部候选描述符（与省略 descriptor 时的
