@@ -52,8 +52,10 @@ std::vector<ca::u8> assembleFixtureClass(const std::string& source)
     return assembled.value->bytes;
 }
 
-/// census 语料：常规类（接口 + 字段 + native 方法）、接口、enum 形态位、
-/// 常规资源与一条非常规路径资源（空段）。语料名全部中性构造。
+/// census 语料：常规类（接口 + 字段 + native 方法）、接口、enum 形态位与
+/// 两条常规资源。bad//name.txt 经写侧路径规范化折叠为 bad/name.txt 落盘
+/// （mjbase#167：exportToJar 不再产出非常规形态），全语料条目皆常规。
+/// 语料名全部中性构造。
 std::filesystem::path writeCensusFixture()
 {
     const std::string alphaSource =
@@ -272,9 +274,8 @@ TEST(MjtAnalysisCensusTest, ContainerSummaryReflectsEntryShapeAndFacts)
     EXPECT_EQ(lines[0], "# container-census v2");
     EXPECT_EQ(lines[1], "metric\tvalue");
 
-    // 条目面：5 条真实条目（3 class + 2 resource）+ jar 写入器为逐级路径
-    // 生成的 4 个目录占位条目（census/、notes/、bad/、bad//，尾随 '/'
-    // 与空段均非常规），共 9 活跃；bad//name.txt 与 bad// 同计空段形态。
+    // 条目面：5 条活跃全常规（3 class + 2 resource；bad//name.txt 写出时已
+    // 折叠为 bad/name.txt，目录占位条目自 mjbase#167 起不再合成）。
     const auto find = [&lines](const std::string& metric) -> std::optional<std::string> {
         for (const auto& line : lines) {
             const auto tab = line.find('\t');
@@ -284,15 +285,18 @@ TEST(MjtAnalysisCensusTest, ContainerSummaryReflectsEntryShapeAndFacts)
         }
         return std::nullopt;
     };
-    EXPECT_EQ(find("entries_active"), std::optional<std::string>("9"));
+    EXPECT_EQ(find("entries_active"), std::optional<std::string>("5"));
     EXPECT_EQ(find("entries_tombstoned"), "0");
-    EXPECT_EQ(find("entries_regular"), "4");
-    EXPECT_EQ(find("entries_irregular"), "5");
+    EXPECT_EQ(find("entries_regular"), "5");
+    EXPECT_EQ(find("entries_irregular"), "0");
     EXPECT_EQ(find("entry_kind_class"), "3");
-    EXPECT_EQ(find("entry_kind_resource"), "6");
-    EXPECT_EQ(find("entry_shape_regular"), "4");
-    EXPECT_EQ(find("entry_shape_trailing_slash"), "3");
-    EXPECT_EQ(find("entry_shape_empty_segment"), "2");
+    EXPECT_EQ(find("entry_kind_resource"), "2");
+    EXPECT_EQ(find("entry_shape_regular"), "5");
+    // 零计数 facet 行不落盘：censusContainer 投影只含计数非零的 facet
+    // （kindCounts/shapeCounts 由实际行累计，零计数不进向量），导出面保序
+    // 透传——trailing_slash / empty_segment 行整个缺席（find 无值可寻）。
+    EXPECT_EQ(find("entry_shape_trailing_slash"), std::nullopt);
+    EXPECT_EQ(find("entry_shape_empty_segment"), std::nullopt);
     EXPECT_EQ(find("classes"), "3");
     EXPECT_EQ(find("methods"), "4");
     EXPECT_EQ(find("fields"), "1");

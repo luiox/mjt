@@ -15,6 +15,7 @@
 #include "mjbase/model/resource_helper.hpp"
 #include "mjbase/model/resource_model.hpp"
 #include "mjbase/project/analysis_db.hpp"
+#include "raw_zip_fixture.hpp"
 #include "workspace/analysis_ingest.hpp"
 #include "workspace/workspace.hpp"
 
@@ -237,9 +238,9 @@ TEST(MjAnalysisIngestTest, RegistersEntryIdentityAndKeepsIdsAcrossReingest)
         auto first = ingestIntoAnalysisDb(workspace, db);
         ASSERT_TRUE(first.is_ok());
         const auto firstStats = std::move(first).unwrap();
-        // 三个 class 条目 + jar 写入器自动生成的父目录占位条目。
-        EXPECT_EQ(4U, firstStats.entries);
-        EXPECT_EQ(4U, firstStats.createdEntries);
+        // 三个 class 条目（mjbase#167 起写出不再合成父目录占位条目）。
+        EXPECT_EQ(3U, firstStats.entries);
+        EXPECT_EQ(3U, firstStats.createdEntries);
         EXPECT_EQ(0U, firstStats.tombstonedEntries);
 
         // 输入登记：主容器一行，path 为打开路径，sha256 为容器内容锚形状。
@@ -252,19 +253,13 @@ TEST(MjAnalysisIngestTest, RegistersEntryIdentityAndKeepsIdsAcrossReingest)
         EXPECT_GT(inputs[0].size, 0);
         const ca::i64 inputId = inputs[0].inputId;
 
-        // 条目登记：class 条目 kind/形态旗标/内容锚形状齐备；目录占位条目
-        // （尾随 '/'、零字节）按非常规形态落库。
+        // 条目登记：class 条目 kind/形态旗标/内容锚形状齐备（无目录占位行）。
         auto entriesListed = db.listEntries(inputId);
         ASSERT_TRUE(entriesListed.is_ok());
         auto entries = std::move(entriesListed).unwrap();
-        ASSERT_EQ(4U, entries.size());
-        ASSERT_EQ("workspace/", entries[0].path.to_std_string());
-        EXPECT_FALSE(entries[0].regular);
-        EXPECT_EQ(0, entries[0].size);
-        EXPECT_EQ("resource", entries[0].kind.to_std_string());
+        ASSERT_EQ(3U, entries.size());
         std::map<std::string, ca::i64> entryIds;
         for (const mjbase::project::DbEntryInfo& row : entries) {
-            if (row.path.to_std_string() == "workspace/") continue;
             EXPECT_EQ("class", row.kind.to_std_string());
             EXPECT_TRUE(row.regular);
             EXPECT_FALSE(row.tombstoned);
@@ -286,20 +281,17 @@ TEST(MjAnalysisIngestTest, RegistersEntryIdentityAndKeepsIdsAcrossReingest)
         auto second = ingestIntoAnalysisDb(workspace, db);
         ASSERT_TRUE(second.is_ok());
         const auto secondStats = std::move(second).unwrap();
-        EXPECT_EQ(4U, secondStats.entries);
+        EXPECT_EQ(3U, secondStats.entries);
         EXPECT_EQ(0U, secondStats.createdEntries);
         EXPECT_EQ(0U, secondStats.tombstonedEntries);
 
         auto relisted = db.listEntries(inputId);
         ASSERT_TRUE(relisted.is_ok());
         auto rowsAgain = std::move(relisted).unwrap();
-        ASSERT_EQ(4U, rowsAgain.size());
+        ASSERT_EQ(3U, rowsAgain.size());
         for (const mjbase::project::DbEntryInfo& row : rowsAgain) {
             const auto id = entryIds.find(row.path.to_std_string());
-            if (id == entryIds.end()) {
-                EXPECT_EQ("workspace/", row.path.to_std_string());
-                continue;
-            }
+            ASSERT_NE(id, entryIds.end());
             EXPECT_EQ(id->second, row.entryId);
             EXPECT_FALSE(row.tombstoned);
         }
@@ -318,18 +310,14 @@ TEST(MjAnalysisIngestTest, RegistersEntryIdentityAndKeepsIdsAcrossReingest)
 TEST(MjAnalysisIngestTest, FlagsIrregularEntryPathsAsNonRegular)
 {
     // 非常规条目形态（双斜杠路径，#39 硬壳容器形态）：kind 归 resource、
-    // regular=false；jar 写入器会为双斜杠路径补两级目录占位条目（同样按
-    // 非常规落库）；常规 class 条目不受影响。
-    mjbase::model::ResourceContainer container;
-    container.addResource("workspace/Subject.class",
-                          std::make_unique<mjbase::model::ClassResource>(
-                              "workspace/Subject.class",
-                              assemble("workspace/Subject", subjectSource())));
-    container.addResource("bad//double.bin",
-                          std::make_unique<mjbase::model::UnknownResource>(
-                              "bad//double.bin", std::vector<ca::u8>{1, 2, 3, 4}));
+    // regular=false；常规 class 条目不受影响。写面已不产出这种形态
+    // （mjbase#167：exportToJar 折叠双斜杠、不再合成目录占位），本用例经
+    // raw zip 直写让 bad//double.bin 原样落盘，保住读侧/ingest 分类面覆盖。
     const auto jarPath = test::getTempOutPath("mjt_analysis_ingest_irregular.jar");
-    ASSERT_TRUE(mjbase::model::ResourceHelper::exportToJar(container, jarPath.string()).is_ok());
+    test::writeRawZip(jarPath,
+                      {{"workspace/Subject.class",
+                        assemble("workspace/Subject", subjectSource())},
+                       {"bad//double.bin", std::vector<ca::u8>{1, 2, 3, 4}}});
 
     const auto dbPath = test::getTempOutPath("mjt_analysis_ingest_irregular.mjdb");
     std::error_code ec;
@@ -344,7 +332,7 @@ TEST(MjAnalysisIngestTest, FlagsIrregularEntryPathsAsNonRegular)
     auto db    = openOrDie(dbPath);
     auto stats = ingestIntoAnalysisDb(workspace, db);
     ASSERT_TRUE(stats.is_ok());
-    EXPECT_EQ(5U, std::move(stats).unwrap().entries);
+    EXPECT_EQ(2U, std::move(stats).unwrap().entries);
 
     auto inputsListed = db.listInputs();
     ASSERT_TRUE(inputsListed.is_ok());
@@ -354,21 +342,22 @@ TEST(MjAnalysisIngestTest, FlagsIrregularEntryPathsAsNonRegular)
     auto entriesListed = db.listEntries(inputs[0].inputId);
     ASSERT_TRUE(entriesListed.is_ok());
     auto entries = std::move(entriesListed).unwrap();
-    ASSERT_EQ(5U, entries.size());
-    // listEntries 按 path 字节序：bad/ < bad// < bad//double.bin < workspace/ < ...class
-    ASSERT_EQ("bad/", entries[0].path.to_std_string());
-    ASSERT_EQ("bad//", entries[1].path.to_std_string());
-    ASSERT_EQ("bad//double.bin", entries[2].path.to_std_string());
-    ASSERT_EQ("workspace/", entries[3].path.to_std_string());
-    ASSERT_EQ("workspace/Subject.class", entries[4].path.to_std_string());
+    ASSERT_EQ(2U, entries.size());
+    // listEntries 按 path 字节序：bad//double.bin < workspace/Subject.class。
+    ASSERT_EQ("bad//double.bin", entries[0].path.to_std_string());
     EXPECT_FALSE(entries[0].regular);
-    EXPECT_FALSE(entries[1].regular);
-    EXPECT_FALSE(entries[2].regular);
-    EXPECT_EQ("resource", entries[2].kind.to_std_string());
-    EXPECT_EQ(4, entries[2].size);
-    EXPECT_FALSE(entries[3].regular);
-    EXPECT_TRUE(entries[4].regular);
-    EXPECT_EQ("class", entries[4].kind.to_std_string());
+    EXPECT_EQ("resource", entries[0].kind.to_std_string());
+    EXPECT_EQ(4, entries[0].size);
+    ASSERT_EQ("workspace/Subject.class", entries[1].path.to_std_string());
+    EXPECT_TRUE(entries[1].regular);
+    EXPECT_EQ("class", entries[1].kind.to_std_string());
+
+    // class 条目与 classes.entry_id 关联（非常规条目在场时关联不漂）。
+    auto subject = db.findClass(ca::str::Utf8StringRef::from_cstr("workspace/Subject"));
+    ASSERT_TRUE(subject.is_ok());
+    auto subjectInfo = std::move(subject).unwrap();
+    ASSERT_TRUE(subjectInfo.has_value());
+    EXPECT_EQ(entries[1].entryId, subjectInfo->entryId);
 
     ASSERT_TRUE(db.save().is_ok());
 }

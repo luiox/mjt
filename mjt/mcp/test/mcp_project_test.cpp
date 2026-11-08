@@ -524,9 +524,11 @@ TEST(McpProjectTest, MountsRoleContainersWithShadowTrackingAndRoleFilters)
     ASSERT_FALSE(mountRuntime.at("result").at("isError")) << payload(mountRuntime).dump();
     const auto runtimeId = payload(mountRuntime).at("container").at("id").get<std::string>();
     ASSERT_TRUE(payload(mountRuntime).contains("shadowed"));
-    //shadowed 记录按 uri 排序（重建序不稳定）；jar 写出会合成父目录条目
-    //（mcp/），同样参与遮蔽，故按 uri 定位断言而非下标。
+    //shadowed 记录按 uri 排序（重建序不稳定）；挂载 jar 经 exportToJar 不再
+    //合成父目录占位（mjbase#167），遮蔽记录仅 mcp/Shared.class 一条，按 uri
+    //定位断言而非下标。
     const auto& runtimeShadowed = payload(mountRuntime).at("shadowed");
+    ASSERT_EQ(1U, runtimeShadowed.size()) << runtimeShadowed.dump();
     const auto shadowedShared   = std::find_if(runtimeShadowed.begin(),
                                              runtimeShadowed.end(),
                                              [](const Json& item) {

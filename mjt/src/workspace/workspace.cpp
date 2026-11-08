@@ -1127,8 +1127,10 @@ WorkspaceResult<std::filesystem::path> validateExportDestination(
 // 契约冲突——1) ensureMultiReleaseManifest 检测到 versions/ 条目就给 MANIFEST
 // 注入 Multi-Release:true（激活源 jar 里本惰性的版本化覆盖，语义级副作用，
 // 且注入原地写进传入容器）；2) ManifestResource 经 Manifest::toBytes 重序列
-// 化，行尾恒 CRLF、主属性段外尾随内容被丢弃；3) JarWriter 为每个条目逐级补
-// STORED 父目录占位，产物条目集与源不一致。改为本侧自装 zip：条目集 = 容器
+// 化，行尾恒 CRLF、主属性段外尾随内容被丢弃；3) JarWriter 写出条目名经路径
+// 规范化改写（折叠/拒写，mjbase#167）——其逐级补 STORED 父目录占位的历史
+// 行为自 mjbase 0.0.21 起已移除（写出不再合成占位，条目集面与保真导出同
+// 口径），但非常规条目名仍过不了写面。改为本侧自装 zip：条目集 = 容器
 // 条目集（源目录条目原样保留、不新增占位）；MANIFEST 字节经
 // resolveExportManifestBytes 决策（无编辑逐字节复制源字节，有编辑物化编辑）。
 // 条目名按容器 URI 原始字节直写（与源条目名逐字节一致，不做路径规范化改写）。

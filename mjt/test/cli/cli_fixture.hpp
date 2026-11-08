@@ -17,9 +17,7 @@
 #include <vector>
 
 #include "jbc/jbc.hpp"
-#include "jzip/zip_io.hpp"
 #include "libca/str/utf8_string.hpp"
-#include "libca/zip/checksum.hpp"
 
 #include "shared/decompiler.hpp"
 #include "shared/output_sink.hpp"
@@ -30,6 +28,7 @@
 #include "mjbase/model/resource_container.hpp"
 #include "mjbase/model/resource_helper.hpp"
 #include "mjbase/model/resource_model.hpp"
+#include "raw_zip_fixture.hpp"
 #include "test_helper.hpp"
 
 namespace cli_fixture {
@@ -51,33 +50,10 @@ inline std::vector<ca::u8> assembleClass(const std::string& source)
     return assembled.value->bytes;
 }
 
-/// 写原始 zip（条目名原样落盘）。JarWriter 会丢弃尾斜杠条目名（目录条目
-/// 语义），OS2.9 形 `.class/` 混淆语料必需绕开——同一 jzip 写面直写，
-/// 全 STORED 条目，读回侧（listJarEntries / 容器导入）无感。
-inline void writeRawZip(const std::filesystem::path& path,
-                        const std::vector<std::pair<std::string, std::vector<ca::u8>>>& entries)
-{
-    jzip::ZipArchive archive;
-    for (const auto& [name, data] : entries) {
-        auto local = std::make_unique<jzip::LocalFileHeader>();
-        ca::zip::Crc32 crcCalc;
-        crcCalc.update(data.data(), data.size());
-        local->setFileName(name);
-        local->setCompressionMethod(0);   // STORED
-        local->setCompressedSize(static_cast<ca::u32>(data.size()));
-        local->setUncompressedSize(static_cast<ca::u32>(data.size()));
-        local->setFileData(data);
-        local->setCrc32(crcCalc.value());
-        local->setGeneralPurposeBitFlag(0x0800);   // bit11 = UTF-8
-        archive.addPart(std::move(local));
-    }
-    const auto bytes = jzip::ZipIO::writeDirect(archive);
-    std::ofstream    out(path, std::ios::binary);
-    out.write(reinterpret_cast<const char*>(bytes.data()),
-              static_cast<std::streamsize>(bytes.size()));
-    out.close();
-    if (!out) throw std::runtime_error("failed to write raw zip fixture: " + path.string());
-}
+/// writeRawZip 已下沉共享测试层（test_helper/raw_zip_fixture.hpp，绕开写侧
+/// 路径规范化——mjbase#167 折叠/拒写，条目名原样落盘）；此处保留原名可用，
+/// cli 侧既有调用点零改动。
+using test::writeRawZip;
 
 /// OutputSink 捕获：临时文件 FILE* 读写往返（各命令测试的渲染断言共用）。
 class CapturedSink
