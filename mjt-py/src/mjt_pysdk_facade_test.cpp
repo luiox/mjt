@@ -1598,7 +1598,8 @@ std::vector<ca::u8> assembleSubroutineClassAt61(const std::string& internalName)
     const auto assembled      = jasm.assemble(sourceName.ref(), sourceText.ref(), context);
     EXPECT_TRUE(assembled.isOk());
     if (!assembled.isOk() || !assembled.value.has_value()) return {};
-    auto read = jbc::core::readClass(assembled.value->bytes);
+    auto read = jbc::core::readClass(
+        jbc::core::ByteView{assembled.value->bytes.data(), assembled.value->bytes.size()});
     EXPECT_TRUE(read.is_ok());
     if (read.is_err()) return {};
     auto parsed = std::move(read).unwrap();
