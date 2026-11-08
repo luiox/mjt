@@ -357,7 +357,7 @@ ca::Status openProjectSession(const std::string&               jarPath,
     session->analysisDb =
         std::make_unique<mjbase::project::AnalysisDb>(std::move(db).unwrap());
     {
-        const auto ingested =
+        auto ingested =
             mjt::workspace::ingestIntoAnalysisDb(*session->workspace, *session->analysisDb);
         if (ingested.is_err()) {
             const auto& error = std::move(ingested).unwrap_err();
@@ -385,7 +385,9 @@ ca::Status openProjectSession(const std::string&               jarPath,
                                          "read shadow sidecar failed: " +
                                              std::move(sidecar).unwrap_err().message.to_std_string());
                 }
-                const auto imported = mjbase::renamer::importShadowAliases(
+                //imported 取非 const：AnalysisDbError 携 move-only Utf8String，
+                //const 左值的 unwrap_err() 会落到拷贝重载（删除函数）。
+                auto imported = mjbase::renamer::importShadowAliases(
                     *session->analysisDb,
                     mjbase::renamer::ShadowAliasTable::fromMapping(
                         std::move(sidecar).unwrap()));
