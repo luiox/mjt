@@ -125,10 +125,15 @@ add_requires("libca " .. LUIOX_LIBCA_VERSION, {configs = {modules = LUIOX_LIBCA_
 -- test 模块必须显式点名：test_helper 调用 ca::test::top_project_path()，
 -- 缺模块时链接期 undefined reference；包 on_load 按依赖闭包展开排序链接项。
 -- libjstr/libjzip/libjhasm 与 mjbase main 根 require 清单字面对齐（mjbase
--- 包词条按同清单声明，消费图版本不一致会实例分裂）。
+-- 包词条按同清单声明，消费图版本不一致会实例分裂）。mjbase 包词条对
+-- libjstr/libjzip 为裸名 add_deps：实测不吃消费图顶层钉版（不合并、按包仓
+-- 最新浮动），故本行钉版必须逐字跟随其浮动目标（= luiox-repo 包仓最新
+-- 词条），落后即双实例分裂——mjt#78（根钉 0.0.3 + 传递浮动 0.0.5，同进程
+-- 两份取档，0 字节 STORED 条目回垃圾字节）即此病。升级只在 mjbase 包词条
+-- 浮动目标上移时同步跟版，两行一起改、不得单边。
 add_requires("libmcp 0.1.0")
-add_requires("libjstr 0.0.3")
-add_requires("libjzip 0.0.3")
+add_requires("libjstr 0.0.4")
+add_requires("libjzip 0.0.5")
 add_requires("libjclassfile 0.0.2")
 -- libjbc 走项目内联包定义（git 直连 + commit 锁，≥ mjbase 门控下界 0.4.22）：
 -- luiox-repo 的发布版落后于 mjbase 需要的面，且内联定义不吃 requireconfs，
