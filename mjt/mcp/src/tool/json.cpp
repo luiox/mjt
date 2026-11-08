@@ -596,6 +596,60 @@ Json toolError(const std::string& message, const ca::Status* status)
     return toolResult(std::move(payload), true);
 }
 
+Json timeoutHints(const std::string& name, const Json& arguments)
+{
+    //工具级超时的诊断提示（#71）：超时错误不再静默挂 deadline——按工具与
+    //分支给收敛/分页/粒度指引，调用方据此改参重试。仅超时路径产出；成功
+    //路径零变化。指引只描述真实存在的通道：deadline 四工具转孤儿后结果
+    //无处可取，因此不承诺「进度可查」（decompile 的 async job 才有轮询面，
+    //见 decompiler.cpp 的超时出口）。
+    Json hints = Json::array();
+    const auto push = [&hints](const char* text) { hints.push_back(text); };
+    const auto timeoutBudget = [&push] {
+        push("raise timeout_ms (max 300000) if this corpus legitimately needs longer");
+    };
+    if (name == "search") {
+        push("wide contains scans walk the whole container; narrow with a longer query "
+             "or match_mode=prefix/exact (role=library|runtime scopes kind=classes|"
+             "resources to mounted containers)");
+        push("page through hits with page_size + cursor instead of waiting for the full set");
+        timeoutBudget();
+    }
+    else if (name == "class_query") {
+        const auto kind = arguments.value("kind", std::string{});
+        if (kind == "list") {
+            push("kind=list materializes every class summary before paging; read it in "
+                 "page_size + cursor slices and trim rows with fields projection");
+            timeoutBudget();
+        }
+        else if (kind == "jasm") {
+            push("full-class jasm renders every method; address single methods with "
+                 "kind=method_jasm or kind=bytecode (owner+name+descriptor)");
+            push("read raw bytes in chunks with kind=bytes + offset/limit");
+            push("for full-text bulk export use the mjt-py SDK channel (import mjt) "
+                 "instead of per-class tool calls");
+            timeoutBudget();
+        }
+        else if (kind == "class") {
+            push("full-class metadata decodes every method; address one method with "
+                 "kind=method (owner+name+descriptor)");
+            timeoutBudget();
+        }
+    }
+    else if (name == "xref_query") {
+        push("narrow the reference surface: owner/package_prefix filters, or target a "
+             "single method/field with owner+name(+descriptor)");
+        push("page with limit + cursor; keep resolved=false unless callees need expansion");
+        timeoutBudget();
+    }
+    else if (name == "project_open") {
+        push("the open keeps running in the background; the project_id carried by this "
+             "error becomes addressable once it completes (poll project_info)");
+        timeoutBudget();
+    }
+    return hints;
+}
+
 std::string base64(const std::vector<ca::u8>& value)
 {
     static constexpr char kAlphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

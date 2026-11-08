@@ -280,6 +280,10 @@ Json McpToolService::callWithDeadline(const std::string&       name,
                     {"status", statusJson(status)},
                     {"elapsed_ms", elapsedMs},
                     {"timeout_ms", timeoutMs}};
+    //超时诊断（#71）：按工具/分支附收敛与分页指引，超时不再静默挂 deadline。
+    //仅超时路径写入，成功路径零变化。
+    const auto hints = detail::timeoutHints(name, arguments);
+    if (!hints.empty()) payload["hints"] = hints;
     if (!reservedProjectId.empty()) payload["project_id"] = reservedProjectId;
     return toolResult(std::move(payload), true);
 }

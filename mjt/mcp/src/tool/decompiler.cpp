@@ -172,6 +172,21 @@ ca::Status checkCachedSourceLimit(const detail::DecompilerOptions& options,
     return ca::OkStatus();
 }
 
+///decompile 超时诊断（#71）：反编译子进程超时的失败面附通道指引——async job
+///轮询（真正的进度可查面）、方法级粒度收敛、pysdk 侧批量导出通道。同步与
+///异步两个超时出口共用；非超时失败零变化。
+Json decompileTimeoutHints()
+{
+    return Json::array({
+        "re-run with async=true and poll job_get (job_cancel stops it): the job keeps "
+        "its state and result addressable past the deadline",
+        "cut output granularity: decompile a single method (owner+name+descriptor) or "
+        "read kind=method_jasm via class_query",
+        "bulk full-class exports can go through the mjt-py SDK channel (import mjt)",
+        "raise timeout_ms (max 300000) if this class legitimately needs longer",
+    });
+}
+
 }   //namespace
 
 std::optional<Json> McpToolService::callDecompilerTool(
@@ -306,11 +321,13 @@ std::optional<Json> McpToolService::callDecompilerTool(
                             //normalizeToolError 同口径补 partial 元数据，job_get 消费者
                             //可据此区分「超时失败」与「即时业务错误」。仅超时路径写入，
                             //其余失败与取消零变化；received/total/cursor 对超时无意义，
-                            //按 P2-3 侧车 schema 同口径省略。
+                            //按 P2-3 侧车 schema 同口径省略。超时诊断（#71）：hints
+                            //随侧车同路径写入（async 轮询/方法级粒度/pysdk 通道）。
                             Json payload = {{"error", operation}, {"status", statusJson(status)}};
                             if (status.code() == ca::StatusCode::DEADLINE_EXCEEDED) {
                                 payload["partial"] = true;
                                 payload["reason"]  = "timeout";
+                                payload["hints"]   = decompileTimeoutHints();
                             }
                             finish(status.code() == ca::StatusCode::CANCELLED ? "cancelled" : "failed",
                                    std::move(payload),
@@ -392,7 +409,18 @@ std::optional<Json> McpToolService::callDecompilerTool(
         }
 
         auto source = decompileWorkspaceClass(*current, className, options);
-        if (source.is_err()) { const auto err = source.unwrap_err(); return toolError("decompile class failed", &err); }
+        if (source.is_err()) {
+            const auto err = source.unwrap_err();
+            //超时诊断（#71）：子进程超时的失败面附通道指引（async 轮询/方法级
+            //粒度/pysdk 通道）；其余失败维持原形态零变化。
+            if (err.code() == ca::StatusCode::DEADLINE_EXCEEDED) {
+                Json payload = {{"error", "decompile class failed"},
+                                {"status", statusJson(err)},
+                                {"hints", decompileTimeoutHints()}};
+                return toolResult(std::move(payload), true);
+            }
+            return toolError("decompile class failed", &err);
+        }
         //反编译成功 → 缓存缓冲（pending；写不进即本次不缓存，自愈语义同 async）。
         putDecompileCache(session, lookup, source.unwrap().source);
         return toolResult(decompiledSourceJson(source.unwrap(), "class"));

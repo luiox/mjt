@@ -35,6 +35,13 @@
   超时返回结构化错误（`reason=timeout` + `elapsed_ms`），执行体转后台收尾，
   stdio 通道与已打开工程会话保持可用；`project_open` 超时错误携带预订的
   `project_id`，后台打开完成后该会话照常可寻址。
+- 查询与反编译超时的诊断面（#71）：超时错误不再静默挂 deadline——
+  `class_query` / `search` / `xref_query` / `project_open` 的超时 payload 附
+  `hints` 数组，按工具与 kind 给收敛/分页/粒度指引（宽查询收敛、
+  `page_size` + `cursor` 切片、大类 jasm 换 `method_jasm` 单方法粒度与
+  pysdk 侧批量导出通道）；`decompile` 反编译子进程超时的失败面（同步与
+  async job 两个出口）附通道指引（`async=true` + `job_get` 轮询、方法级
+  粒度、pysdk 通道）。仅超时路径写入，成功路径零变化。
 
 ### Fixed
 

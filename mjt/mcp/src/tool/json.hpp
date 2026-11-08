@@ -97,6 +97,15 @@ Json referenceJson(const mjt::workspace::ReferenceInfo& reference);
 Json workflowJson(const mjt::workspace::WorkflowResult& workflow);
 Json toolResult(Json payload, bool isError = false);
 Json toolError(const std::string& message, const ca::Status* status = nullptr);
+
+///@brief 工具级超时的诊断提示（#71）：按工具与分支给收敛/分页/粒度指引。
+///
+///超时错误不再静默挂 deadline——hints 数组随超时 payload 外透，调用方据此
+///改参重试（宽查询收敛、分页游标切片、大类换方法级粒度、project_open 预订
+///id 后台生效）。仅超时路径产出；无匹配指引的工具返回空数组（调用方省略
+///该键），成功路径零变化。
+Json timeoutHints(const std::string& name, const Json& arguments);
+
 std::string base64(const std::vector<ca::u8>& value);
 bool decodeBase64(const std::string& encoded,
                   std::vector<ca::u8>& output,
