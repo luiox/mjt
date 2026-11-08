@@ -588,7 +588,9 @@ void finishShadowSync(const WorkspaceShadowTable& slots, ShadowSyncReport& repor
     report.present = slots.present;
     report.path    = slots.path;
     if (!slots.present || report.rebound == 0) return;
-    const auto written =
+    //written 取非 const：ShadowAliasFileError 携 move-only Utf8String，const
+    //左值的 unwrap_err() 会落到拷贝重载（删除函数）。
+    auto written =
         mjbase::mapping::writeShadowAliasFile(utf8Ref(slots.path), slots.table.toMapping());
     if (written.is_err()) {
         report.warning = "shadow sidecar rebind applied but write-back failed: " +
