@@ -42,6 +42,7 @@
 #include "mjbase/model/resource_container.hpp"
 #include "mjbase/model/resource_helper.hpp"
 #include "mjbase/model/resource_model.hpp"
+#include "mjbase/project/analysis_db.hpp"
 #include "mjbase/project/edit_ledger.hpp"
 #include "mjbase/project/edit_ledger_store.hpp"
 #include "mjbase/project/project_store.hpp"
@@ -3236,7 +3237,8 @@ MutationResult WorkspaceBase::validateJasm(ca::str::Utf8StringRef uriRef,
 MutationResult WorkspaceBase::commit(std::unique_ptr<model::ResourceContainer> candidate,
                                      std::vector<jasm::Diagnostic> diagnostics,
                                      const MutationRequest&        request,
-                                     const EditedMethodFocus*      focus)
+                                     const EditedMethodFocus*      focus,
+                                     const std::vector<project::LedgerIdentityRename>& identity)
 {
     if (!accepts(request)) return revisionConflict();
     auto diffs = diffContainers(*working_, *candidate);
@@ -3264,6 +3266,10 @@ MutationResult WorkspaceBase::commit(std::unique_ptr<model::ResourceContainer> c
         input.label      = request.label.to_std_string();
         input.producedBy = "mjbase-workspace/1";
         input.createdAt  = project::rfc3339UtcNow();
+        //身份注记随事务原子落账（真改名语义的持久旁车；undo/redo/restore
+        //消费方反推库迁移的反向/前向规格）。空 = 无名改语义。
+        input.identity.reserve(identity.size());
+        for (const auto& spec : identity) input.identity.push_back(spec.clone());
         const ca::u64 txnId = ledger_.nextTxnId();
         ca::u32       seq   = 0;
         for (const auto& uri : uris) {
@@ -3317,6 +3323,9 @@ MutationResult WorkspaceBase::commit(std::unique_ptr<model::ResourceContainer> c
         // 提交锚点的指纹落库（#132 编辑流）：台账事务先行成功，落库失败不
         // 回滚编辑，计数披露在 methodVersions。
         recordMethodVersionsForEdit(result, focus);
+        // 身份迁移（shadow 落分析库）：注记已随事务落账，库迁移失败同样
+        // 不回滚编辑（可按注记反推补齐），披露在 identity。
+        migrateIdentitiesForEdit(result, identity);
         return result;
     }
     catch (const std::exception& exception) {
@@ -3332,6 +3341,113 @@ void WorkspaceBase::recordMethodVersionsForEdit(MutationResult&          result,
     classUris.reserve(result.byteDiffs.size());
     for (const ByteDiff& diff : result.byteDiffs) classUris.push_back(diff.uri.clone());
     result.methodVersions = recordMethodVersionsAfterEdit(*analysisDb_, *working_, classUris, focus);
+}
+
+void WorkspaceBase::migrateIdentitiesForEdit(
+    MutationResult& result, const std::vector<project::LedgerIdentityRename>& specs)
+{
+    result.identity.annotated = specs.size();
+    if (analysisDb_ == nullptr || specs.empty()) return;
+    result.identity.attempted = true;
+    std::vector<mjbase::project::DbIdentityRename> renames;
+    renames.reserve(specs.size());
+    for (const auto& spec : specs) {
+        mjbase::project::DbIdentityRename rename;
+        rename.target = spec.isMember ? mjbase::project::RenameTargetKind::Member
+                                      : mjbase::project::RenameTargetKind::Class;
+        rename.memberKind =
+            spec.isMethod ? mjbase::project::DbMemberKind::Method
+                          : mjbase::project::DbMemberKind::Field;
+        rename.owner   = spec.owner.clone();
+        rename.name    = spec.name.clone();
+        rename.desc    = spec.desc.clone();
+        rename.newName = spec.newName.clone();
+        rename.newDesc = spec.newDesc.clone();
+        renames.push_back(std::move(rename));
+    }
+    auto migrated = analysisDb_->migrateIdentities(std::move(renames));
+    if (migrated.is_err()) {
+        result.identity.failed          = true;
+        result.identityWarning          = "identity migration failed: ";
+        result.identityWarning         += std::move(migrated).unwrap_err().message.to_std_string();
+        result.identityWarning         += " (ledger annotation intact; re-running the rename "
+                                          "history rebuilds identity rows)";
+        return;
+    }
+    const auto stats  = std::move(migrated).unwrap();
+    result.identity.migratedClasses = stats.migratedClasses;
+    result.identity.migratedMembers = stats.migratedMembers;
+    result.identity.skipped         = stats.skipped;
+}
+
+std::vector<project::LedgerIdentityRename> WorkspaceBase::identitySpecsOfRemap(
+    const asm_remapper::MemberRemapPlan& plan) const
+{
+    std::vector<project::LedgerIdentityRename> specs;
+    //类规格先行（成员 owner 是类规格先行后的新名）；字典序定序。
+    auto mappings = plan.classMappings();
+    std::sort(mappings.begin(), mappings.end(),
+              [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
+    for (const auto& [from, to] : mappings) {
+        if (from == to) continue;
+        project::LedgerIdentityRename spec;
+        spec.isMember = false;
+        spec.name     = utf8(from);
+        spec.newName  = utf8(to);
+        specs.push_back(std::move(spec));
+    }
+    //成员规格：规则键/值三段经计划池展开。恒等规则（名与描述符都不变）不产生
+    //身份迁移；无描述符规则按工作副本同名成员解析为逐重载规格（owner 不可
+    //解析 = 计划悬空，库迁移按未命中跳过语义放行空集）。
+    const auto emitMembers = [&](const auto& rules, bool method) {
+        for (const auto& rule : rules) {
+            const auto oldOwner = plan.pool().str(rule.oldKey.cls);
+            const auto oldName  = plan.pool().str(rule.oldKey.name);
+            const auto oldDesc  = plan.pool().str(rule.oldKey.desc);
+            const auto newOwner = plan.pool().str(rule.newKey.cls);
+            const auto newName  = plan.pool().str(rule.newKey.name);
+            const auto newDesc  = plan.pool().str(rule.newKey.desc);
+            if (!oldDesc.empty()) {
+                if (oldName == newName && oldDesc == newDesc) continue;
+                project::LedgerIdentityRename spec;
+                spec.isMember = true;
+                spec.isMethod = method;
+                spec.owner    = utf8(newOwner);
+                spec.name     = utf8(oldName);
+                spec.desc     = utf8(oldDesc);
+                spec.newName  = utf8(newName);
+                spec.newDesc  = utf8(newDesc);
+                specs.push_back(std::move(spec));
+                continue;
+            }
+            const std::string ownerText(oldOwner);
+            auto info = classInfo(utf8Ref(ownerText));
+            if (info.is_err()) continue;
+            const auto& clazz = std::move(info).unwrap();
+            const auto  memberNameText = std::string(oldName);
+            const auto visit = [&](const ca::str::Utf8StringRef& name,
+                                   const ca::str::Utf8StringRef& desc) {
+                if (name != memberNameText) return;
+                project::LedgerIdentityRename spec;
+                spec.isMember = true;
+                spec.isMethod = method;
+                spec.owner    = utf8(newOwner);
+                spec.name     = utf8(oldName);
+                spec.desc     = utf8(desc.to_std_string());
+                spec.newName  = utf8(newName);
+                spec.newDesc  = utf8(std::string(
+                    method ? plan.mapMethodDescriptor(desc) : plan.mapFieldDescriptor(desc)));
+                specs.push_back(std::move(spec));
+            };
+            if (method)
+                for (const auto& item : clazz.methods) visit(item.name.ref(), item.descriptor.ref());
+            else
+                for (const auto& item : clazz.fields) visit(item.name.ref(), item.descriptor.ref());
+        }
+    };
+    emitMembers(plan.fieldRules(), false);
+    emitMembers(plan.methodRules(), true);
+    return specs;
 }
 
 MutationResult WorkspaceBase::applyJasm(ca::str::Utf8StringRef uriRef,
@@ -4036,7 +4152,10 @@ MutationResult WorkspaceBase::applyRemap(const asm_remapper::MemberRemapPlan& pl
             result.diagnostics = std::move(diagnostics);
             return result;
         }
-        return commit(std::move(candidate), std::move(diagnostics), request);
+        //身份注记：真改名（rename_apply/mapping_apply 经此漏斗）的类/成员规格
+        //随事务落账并迁移分析库（shadow 落分析库——覆盖层按稳定 ID 键控）。
+        return commit(std::move(candidate), std::move(diagnostics), request, nullptr,
+                      identitySpecsOfRemap(plan));
     }
     catch (const std::exception& exception) {
         return stateFailure(error(WorkspaceError::Internal, "apply remap", exception.what()));
@@ -4234,7 +4353,12 @@ WorkflowResult WorkspaceBase::runWorkflow(const WorkflowRequest& workflow,
                 collectImpacts(*candidate, result.mutation.byteDiffs, result.mutation.affectedClasses);
             return result;
         }
-        result.mutation = commit(std::move(candidate), std::move(diagnostics), request);
+        //workflow 带 remap 时同 applyRemap 漏斗：身份注记随事务落账并迁移。
+        result.mutation =
+            commit(std::move(candidate), std::move(diagnostics), request, nullptr,
+                   workflow.remapPlan != nullptr
+                       ? identitySpecsOfRemap(*workflow.remapPlan)
+                       : std::vector<project::LedgerIdentityRename>{});
         if (result.mutation.status.is_err()) {
             removeWorkflowExport(result);
             result.exported = false;
@@ -4729,6 +4853,48 @@ WorkspaceResult<void> WorkspaceBase::createSavepoint(ca::str::Utf8StringRef name
     return ca::core::Ok();
 }
 
+namespace {
+
+///前向身份注记 → 反向规格：全序倒置 + 新旧互换。成员 owner 经批内类改名映射
+///（新名→旧名）翻译到反向迁移后的名字（反向批类规格先行的处理序契约）；
+///newDesc 空（= 描述符保持）的成员反向同样保持，非空则 desc/newDesc 对调。
+std::vector<project::LedgerIdentityRename> reversedIdentitySpecs(
+    const std::vector<project::LedgerIdentityRename>& forward)
+{
+    std::map<std::string, std::string> classBack;
+    for (const auto& spec : forward) {
+        if (!spec.isMember)
+            classBack[spec.newName.to_std_string()] = spec.name.to_std_string();
+    }
+    const auto translate = [&classBack](const std::string& name) {
+        const auto it = classBack.find(name);
+        return it != classBack.end() ? it->second : name;
+    };
+    std::vector<project::LedgerIdentityRename> reversed;
+    reversed.reserve(forward.size());
+    for (auto it = forward.rbegin(); it != forward.rend(); ++it) {
+        project::LedgerIdentityRename spec;
+        spec.isMember = it->isMember;
+        spec.isMethod = it->isMethod;
+        if (!it->isMember) {
+            spec.name    = it->newName.clone();
+            spec.newName = it->name.clone();
+        }
+        else {
+            spec.owner   = utf8(translate(it->owner.to_std_string()));
+            spec.name    = it->newName.clone();
+            spec.desc    = it->newDesc.is_empty() ? it->desc.clone() : it->newDesc.clone();
+            spec.newName = it->name.clone();
+            //前向描述符保持（newDesc 空）→ 反向同样保持；否则新旧对调。
+            if (!it->newDesc.is_empty()) spec.newDesc = it->desc.clone();
+        }
+        reversed.push_back(std::move(spec));
+    }
+    return reversed;
+}
+
+}   //namespace
+
 MutationResult WorkspaceBase::restoreSavepoint(ca::str::Utf8StringRef nameRef,
                                                const MutationRequest& request)
 {
@@ -4745,7 +4911,30 @@ MutationResult WorkspaceBase::restoreSavepoint(ca::str::Utf8StringRef nameRef,
         auto candidate = cloneWorking();
         const auto restored = materializeState(candidate, bookmark->txn, "restore savepoint");
         if (restored.is_err()) return stateFailure(restored);
-        return commit(std::move(candidate), {}, request);
+        //身份规格 = 书签位与头之间的注记差量（方向感知）：书签在头之前 =
+        ///活动链 (bookmark, head] 的反向倒置；在头之后 = (head, bookmark] 的
+        //前向正序。随 restore 事务落账（undo 该 restore 即整体反向回补）。
+        std::vector<project::LedgerIdentityRename> identitySpecs;
+        if (bookmark->txn < ledger_.headTxn()) {
+            const auto chain = ledger_.chainTo(ledger_.headTxn());
+            for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+                if (*it <= bookmark->txn) continue;
+                const auto* row = ledger_.transaction(*it);
+                if (row == nullptr || row->identity.empty()) continue;
+                const auto reversed = reversedIdentitySpecs(row->identity);
+                identitySpecs.insert(identitySpecs.begin(), reversed.begin(), reversed.end());
+            }
+        }
+        else if (bookmark->txn > ledger_.headTxn()) {
+            for (const ca::u64 step : ledger_.chainTo(bookmark->txn)) {
+                if (step <= ledger_.headTxn()) continue;
+                const auto* row = ledger_.transaction(step);
+                if (row == nullptr) continue;
+                identitySpecs.insert(identitySpecs.end(), row->identity.begin(),
+                                     row->identity.end());
+            }
+        }
+        return commit(std::move(candidate), {}, request, nullptr, identitySpecs);
     }
     catch (const std::exception& exception) {
         return stateFailure(
@@ -4785,6 +4974,9 @@ MutationResult WorkspaceBase::undo(const MutationRequest& request)
         result.affectedReferences = collectImpacts(*working_, result.byteDiffs, result.affectedClasses);
         // undo 也改方法体：指纹按恢复后的字节落库（整类批量面）。
         recordMethodVersionsForEdit(result, nullptr);
+        // 身份迁移反向（undo 不走 commit——头指针回退）：被撤销事务的身份注记
+        // 整体倒置（类/成员新旧互换，member owner 经批内类映射回译）。
+        migrateIdentitiesForEdit(result, reversedIdentitySpecs(txn->identity));
         return result;
     }
     catch (const std::exception& exception) {
@@ -4826,6 +5018,8 @@ MutationResult WorkspaceBase::redo(const MutationRequest& request)
         result.affectedReferences = collectImpacts(*working_, result.byteDiffs, result.affectedClasses);
         // redo 同 undo：指纹按重放后的字节落库（整类批量面）。
         recordMethodVersionsForEdit(result, nullptr);
+        // 身份迁移前向重放（redo 目标事务的注记原序）。
+        migrateIdentitiesForEdit(result, txn->identity);
         return result;
     }
     catch (const std::exception& exception) {

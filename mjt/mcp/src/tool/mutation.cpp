@@ -1016,15 +1016,10 @@ std::optional<Json> McpToolService::callMutationTool(
         if (name == "rename_apply") {
             const auto result = current->applyRename(rename, mutationRequest(arguments));
             if (result.status.is_err()) return toolResult(mutationJson(result), true);
-            //shadow 表同步：raw 面跟随真名，shadow 名与 token8 不变（显示
-            //身份跨 rename 连续）。无 sidecar 零操作；结果以附加字段回显。
-            const auto sync = slot::syncShadowAfterRename(*current, rename);
-            Json       body = mutationJson(result);
-            if (sync.present) {
-                body["shadow_sync"] = Json{{"rebound", static_cast<ca::u64>(sync.rebound)}};
-                if (!sync.warning.empty()) body["shadow_sync"]["warning"] = sync.warning;
-            }
-            return toolResult(std::move(body), false);
+            //shadow 落分析库：rename 经 applyRemap 漏斗在 workspace 层完成身份
+            //迁移（台账注记 + migrateIdentities；DB renames 覆盖层按稳定 ID
+            //键控，真改名后零补丁）。identity 统计随 mutationJson 回显。
+            return toolResult(mutationJson(result), false);
         }
         const auto analysis = current->analyzeRename(rename);
         Json mappings = Json::array();
@@ -1059,13 +1054,11 @@ std::optional<Json> McpToolService::callMutationTool(
             const auto analysis = analyzeWorkspaceRemap(*current, remap);
             return toolResult(impactJson(analysis), analysis.status.is_err());
         }
-        //apply 走 plan 先行（单次解析）：plan 与解析产物同时供 apply 与
-        //落盘后的 shadow 同步消费——applyWorkspaceRemap 的内部构建面在此
-        //展开，避免二次解析 mapping 文本。
+        //apply 走 plan 先行（单次解析）：applyWorkspaceRemap 的内部构建面在
+        //此展开，避免二次解析 mapping 文本。
         mjbase::asm_remapper::MemberRemapPlan plan;
         mjbase::asm_remapper::RemapPolicy     policy;
-        mjbase::mapping::IntermediateMapping  mappings;
-        const auto buildStatus = buildWorkspaceRemapPlan(*current, remap, plan, policy, &mappings);
+        const auto buildStatus = buildWorkspaceRemapPlan(*current, remap, plan, policy, nullptr);
         if (buildStatus.is_err()) {
             mjt::workspace::MutationResult result;
             result.status     = buildStatus;
@@ -1075,14 +1068,9 @@ std::optional<Json> McpToolService::callMutationTool(
         }
         const auto result = current->applyRemap(plan, policy, mutationRequest(arguments));
         if (result.status.is_err()) return toolResult(mutationJson(result), true);
-        //shadow 表同步：语义同 rename_apply（类规格先行，成员 owner 级联）。
-        const auto sync = slot::syncShadowAfterRemap(*current, plan, mappings);
-        Json       body = mutationJson(result);
-        if (sync.present) {
-            body["shadow_sync"] = Json{{"rebound", static_cast<ca::u64>(sync.rebound)}};
-            if (!sync.warning.empty()) body["shadow_sync"]["warning"] = sync.warning;
-        }
-        return toolResult(std::move(body), false);
+        //shadow 落分析库：同 rename_apply——身份迁移在 applyRemap 漏斗完成，
+        //identity 统计随 mutationJson 回显。
+        return toolResult(mutationJson(result), false);
     }
     if (name == "project_export") {
         //导出前 flush 挂点：台账与分析缓存与 close 同点落盘（同一崩溃窗语义）。

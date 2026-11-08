@@ -13,10 +13,16 @@
 
 #include "jbc/core/reader.hpp"
 
+#include "mjbase/mapping/shadow_alias_format.hpp"
+#include "mjbase/project/analysis_db.hpp"
 #include "mjbase/project/analysis_project.hpp"
 #include "mjbase/project/project_store.hpp"
+#include "mjbase/renamer/shadow_alias.hpp"
+#include "mjbase/renamer/shadow_alias_store.hpp"
 
+#include "shared/shadow_display.hpp"
 #include "shared/status_convert.hpp"
+#include "workspace/analysis_ingest.hpp"
 
 //mask 出口状态完整类型：~ProjectSession 在此实例化 unique_ptr<MaskExitState>
 //的删除器。
@@ -39,6 +45,20 @@ namespace mjt::mcp {
 namespace {
 
 namespace fs = std::filesystem;
+
+///bundle 内分析库的固定文件名（与 mask_exit.cpp 的 kMaskAnalysisDbFileName
+///同值：工程 bundle 布局约定 analysis.mjdb）。
+constexpr const char* kAnalysisDbFileName = "analysis.mjdb";
+
+///分析库错误 → ca::Status（打开/写入面按内部错误回报；schema 违约按数据问题）。
+ca::Status analysisDbStatus(mjbase::project::AnalysisDbError error, const char* operation)
+{
+    const auto code = error.kind == mjbase::project::AnalysisDbErrorKind::Schema
+                          ? ca::StatusCode::FAILED_PRECONDITION
+                          : ca::StatusCode::INTERNAL;
+    return ca::ErrStatus(code,
+                         std::string(operation) + ": " + error.message.to_std_string());
+}
 
 using mjbase::project::AnalysisInput;
 using mjbase::project::AnalysisProject;
@@ -241,8 +261,10 @@ ca::Status projectStoreStatus(mjbase::project::ProjectStoreError error, const ch
 ProjectSession::~ProjectSession()
 {
     //先析构 workspace：台账引擎随对象释放 store.lock（Windows 持锁句柄会阻止
-    //目录删除），临时 bundle 的清理必须排在锁释放之后。
+    //目录删除），临时 bundle 的清理必须排在锁释放之后。随后显式关分析库
+    //（SQLite 句柄同样阻止删除；unique_ptr 成员析构在函数体之后，来不及）。
     workspace.reset();
+    analysisDb.reset();
     if (temporary && !projectDir.empty()) {
         std::error_code ec;
         fs::remove_all(projectDir, ec);
@@ -321,6 +343,59 @@ ca::Status openProjectSession(const std::string&               jarPath,
         return projectStoreStatus(std::move(cache).unwrap_err(), "open analysis cache");
     session->cacheStore =
         std::make_shared<mjbase::project::AnalysisCacheStore>(std::move(cache).unwrap());
+    //分析库（shadow 落分析库）：bundle 固定文件 analysis.mjdb，ReadWrite 打开
+    //（缺文件即建）。当前工作副本（bindLedgerStore 已重放台账，改名后的真名
+    //态）整库导入——幂等：身份行按名 upsert 不改 ID（与 migrateIdentities 迁移
+    //后的行名对齐）。库会话归 ProjectSession，workspace 经 bindAnalysisDb 借用
+    //（真改名经台账身份注记同步，见 workspace.cpp）。
+    const fs::path dbPath = fs::path(dirText) / kAnalysisDbFileName;
+    auto db = mjbase::project::AnalysisDb::open(
+        ca::str::Utf8StringRef::from_string_view(dbPath.string()),
+        mjbase::project::AnalysisDbOpenMode::ReadWrite);
+    if (db.is_err())
+        return analysisDbStatus(std::move(db).unwrap_err(), "open analysis db");
+    session->analysisDb =
+        std::make_unique<mjbase::project::AnalysisDb>(std::move(db).unwrap());
+    {
+        const auto ingested =
+            mjt::workspace::ingestIntoAnalysisDb(*session->workspace, *session->analysisDb);
+        if (ingested.is_err()) {
+            const auto& error = std::move(ingested).unwrap_err();
+            return ca::ErrStatus(ca::StatusCode::INTERNAL,
+                                 "ingest analysis db: " + error.message);
+        }
+        //旧 sidecar 一次性导入：renames 覆盖层为空且 jar 旁有 `<jar>.mjt-shadow`
+        //时整表导入（原子替换）。sidecar 自此退役为只读导入源——运行时真源是
+        //库，重命名经身份迁移同步，不再有 sidecar 回写。导入失败 fail-closed
+        //（sidecar 是用户数据，静默丢弃不可接受；删除/重建 sidecar 即可解锁）。
+        auto renames = session->analysisDb->listRenames();
+        if (renames.is_err())
+            return analysisDbStatus(std::move(renames).unwrap_err(), "load renames");
+        if (std::move(renames).unwrap().empty()) {
+            const auto sidecarPath = mjt::resolveShadowPath(
+                session->workspace->sourcePath().to_std_string(), "");
+            std::error_code fsError;
+            if (std::filesystem::exists(sidecarPath, fsError) && !fsError) {
+                auto sidecar = mjbase::mapping::readShadowAliasFile(
+                    ca::str::Utf8StringRef::from_data(
+                        reinterpret_cast<const ca::u8*>(sidecarPath.data()),
+                        sidecarPath.size()));
+                if (sidecar.is_err()) {
+                    return ca::ErrStatus(ca::StatusCode::INVALID_ARGUMENT,
+                                         "read shadow sidecar failed: " +
+                                             std::move(sidecar).unwrap_err().message.to_std_string());
+                }
+                const auto imported = mjbase::renamer::importShadowAliases(
+                    *session->analysisDb,
+                    mjbase::renamer::ShadowAliasTable::fromMapping(
+                        std::move(sidecar).unwrap()));
+                if (imported.is_err())
+                    return analysisDbStatus(std::move(imported).unwrap_err(),
+                                            "import shadow sidecar");
+            }
+        }
+    }
+    session->workspace->bindAnalysisDb(session->analysisDb.get());
     //角色化容器栈：primary>library>runtime 解析序；容器对象借用自
     //mountedContainers（所有权归会话）。
     session->containerStack = std::make_unique<mjbase::model::MountedContainerSet>();

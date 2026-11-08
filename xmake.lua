@@ -176,7 +176,19 @@ includes("xmake/libca_rules.lua")
 -- fail-loud 属预期，临时库重建即愈）。
 -- 0.0.18 = jar 导入同名重复条目改末现保留（对齐 JVM 类加载口径，PR #160）+
 -- asm/remapper 注解递归畸形输入边界守卫（#158）；词条面无新增依赖。
-add_requires("mjbase 0.0.18")
+-- 0.0.19 = 全程序方法可达闭包入分析库（schema v9：closure_batches/
+-- closure_members + 查询面 project/reachability_closure，PR #162）；词条面
+-- 无新增依赖。
+-- 0.0.20 = 真改名身份迁移（AnalysisDb::migrateIdentities：单事务批量改写
+-- classes.internal_name / members.name+descriptor，class_id / member_id 与
+-- renames 覆盖行零触碰，undo 反向规格对称回滚，PR #198）。
+-- 0.0.21 = 台账事务身份迁移注记（LedgerTransaction::identity 可空旁车：
+-- 真改名旧值→新值语义随事务原子落账，undo/redo/restore 反推库迁移的反向/
+-- 前向规格，PR #200）+ MemberRemapPlan 枚举面（classMappings/fieldRules/
+-- methodRules，applyRemap 漏斗推导注记的输入）——shadow 落分析库（DB 为
+-- renames 覆盖层唯一真源、sidecar 退役为 open 期一次性导入源）的 undo/redo
+-- 持久化前提；词条面无新增依赖。
+add_requires("mjbase 0.0.21")
 
 includes("test_helper")
 includes("mjt")

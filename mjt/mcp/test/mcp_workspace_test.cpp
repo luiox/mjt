@@ -719,13 +719,15 @@ TEST(McpServerTest, ShadowAliasQueriesResolveBothDirections)
     ASSERT_FALSE(opened.at("result").at("isError"));
     const auto projectId = payload(opened).at("project_id").get<std::string>();
 
-    //shadow → raw：机械占位名跨类重号按列表返回。
+    //shadow → raw：机械占位名跨类重号按列表返回。表源 = 工程分析库
+    //（sidecar 已在 open 期一次性导入；"file" 回显 DB 占位名）。
     const auto toRaw = call(server,
                             "search",
                             {{"project_id", projectId}, {"kind", "shadow"}, {"name", "Class_1"}});
     ASSERT_FALSE(toRaw.at("result").at("isError")) << payload(toRaw).dump();
     ASSERT_EQ(1U, payload(toRaw).at("matches").size());
-    EXPECT_EQ(sidecarPath, payload(toRaw).at("file").get<std::string>());
+    EXPECT_EQ("analysis.mjdb (project bundle)",
+              payload(toRaw).at("file").get<std::string>());
     EXPECT_EQ("class", payload(toRaw).at("matches").at(0).at("kind"));
     EXPECT_EQ("mcp/Subject", payload(toRaw).at("matches").at(0).at("name"));
     EXPECT_EQ("", payload(toRaw).at("matches").at(0).at("desc").get<std::string>());
@@ -783,7 +785,7 @@ TEST(McpServerTest, ShadowAliasQueriesResolveBothDirections)
                                {"file", sidecarPath + ".no-such"}});
     ASSERT_TRUE(missing.at("result").at("isError"));
     EXPECT_NE(std::string::npos,
-              payload(missing).at("error").get<std::string>().find("shadow sidecar not found"));
+              payload(missing).at("error").get<std::string>().find("shadow table not available"));
 
     //空 name 拒绝。
     const auto emptyName = call(server,

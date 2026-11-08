@@ -5,8 +5,6 @@
 
 #include <nlohmann/json.hpp>
 
-#include "mjbase/asm/remapper/member_remap_plan.hpp"
-#include "mjbase/mapping/intermediate_mapping.hpp"
 #include "mjbase/renamer/shadow_alias.hpp"
 #include "mjbase/renamer/shadow_token.hpp"
 #include "workspace/workspace_types.hpp"
@@ -19,22 +17,26 @@ namespace mjt::mcp::slot {
 
 using Json = nlohmann::json;
 
-///@brief workspace 缺省 shadow sidecar 的加载产物（name 槽接线用）。
+///@brief workspace shadow 表的加载产物（name/descriptor/jasm 槽接线用）。
 ///
-///`present` = sidecar 文件存在且成功解析。文件缺失**或损坏**都按
-///`present=false`（空表）处理——raw 路径零漂移（今日无 sidecar 工作流不受
-///损），引用形状则由 resolveShadowSlot 判 missing-sidecar 硬报错，消息里
-///带上 `note`（absent/invalid 原因），不静默回落裸名。这与 mjt CLI
-///loadShadowDisplay 的"schema 错误告警 + 空表继续"失配容忍同口径。
+///加载序（shadow 落分析库）：workspace 绑定了分析库 → renames 覆盖层整表
+///还原（DB 是唯一真源；sidecar 已退役为 openProjectSession 的一次性导入
+///源，运行时不写回）；未绑库（无会话测试面/旧工作流）或 `file` 显式覆盖
+///→ sidecar 文件 `<jar>.mjt-shadow`。
+///
+///`present` = 加载成功（DB 或 sidecar）。加载失败按 `present=false`（空表）
+///处理——raw 路径零漂移（无 shadow 工作流不受损），引用形状则由
+///resolveShadowSlot 硬报错，消息里带上 `note`（absent/invalid 原因），
+///不静默回落裸名。
 struct WorkspaceShadowTable
 {
     mjbase::renamer::ShadowAliasTable table;
     bool        present = false;
-    std::string path;   ///< 参与判定的 sidecar 路径（诊断用）
+    std::string path;   ///< 参与判定的源（DB 占位名或 sidecar 路径；诊断用）
     std::string note;   ///< present=false 的原因（absent / invalid: …）
 };
 
-///@brief 加载 workspace 的缺省 sidecar（`<jar>.mjt-shadow`；`file` 显式覆盖）。
+///@brief 加载 workspace 的 shadow 表（DB 真源优先，sidecar 回退；见类型注释）。
 ///读取/解析失败不抛：记入 note 并按缺表继续（见类型注释）。
 WorkspaceShadowTable loadWorkspaceShadowTable(mjt::workspace::IWorkspace& workspace,
                                               const std::string& file = {});
@@ -172,37 +174,6 @@ bool resolveJasmBodyArgument(const WorkspaceShadowTable& slots,
 bool resolveStructuredMutationRefs(const WorkspaceShadowTable& slots,
                                    Json&                      args,
                                    Json&                      error);
-
-///@brief rename/mapping 落盘后的 shadow sidecar 同步报告。
-struct ShadowSyncReport
-{
-    bool        present = false;   ///< sidecar 是否存在（false = 零操作）
-    ca::usize   rebound = 0;       ///< 实际重绑定条数（rebindShadowRawNames 返回值）
-    std::string path;              ///< sidecar 路径（present 时有效）
-    std::string warning;           ///< 非空 = 表已改但落盘失败（调用方应回显）
-};
-
-///@brief rename_apply 落盘后同步 sidecar：raw 面跟随真名，shadow 名与
-///token8 一律不变（显示身份跨 rename 连续）。
-///
-///kind=class/field/method 由请求直接成规格；kind=package 按表内类条目
-///前缀展开为逐类规格（成员 owner 由类规格级联改写）；kind=local 无表面
-///零操作。cascade_overrides 级联改名的旁支成员不在请求内，其过期条目交
-///prune 容错。无 sidecar 零操作（不凭空造表）。
-///@note undo/redo/revert 回滚 rename 不回滚 sidecar（台账未感知 shadow 面）；
-///成员条目 desc 内嵌类名随类改名不重写是 mjbase rebind 既有语义。
-ShadowSyncReport syncShadowAfterRename(mjt::workspace::IWorkspace&      workspace,
-                                       const mjt::workspace::RenameRequest& request);
-
-///@brief mapping_apply 落盘后同步 sidecar（语义同 syncShadowAfterRename）。
-///
-///类规格 = 工作区类逐一经 plan.mapInternalName 的改名对（覆盖显式类映射
-///与包规则展开）；成员规格 = mapping 解析产物 field/method 条目的
-///oldName→newName（owner 填类改名后的新内部名，desc 用旧值——表条目身份
-///键仍按旧 desc 匹配）。类规格先于成员规格（级联改写 owner 的处理序要求）。
-ShadowSyncReport syncShadowAfterRemap(mjt::workspace::IWorkspace& workspace,
-                                      const mjbase::asm_remapper::MemberRemapPlan& plan,
-                                      const mjbase::mapping::IntermediateMapping&  mappings);
 
 ///@brief 显式描述符失配诊断：name 在宿主类存在但 descriptor 与任一候选都
 ///不符时，给结构化错误并列出该名全部候选描述符（与省略 descriptor 时的

@@ -442,8 +442,8 @@ Json toolsList()
         "query/case_sensitive/owner/package_prefix/opcode/role; instructions = members + "
         "opcode + mnemonic/operand/cst (structured filters, mutually exclusive with query); "
         "resources = query/match_mode/case_sensitive/include_classes/role; shadow = name/"
-        "owner/direction/symbol_kind/file (no pagination). Unknown keys per kind are "
-        "rejected, never ignored.",
+        "owner/direction/symbol_kind/file/tsv_path (no pagination). Unknown keys per kind "
+        "are rejected, never ignored.",
         with(with(pagination,
              {{"kind",
                {{"type", "string"},
@@ -522,8 +522,16 @@ Json toolsList()
               {"file",
                {{"type", "string"},
                 {"description",
-                 "shadow kind only: optional sidecar path; defaults to `<jar>.mjt-shadow` "
-                 "next to the primary container."}}}}), toolTimeout),
+                 "shadow kind only: optional sidecar path overriding the default source "
+                 "(project analysis db renames overlay; sidecar file is only read when "
+                 "explicitly given or when no db is bound)."}}},
+              {"tsv_path",
+               {{"type", "string"},
+                {"description",
+                 "shadow kind only: optional output path; when given, exports the full "
+                 "shadow table as TSV (columns kind/owner/name/desc/shadow/token with a "
+                 "header row). Combinable with name for an export+query round trip."}}}}),
+             toolTimeout),
         {"kind"}));
     result.push_back(projectTool(
         "xref_query",

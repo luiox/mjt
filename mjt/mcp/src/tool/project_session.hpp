@@ -17,9 +17,14 @@
 
 #include "shared/jar_workspace.hpp"
 
+namespace mjbase::project {
+class AnalysisDb;   ///< 分析数据库连接（analysis_db.hpp；此处仅前置声明）
+}
+
 namespace mjt::mcp {
 
 class MaskExitState;
+
 
 ///@brief 一个已打开的分析会话：workspace 实例与其绑定的工程 bundle。
 ///
@@ -81,6 +86,14 @@ struct ProjectSession final
     std::vector<MountedContainerRecord> mountedContainers;
     ///角色化容器栈（primary>library>runtime 解析序、shadowed 记录、角色遍历）。
     std::unique_ptr<mjbase::model::MountedContainerSet> containerStack;
+
+    ///分析库会话（shadow 落分析库：renames 覆盖层按稳定 ID 键控的真源）。
+    ///bundle 固定文件 analysis.mjdb，openProjectSession 时 ReadWrite 打开 +
+    ///当前工作副本整库导入（幂等）+ 旧 sidecar 一次性导入；workspace 经
+    ///bindAnalysisDb 借用（真改名经台账身份注记 + migrateIdentities 同步，
+    ///见 workspace.cpp）。析构面在 project_session.cpp（完整类型可见处），
+    ///先于临时 bundle 目录删除。
+    std::unique_ptr<mjbase::project::AnalysisDb> analysisDb;
 
     ///mask 出口状态（#121 §4.5 出口遮蔽接线；惰性分配于首个掩蔽出口调用，
     ///见 mask_exit.hpp 的 applyMaskExit）。析构面在 project_session.cpp

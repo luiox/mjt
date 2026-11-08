@@ -45,6 +45,24 @@ WorkspaceShadowTable loadWorkspaceShadowTable(mjt::workspace::IWorkspace& worksp
                                               const std::string& file)
 {
     WorkspaceShadowTable slots;
+    //DB 真源优先（shadow 落分析库）：workspace 绑定了分析库即从 renames 覆盖
+    //层整表还原——sidecar 退役为 openProjectSession 的一次性导入源，运行时
+    //不再读写 sidecar。`file` 显式覆盖仍走 sidecar 文件（诊断/对比面）。
+    if (file.empty()) {
+        if (auto* db = workspace.analysisDb(); db != nullptr) {
+            slots.path = "analysis.mjdb (project bundle)";
+            auto loaded = mjbase::renamer::loadShadowAliases(*db);
+            if (loaded.is_err()) {
+                slots.note = "invalid: load shadow aliases from analysis db failed: " +
+                             std::move(loaded).unwrap_err().message.to_std_string();
+                return slots;
+            }
+            slots.table   = std::move(loaded).unwrap();
+            slots.present = true;
+            return slots;
+        }
+    }
+    //未绑库（或显式 file）：sidecar 文件回退（旧工作流与无会话测试面）。
     slots.path = file.empty() ? mjt::resolveShadowPath(workspace.sourcePath().to_std_string(), "") : file;
     std::error_code fsError;
     if (!std::filesystem::exists(slots.path, fsError)) {
@@ -576,131 +594,6 @@ bool resolveStructuredMutationRefs(const WorkspaceShadowTable& slots,
         }
     }
     return true;
-}
-
-namespace {
-
-///rebind 收尾公共体：回填报告面；表有实际改动（rebound > 0）才写回
-///sidecar。写回失败不回滚表（进程内表已正确，下次成功写回即收敛），
-///warning 带回调用方回显。
-void finishShadowSync(const WorkspaceShadowTable& slots, ShadowSyncReport& report)
-{
-    report.present = slots.present;
-    report.path    = slots.path;
-    if (!slots.present || report.rebound == 0) return;
-    //written 取非 const：ShadowAliasFileError 携 move-only Utf8String，const
-    //左值的 unwrap_err() 会落到拷贝重载（删除函数）。
-    auto written =
-        mjbase::mapping::writeShadowAliasFile(utf8Ref(slots.path), slots.table.toMapping());
-    if (written.is_err()) {
-        report.warning = "shadow sidecar rebind applied but write-back failed: " +
-                         std::move(written).unwrap_err().message.to_std_string();
-    }
-}
-
-}   //namespace
-
-ShadowSyncReport syncShadowAfterRename(mjt::workspace::IWorkspace&           workspace,
-                                       const mjt::workspace::RenameRequest& request)
-{
-    ShadowSyncReport report;
-    auto             slots = loadWorkspaceShadowTable(workspace);
-    std::vector<mjbase::renamer::RawRenameSpec> specs;
-    switch (request.kind) {
-    case mjt::workspace::RenameKind::Class:
-        specs.push_back({mjbase::renamer::ShadowKind::Class,
-                         {},
-                         {},
-                         request.owner.to_std_string(),
-                         request.newName.to_std_string()});
-        break;
-    case mjt::workspace::RenameKind::Field:
-    case mjt::workspace::RenameKind::Method:
-        specs.push_back({request.kind == mjt::workspace::RenameKind::Field
-                             ? mjbase::renamer::ShadowKind::Field
-                             : mjbase::renamer::ShadowKind::Method,
-                         request.owner.to_std_string(),
-                         request.descriptor.to_std_string(),
-                         request.name.to_std_string(),
-                         request.newName.to_std_string()});
-        break;
-    case mjt::workspace::RenameKind::Package:
-    {
-        //包级规格按表内类条目前缀展开为逐类规格；成员 owner 由类规格级联
-        //改写（rebindShadowRawNames 的处理序契约）。
-        const auto prefix = request.owner.to_std_string() + "/";
-        for (const auto& entry : slots.table.entries()) {
-            if (entry.kind != mjbase::renamer::ShadowKind::Class) continue;
-            if (entry.rawName.substr(0, prefix.size()) != prefix) continue;
-            specs.push_back({mjbase::renamer::ShadowKind::Class,
-                             {},
-                             {},
-                             std::string(entry.rawName),
-                             request.newName.to_std_string() +
-                                 std::string(entry.rawName.substr(prefix.size() - 1))});
-        }
-        break;
-    }
-    case mjt::workspace::RenameKind::Local:
-        //局部变量不在 shadow 表（表只覆盖 class/field/method），零操作。
-        break;
-    }
-    report.rebound = mjbase::renamer::rebindShadowRawNames(slots.table, specs);
-    finishShadowSync(slots, report);
-    return report;
-}
-
-ShadowSyncReport syncShadowAfterRemap(mjt::workspace::IWorkspace& workspace,
-                                      const mjbase::asm_remapper::MemberRemapPlan& plan,
-                                      const mjbase::mapping::IntermediateMapping&  mappings)
-{
-    ShadowSyncReport report;
-    auto             slots = loadWorkspaceShadowTable(workspace);
-    if (!slots.present) {
-        report.path = slots.path;
-        return report;
-    }
-    std::vector<mjbase::renamer::RawRenameSpec> specs;
-    //类规格：工作区类逐一经 plan 映射（显式类映射 + 包规则展开的最终面）。
-    auto classes = workspace.listClasses();
-    if (classes.is_err()) {
-        report.present = true;
-        report.path    = slots.path;
-        report.warning = "shadow sync skipped: list classes failed: " +
-                         std::move(classes).unwrap_err().message;
-        return report;
-    }
-    for (const auto& clazz : std::move(classes).unwrap()) {
-        const auto internal = clazz.internalName.to_std_string();
-        const auto mapped   = plan.mapInternalName(internal);
-        if (mapped == internal) continue;
-        specs.push_back(
-            {mjbase::renamer::ShadowKind::Class, {}, {}, internal, std::string(mapped)});
-    }
-    //成员规格：mapping 解析产物枚举；owner 填类改名后的新内部名（类规格
-    //先行级联改写成员 owner 的处理序契约），desc 用旧值——表条目身份键仍
-    //按旧 desc 匹配（desc 内嵌类名随类改名不重写是 mjbase rebind 既有语义）。
-    for (const auto& [owner, fields] : mappings.getFields()) {
-        for (const auto& field : fields) {
-            specs.push_back({mjbase::renamer::ShadowKind::Field,
-                             std::string(plan.mapInternalName(owner)),
-                             field.desc.to_std_string(),
-                             field.oldName.to_std_string(),
-                             field.newName.to_std_string()});
-        }
-    }
-    for (const auto& [owner, methods] : mappings.getMethods()) {
-        for (const auto& method : methods) {
-            specs.push_back({mjbase::renamer::ShadowKind::Method,
-                             std::string(plan.mapInternalName(owner)),
-                             method.desc.to_std_string(),
-                             method.oldName.to_std_string(),
-                             method.newName.to_std_string()});
-        }
-    }
-    report.rebound = mjbase::renamer::rebindShadowRawNames(slots.table, specs);
-    finishShadowSync(slots, report);
-    return report;
 }
 
 }   //namespace mjt::mcp::slot
