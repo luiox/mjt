@@ -220,8 +220,8 @@ ca::StatusOr<bool> remapJar(const JarRemapRequest& request)
                                              "mjt.shared.err.remap_exception",
                                              {modelErrorText(std::move(imported).unwrap_err())}));
         }
-        auto status =
-            buildPlan(classNames(container), request.format, mappingText, request.policy, plan, policy);
+        auto status = buildPlan(classNames(container), request.format, mappingText, request.policy,
+                                plan, policy, nullptr);
         if (status.is_err()) return ca::Err(shared::toCaStatus(status));
 
         auto remapped = mjbase::asm_remapper::applyResourceRemapPlan(container, plan, policy);
