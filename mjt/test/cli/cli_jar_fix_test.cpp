@@ -39,9 +39,10 @@ TEST(MjtCliJarFixTest, RepairsBrokenEntriesAndWritesReport)
     ASSERT_TRUE(result.is_ok()) << (result.is_err() ? result.unwrap_err().message : "");
     const auto report = std::move(result).unwrap();
 
-    // 扫描面：4 文件条目 + 2 目录占位（fixture/、data/）= 6；1 个合法 class
-    //（坏字节条目按形态归类披露在 issues）。
-    EXPECT_EQ(report.scannedEntries, 6U);
+    // 扫描面：4 文件条目（mjbase#167 后 exportToJar 不再合成目录占位，
+    // 导入容器无占位可数）；1 个合法 class（坏字节条目按形态归类披露
+    // 在 issues）。
+    EXPECT_EQ(report.scannedEntries, 4U);
 
     // 坏字节 .class 条目被移除（kind 为 invalid_class 或 invalid_class_entry，
     // 取决于容器把坏字节归成损坏 ClassResource 还是未知条目）。
@@ -82,9 +83,10 @@ TEST(MjtCliJarFixTest, CleanJarProducesEmptyReportAndCopy)
     const auto report = std::move(result).unwrap();
     EXPECT_TRUE(report.issues.empty());
     ASSERT_TRUE(std::filesystem::is_regular_file(outJar));
-    // 干净 jar 的修复副本与输入逐条目同构（3 class + 2 资源 + 4 目录占位）。
+    // 干净 jar 的修复副本与输入逐条目同构（3 class + 2 资源；mjbase#167
+    // 后无目录占位，双斜杠资源写出即折叠）。
     const auto uris = cli_fixture::jarEntryUris(outJar);
-    EXPECT_EQ(uris.size(), 9U);
+    EXPECT_EQ(uris.size(), 5U);
 }
 
 TEST(MjtCliJarFixTest, RejectsSameInputOutputPath)
