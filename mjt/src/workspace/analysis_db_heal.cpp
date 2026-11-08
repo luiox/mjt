@@ -147,8 +147,10 @@ ca::Result<AnalysisHealStats, AnalysisHealError> healAnalysisDbIdentities(
             return ca::core::Err(std::move(error));
         }
         std::vector<mjbase::project::DbIdentityRename> reconcile;
-        std::vector<mjbase::project::DbClassInfo> unanchored;   ///< 行锚路径不在副本
-        std::set<std::string> matchedUri;                       ///< 已被行锚对上的副本 uri
+        ///未锚行的 (行名, entry_id)——DbClassInfo 携 move-only Utf8String，
+        ///vector 落盘只存补迁移所需的最小字段（clone 取名）。
+        std::vector<std::pair<ca::str::Utf8String, ca::i64>> unanchored;
+        std::set<std::string> matchedUri;   ///< 已被行锚对上的副本 uri
         for (const auto& row : std::move(classes).unwrap()) {
             if (row.entryId == 0) continue;   //未关联条目：无路径锚，交阶段三
             const auto path = entryPath.find(row.entryId);
@@ -157,7 +159,7 @@ ca::Result<AnalysisHealStats, AnalysisHealError> healAnalysisDbIdentities(
             if (live == byUri.end()) {
                 //副本侧类不在此路径：改名纪元的行锚（重开期 ingest 已把
                 //entry_id 挂到改名后路径）或类确已删除——二段兜底甄别。
-                unanchored.push_back(row);
+                unanchored.emplace_back(row.internalName.clone(), row.entryId);
                 continue;
             }
             matchedUri.insert(live->first);
@@ -185,7 +187,7 @@ ca::Result<AnalysisHealStats, AnalysisHealError> healAnalysisDbIdentities(
             if (pairable) {
                 mjbase::project::DbIdentityRename spec;
                 spec.target  = mjbase::project::RenameTargetKind::Class;
-                spec.name    = unanchored.front().internalName.clone();
+                spec.name    = unanchored.front().first.clone();
                 spec.newName = utf8(unmatched.front().second);
                 reconcile.push_back(std::move(spec));
             }
