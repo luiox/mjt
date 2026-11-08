@@ -344,10 +344,29 @@ std::vector<std::string> facadeDuplicateNames(const FacadeSession& s)
     return out;
 }
 
+std::string facadeAmbiguousDuplicateMessage(const FacadeSession& s, const std::string& name)
+{
+    // 候选全集 = winner（nameToUri）+ 落选者（duplicateUris 同名段，登记序）。
+    // first-wins 纪律下 name 在 duplicateUris 里 ⇒ nameToUri 必有 winner。
+    std::vector<std::string> candidates;
+    if (const auto winner = s.nameToUri.find(name); winner != s.nameToUri.end())
+        candidates.push_back(winner->second);
+    const auto range = s.duplicateUris.equal_range(name);
+    for (auto it = range.first; it != range.second; ++it) candidates.push_back(it->second);
+    std::string out = "ambiguous duplicate class name: " + name + " (candidates:";
+    for (const auto& uri : candidates) {
+        out += ' ';
+        out += uri;
+    }
+    out += " ); exclude one of the duplicate entries (remove_entry) or address them "
+           "by explicit entry uri";
+    return out;
+}
+
 std::vector<ca::u8> facadeClassBytes(const FacadeSession& s, const std::string& name)
 {
     if (s.duplicateUris.count(name)) {
-        throw StaleRefError("ambiguous duplicate class name: " + name);
+        throw StaleRefError(facadeAmbiguousDuplicateMessage(s, name));
     }
     const auto* cr = classResourceOf(s, facadeClassUri(s, name));
     if (!cr) throw std::runtime_error("not a class entry: " + name);
@@ -357,7 +376,7 @@ std::vector<ca::u8> facadeClassBytes(const FacadeSession& s, const std::string& 
 void facadeSetClassBytes(FacadeSession& s, const std::string& name, std::vector<ca::u8> bytes)
 {
     if (s.duplicateUris.count(name)) {
-        throw StaleRefError("ambiguous duplicate class name: " + name);
+        throw StaleRefError(facadeAmbiguousDuplicateMessage(s, name));
     }
     auto probed = facadeProbeClassName(bytes);
     if (!probed || *probed != name) {
@@ -520,7 +539,7 @@ ir::Insn mkInsn(jb::Op op)
 TreeEntry& resolveTree(FacadeSession& s, const std::string& name)
 {
     if (s.duplicateUris.count(name)) {
-        throw StaleRefError("ambiguous duplicate class name: " + name);
+        throw StaleRefError(facadeAmbiguousDuplicateMessage(s, name));
     }
     auto it = s.trees.find(name);
     if (it != s.trees.end()) return it->second;

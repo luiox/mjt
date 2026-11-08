@@ -204,6 +204,12 @@ std::string facadeClassUri(const FacadeSession& s, const std::string& name);
 /// first-wins 落选类名清单（升序）。
 std::vector<std::string> facadeDuplicateNames(const FacadeSession& s);
 
+/// 重名类歧义异常文案单一来源（#72）：内部名 + 全部候选 URI（winner + 落选
+/// 者，索引序）+ 决策建议（排除多余条目或按显式条目 URI 寻址）。四个重名
+/// 抛点（class_bytes/set_class_bytes/树解析/jasm）共用，报错即指路，不再
+/// 「单条歧义异常逐条猜 URI」。
+std::string facadeAmbiguousDuplicateMessage(const FacadeSession& s, const std::string& name);
+
 /// 类字节（索引 O(1) 直取，不建树）。
 std::vector<ca::u8> facadeClassBytes(const FacadeSession& s, const std::string& name);
 

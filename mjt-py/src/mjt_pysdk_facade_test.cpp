@@ -21,6 +21,11 @@
 #include "pysdk_jasm.hpp"
 #include "pysdk_limits.hpp"
 
+#include "mjbase/jasm/jvm_jasm_service.hpp"
+#include "mjbase/model/resource_container.hpp"
+#include "mjbase/model/resource_helper.hpp"
+#include "mjbase/model/resource_model.hpp"
+
 namespace fs = std::filesystem;
 using namespace mjt::pysdk;
 
@@ -50,6 +55,39 @@ void writeFileBytes(const std::string& path, const std::vector<ca::u8>& bytes)
     std::ofstream out(path, std::ios::binary);
     out.write(reinterpret_cast<const char*>(bytes.data()),
               static_cast<std::streamsize>(bytes.size()));
+}
+
+ca::str::Utf16String utf16Text(const std::string& value)
+{
+    return ca::str::Utf16String::from_utf8_string(ca::str::Utf8StringRef::from_data(
+        reinterpret_cast<const ca::u8*>(value.data()), value.size()));
+}
+
+/// #72 复现形态罐：两份 module-info.class（多版本打包残留，issue 实测样本
+/// 形状）。类字节经 jasm 文本装配（fixture 纪律：R"JASM 定版，禁手拼字节）。
+std::string makeAmbiguousModuleJar(const char* name)
+{
+    mjbase::jasm::JvmJasmService assembler;
+    const auto sourceName = utf16Text("module-info.jasm");
+    const auto source     = utf16Text(std::string{R"JASM(.class module module-info {
+}
+)JASM"});
+    const auto assembled = assembler.assemble(sourceName.ref(), source.ref());
+    if (!assembled.isOk()) throw std::runtime_error("module-info fixture did not assemble");
+
+    mjbase::model::ResourceContainer container;
+    const auto bytes = assembled.value->bytes;
+    container.addResource(
+        "module-info.class",
+        std::make_unique<mjbase::model::ClassResource>("module-info.class", bytes));
+    container.addResource(
+        "META-INF/versions/9/module-info.class",
+        std::make_unique<mjbase::model::ClassResource>(
+            "META-INF/versions/9/module-info.class", bytes));
+    const auto path = tmpPath(name);
+    const auto exported = mjbase::model::ResourceHelper::exportToJar(container, path);
+    if (exported.is_err()) throw std::runtime_error("module-info fixture export failed");
+    return path;
 }
 
 }   // namespace
@@ -163,6 +201,72 @@ TEST(FacadeContainer, RemoveEntryAndPromoteLoser)
     EXPECT_TRUE(facadeDuplicateNames(s).empty());
     EXPECT_EQ(facadeClassUri(s, "me/demo/Util"), "shadow/me/demo/Util.class");
     EXPECT_FALSE(facadeClassBytes(s, "me/demo/Util").empty());
+    reg.close(s.handle);
+}
+
+// #72 复现形态：jar 内两份 module-info.class（多版本打包残留）。重名歧义
+// 异常不再只报单条 name——四个重名抛点（class_bytes / set_class_bytes /
+// 树解析 / jasm）共用同一文案：全部候选 URI（winner + 落选者）+ 决策建议
+// （排除多余条目或按显式条目 URI 寻址）。决策建议可落地：排除落选条目后
+// winner 晋级，类名恢复可寻址。
+TEST(FacadeContainer, AmbiguousDuplicateErrorListsCandidateUris)
+{
+    auto& reg = FacadeRegistry::instance();
+    auto& s   = reg.create();
+    facadeImportJar(s, makeAmbiguousModuleJar("mjt_facade_ambig.jar"));
+    ASSERT_EQ(facadeClassNames(s), (std::vector<std::string>{"module-info"}));
+    ASSERT_EQ(facadeDuplicateNames(s), (std::vector<std::string>{"module-info"}));
+
+    const std::string winner = "module-info.class";
+    const std::string loser  = "META-INF/versions/9/module-info.class";
+
+    const auto expectAmbiguity = [&](const char* what) {
+        const std::string message = what;
+        EXPECT_NE(message.find("ambiguous duplicate class name: module-info"),
+                  std::string::npos);
+        EXPECT_NE(message.find(winner), std::string::npos);
+        EXPECT_NE(message.find(loser), std::string::npos);
+        EXPECT_NE(message.find("remove_entry"), std::string::npos);
+    };
+
+    try {
+        (void)facadeClassBytes(s, "module-info");
+        FAIL() << "class_bytes must stay ambiguous";
+    }
+    catch (const StaleRefError& error) {
+        expectAmbiguity(error.what());
+    }
+    try {
+        (void)facadeSetClassBytes(s, "module-info", facadeGetEntryBytes(s, winner));
+        FAIL() << "set_class_bytes must stay ambiguous";
+    }
+    catch (const StaleRefError& error) {
+        expectAmbiguity(error.what());
+    }
+    try {
+        facadeParseClass(s, "module-info");
+        FAIL() << "tree resolve must stay ambiguous";
+    }
+    catch (const StaleRefError& error) {
+        expectAmbiguity(error.what());
+    }
+    try {
+        (void)facadeClassJasm(s, "module-info");
+        FAIL() << "class jasm must stay ambiguous";
+    }
+    catch (const StaleRefError& error) {
+        expectAmbiguity(error.what());
+    }
+
+    // 显式条目 URI 寻址不受重名歧义影响（entry 面按 URI 直取）。
+    EXPECT_FALSE(facadeGetEntryBytes(s, loser).empty());
+    EXPECT_FALSE(facadeGetEntryBytes(s, winner).empty());
+
+    // 决策建议落地：排除落选条目 → winner 晋级，类名恢复可寻址。
+    facadeRemoveEntry(s, loser);
+    EXPECT_TRUE(facadeDuplicateNames(s).empty());
+    EXPECT_EQ(facadeClassUri(s, "module-info"), winner);
+    EXPECT_FALSE(facadeClassBytes(s, "module-info").empty());
     reg.close(s.handle);
 }
 

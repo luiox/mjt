@@ -78,11 +78,12 @@ std::string flattenErrors(const std::vector<Diagnostic>& diagnostics)
     return out.empty() ? "jasm failure" : out;
 }
 
-/// 类名 → 条目 URI（重名落选者不可寻址，与 class_bytes 同纪律）。
+/// 类名 → 条目 URI（重名落选者不可寻址，与 class_bytes 同纪律；歧义文案
+/// 走 facade 侧单一来源——候选 URI 全列 + 决策建议，#72）。
 std::string jasmTargetUri(const FacadeSession& s, const std::string& name)
 {
     if (s.duplicateUris.count(name)) {
-        throw StaleRefError("ambiguous duplicate class name: " + name);
+        throw StaleRefError(facadeAmbiguousDuplicateMessage(s, name));
     }
     return facadeClassUri(s, name);
 }
