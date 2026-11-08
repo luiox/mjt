@@ -363,13 +363,17 @@ public:
     std::vector<SupportingResourceInfo> supportingResources() const override;
 
     /// @brief 绑定可选分析库：编辑提交后按受影响类落方法指纹版本
-    ///        （method_versions，#132 编辑流接线）。
+    ///        （method_versions，#132 编辑流接线）；真改名经身份注记 +
+    ///        migrateIdentities 同步身份行（renames 覆盖层按稳定 ID 键控）。
     ///
     /// 非拥有指针：db 会话生命周期归调用方（未传即解绑）。未绑定时编辑行为
     /// 与旧版完全一致（零开销直通）；绑定时提交锚点（commit/undo/redo）在
     /// 台账事务成功后调 recordMethodVersionsAfterEdit，落库失败不回滚编辑，
     /// 计数披露在 MutationResult::methodVersions。
     void bindAnalysisDb(mjbase::project::AnalysisDb* db) noexcept { analysisDb_ = db; }
+
+    /// @brief 绑定的分析库（nullptr = 未绑定；借用，生命周期归调用方）。
+    mjbase::project::AnalysisDb* analysisDb() const noexcept override { return analysisDb_; }
 
 private:
     struct SupportingResource;
@@ -384,10 +388,23 @@ private:
     MutationResult commit(std::unique_ptr<model::ResourceContainer> candidate,
                           std::vector<jasm::Diagnostic> diagnostics,
                           const MutationRequest& request,
-                          const EditedMethodFocus* focus = nullptr);
+                          const EditedMethodFocus* focus = nullptr,
+                          const std::vector<project::LedgerIdentityRename>& identity = {});
     /// @brief 提交锚点的指纹落库挂点（绑定了分析库才落；结果回填
     ///        @p result.methodVersions）。台账先行、落库失败不回滚编辑。
     void recordMethodVersionsForEdit(MutationResult& result, const EditedMethodFocus* focus);
+    /// @brief 提交锚点的身份迁移挂点：把随事务落账的身份注记迁移到绑定
+    ///        分析库（migrateIdentities；类/成员真名行改写，ID 与 renames
+    ///        覆盖行零触碰）。台账先行、迁移失败不回滚编辑，结果回填
+    ///        @p result.identity。
+    void migrateIdentitiesForEdit(MutationResult& result,
+                                  const std::vector<project::LedgerIdentityRename>& specs);
+    /// @brief remap 计划 → 身份注记（类映射 + 字段/方法规则；无描述符规则
+    ///        按工作副本同名成员解析为逐重载规格）。类规格先于成员规格
+    ///        （migrateIdentities 的处理序契约：成员 owner 是类规格先行后的
+    ///        新名）。
+    std::vector<project::LedgerIdentityRename> identitySpecsOfRemap(
+        const asm_remapper::MemberRemapPlan& plan) const;
     /// @brief 台账错误 → workspace 错误面（kind 映射 + operation 前缀）。
     WorkspaceErrorInfo ledgerFailure(const std::string& operation,
                                      const project::ProjectStoreError& cause) const;

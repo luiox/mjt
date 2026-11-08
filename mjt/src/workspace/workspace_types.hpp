@@ -188,6 +188,21 @@ struct MethodVersionRecordStats final
     bool      failed    = false; ///< 分析库写失败（编辑不受影响，可幂等补录）
 };
 
+/// @brief 真改名身份迁移统计（台账注记 + 分析库 migrateIdentities 双面）。
+///
+/// applyRemap 漏斗（rename/mapping/workflow-remap）与 undo/redo/restore 在
+/// 台账事务成功后把身份注记迁移到绑定分析库；未绑定库或本事务无名改语义时
+/// 全零。落库失败不回滚编辑（注记已随事务落账，可反推补齐），failed 只作披露。
+struct IdentityMigrationStats final
+{
+    ca::usize annotated       = 0;  ///< 随台账事务落账的身份注记条数
+    ca::usize migratedClasses = 0;  ///< 分析库实际改写的类行数
+    ca::usize migratedMembers = 0;  ///< 分析库实际改写的成员行数
+    ca::usize skipped         = 0;  ///< 未命中（库未登记）跳过的规格数
+    bool      attempted       = false; ///< 执行过库迁移（绑定库且注记非空）
+    bool      failed          = false; ///< 库迁移失败（编辑不受影响，warning 披露）
+};
+
 /// @brief 所有修改操作共用的稳定结果协议。
 ///
 /// status 为 Ok 时 committed/exportable/revision 才有意义；失败路径仍回填
@@ -203,6 +218,10 @@ struct MutationResult final
     std::vector<ca::str::Utf8String>   affectedClasses;
     std::vector<ReferenceImpact>       affectedReferences;
     MethodVersionRecordStats           methodVersions;
+    /// 真改名身份迁移（注记 + 分析库双面；见 IdentityMigrationStats）。
+    IdentityMigrationStats             identity;
+    /// identity.failed 时的诊断（库迁移错误消息；空 = 无失败）。
+    std::string                        identityWarning;
 
     bool is_ok() const noexcept { return status.is_ok(); }
 };

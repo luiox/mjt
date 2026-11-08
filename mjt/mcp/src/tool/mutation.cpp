@@ -15,6 +15,8 @@
 #include "shared/status_convert.hpp"
 #include "tool/shadow_slot.hpp"
 
+#include "mjbase/asm/remapper/member_remap_plan.hpp"
+#include "mjbase/mapping/intermediate_mapping.hpp"
 #include "mjbase/model/resource_helper.hpp"
 #include "mjbase/model/resource_model.hpp"
 #include "mjbase/project/edit_ledger.hpp"
@@ -905,6 +907,14 @@ std::optional<Json> McpToolService::callMutationTool(
             if (!slot::resolveClassUriArgument(*current, arguments, "class_uri", classUri, slotError))
                 return slotError;
             resolvedArgs["class_uri"] = classUri;
+            const auto slots = slot::loadWorkspaceShadowTable(*current);
+            //结构化嵌套引用槽就地改写：member_descriptor（全 kind——add_field/
+            //add_method 的新成员类型描述符内嵌类名也是引用语义）、
+            //annotation_descriptor、exceptions、try_catch_blocks.type、
+            //field_value 常量树、instruction 族的 owner/name/descriptor、
+            //local_variables.descriptor（signature 泛型槽 v2 挂账不接）。
+            if (!slot::resolveStructuredMutationRefs(slots, resolvedArgs, slotError))
+                return slotError;
             //member_name 只在「寻址既有成员」的 kind 上做 name 槽解析
             //（12 kind 全覆盖——5 访问/删除/换体 kind +
             //rename_local / replace_try_catch_blocks / insert|replace|remove_
@@ -933,25 +943,15 @@ std::optional<Json> McpToolService::callMutationTool(
                 annotationMemberIsReference;
             const auto memberName = arguments.value("member_name", std::string{});
             if (memberIsReference && !memberName.empty()) {
-                const auto slots = slot::loadWorkspaceShadowTable(*current);
                 const auto ownerInternal =
                     mjt::internalNameOfUri(classUri);
-                //描述符槽：member_descriptor 带 `${` 引用形状 → 内嵌类 handle
-                //展开；展开值参与成员核对并覆盖回 resolvedArgs（parseMutation
-                //读展开值，handle 字面量不落下游）。
-                std::string memberDescriptor;
-                if (!slot::resolveDescriptorArgument(
-                        slots,
-                        arguments.value("member_descriptor", std::string{}),
-                        memberDescriptor,
-                        slotError))
-                    return slotError;
-                resolvedArgs["member_descriptor"] = memberDescriptor;
+                //member_descriptor 已由结构化槽展开；展开值在此参与成员核对
+                //（handle 字面量不落下游）。
                 slot::SlotName memberSlot;
                 if (!slot::resolveMemberSlot(slots,
                                              ownerInternal,
                                              memberName,
-                                             memberDescriptor,
+                                             resolvedArgs.value("member_descriptor", std::string{}),
                                              true,
                                              memberSlot,
                                              slotError))
@@ -1015,7 +1015,11 @@ std::optional<Json> McpToolService::callMutationTool(
         if (!parseRename(resolvedArgs, rename, parseError)) return toolError(parseError);
         if (name == "rename_apply") {
             const auto result = current->applyRename(rename, mutationRequest(arguments));
-            return toolResult(mutationJson(result), result.status.is_err());
+            if (result.status.is_err()) return toolResult(mutationJson(result), true);
+            //shadow 落分析库：rename 经 applyRemap 漏斗在 workspace 层完成身份
+            //迁移（台账注记 + migrateIdentities；DB renames 覆盖层按稳定 ID
+            //键控，真改名后零补丁）。identity 统计随 mutationJson 回显。
+            return toolResult(mutationJson(result), false);
         }
         const auto analysis = current->analyzeRename(rename);
         Json mappings = Json::array();
@@ -1050,8 +1054,23 @@ std::optional<Json> McpToolService::callMutationTool(
             const auto analysis = analyzeWorkspaceRemap(*current, remap);
             return toolResult(impactJson(analysis), analysis.status.is_err());
         }
-        const auto result = applyWorkspaceRemap(*current, remap, mutationRequest(arguments));
-        return toolResult(mutationJson(result), result.status.is_err());
+        //apply 走 plan 先行（单次解析）：applyWorkspaceRemap 的内部构建面在
+        //此展开，避免二次解析 mapping 文本。
+        mjbase::asm_remapper::MemberRemapPlan plan;
+        mjbase::asm_remapper::RemapPolicy     policy;
+        const auto buildStatus = buildWorkspaceRemapPlan(*current, remap, plan, policy, nullptr);
+        if (buildStatus.is_err()) {
+            mjt::workspace::MutationResult result;
+            result.status     = buildStatus;
+            result.revision   = current->revision();
+            result.exportable = current->canExport();
+            return toolResult(mutationJson(result), true);
+        }
+        const auto result = current->applyRemap(plan, policy, mutationRequest(arguments));
+        if (result.status.is_err()) return toolResult(mutationJson(result), true);
+        //shadow 落分析库：同 rename_apply——身份迁移在 applyRemap 漏斗完成，
+        //identity 统计随 mutationJson 回显。
+        return toolResult(mutationJson(result), false);
     }
     if (name == "project_export") {
         //导出前 flush 挂点：台账与分析缓存与 close 同点落盘（同一崩溃窗语义）。

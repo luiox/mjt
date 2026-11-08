@@ -36,9 +36,10 @@ TEST(MjtCliInfoTest, ReportsCensusCountsKindsShapesVersionsManifest)
     ASSERT_TRUE(report.is_ok()) << report.unwrap_err().message;
 
     const auto info = std::move(report).unwrap();
-    // 9 条目 = 3 class + 2 资源 + 4 目录占位（exportToJar 为父目录补
-    // fixture/、notes/、bad/、bad// 占位条目）。
-    EXPECT_EQ(info.entries, 9);
+    // 5 条目 = 3 class + 2 资源。mjbase#167 后 exportToJar 不再合成目录
+    // 占位条目，双斜杠路径写出即折叠（bad//name.txt → bad/name.txt），
+    // 产物全常规形态（空段/尾斜杠语料覆盖改由 writeRawZip 直写面承担）。
+    EXPECT_EQ(info.entries, 5);
     EXPECT_EQ(info.classes, 3);
     EXPECT_FALSE(info.hasManifest);
 
@@ -49,19 +50,13 @@ TEST(MjtCliInfoTest, ReportsCensusCountsKindsShapesVersionsManifest)
     EXPECT_EQ(info.classKinds[1].first, "enum");
     EXPECT_EQ(info.classKinds[2].first, "interface");
 
-    // entry_shape：4 条目常规；bad// 族 empty_segment 两例（"bad//" 与
-    // "bad//name.txt"；facet 优先序 EmptySegment 先于 TrailingSlash）；3 个
-    // 目录占位 trailing_slash；投影按 facet 枚举声明序（regular 在前）。
-    ASSERT_EQ(info.entryShapes.size(), 3U);
+    // entry_shape：mjbase#167 后产物全常规——单桶 regular==5；投影只含
+    // 非零 facet（censusContainer 从真实条目聚合，零计数桶不进分布），
+    // 桶序按 facet 枚举声明序。
+    ASSERT_EQ(info.entryShapes.size(), 1U);
     EXPECT_EQ(info.entryShapes[0].first, "regular");
-    EXPECT_EQ(info.entryShapes[0].second, 4);
-    EXPECT_EQ(info.entryShapes[1].first, "empty_segment");
-    EXPECT_EQ(info.entryShapes[1].second, 2);
-    EXPECT_EQ(info.entryShapes[2].first, "trailing_slash");
-    EXPECT_EQ(info.entryShapes[2].second, 3);
-    EXPECT_TRUE(findCount(info.entryShapes, "regular", 4));
-    EXPECT_TRUE(findCount(info.entryShapes, "empty_segment", 2));
-    EXPECT_TRUE(findCount(info.entryShapes, "trailing_slash", 3));
+    EXPECT_EQ(info.entryShapes[0].second, 5);
+    EXPECT_TRUE(findCount(info.entryShapes, "regular", 5));
 
     // 字节码版本：jasm 缺省 major 61（java 17），单桶 3 类。
     ASSERT_EQ(info.versions.size(), 1U);
@@ -139,7 +134,7 @@ TEST(MjtCliInfoTest, RendersDeterministicTextAndJson)
     mjt::cli::renderInfoText(info, textCapture.sink());
     const auto text = textCapture.text();
     EXPECT_NE(text.find("jar overview: " + jar.string()), std::string::npos);
-    EXPECT_NE(text.find("entries: 9"), std::string::npos);
+    EXPECT_NE(text.find("entries: 5"), std::string::npos);
     EXPECT_NE(text.find("classes: 3"), std::string::npos);
     EXPECT_NE(text.find("members: methods 3, fields 1, native 0"), std::string::npos);
     EXPECT_NE(text.find("class kinds:"), std::string::npos);
@@ -151,8 +146,8 @@ TEST(MjtCliInfoTest, RendersDeterministicTextAndJson)
     EXPECT_NE(text.find("class origins:"), std::string::npos);
     EXPECT_NE(text.find("  unknown: 3"), std::string::npos);
     EXPECT_NE(text.find("entry path shapes:"), std::string::npos);
-    EXPECT_NE(text.find("  trailing_slash: 3"), std::string::npos);
-    EXPECT_NE(text.find("  empty_segment: 2"), std::string::npos);
+    // 渲染面只打非零桶：分布仅剩 regular，空段/尾斜杠行整体消失。
+    EXPECT_NE(text.find("  regular: 5"), std::string::npos);
     EXPECT_NE(text.find("bytecode versions:"), std::string::npos);
     EXPECT_NE(text.find("61 (java 17): 3"), std::string::npos);
     EXPECT_NE(text.find("manifest: absent"), std::string::npos);
@@ -160,7 +155,7 @@ TEST(MjtCliInfoTest, RendersDeterministicTextAndJson)
     CapturedSink jsonCapture;
     mjt::cli::renderInfoJson(info, jsonCapture.sink());
     const auto json = jsonCapture.text();
-    EXPECT_NE(json.find("\"entries\": 9"), std::string::npos);
+    EXPECT_NE(json.find("\"entries\": 5"), std::string::npos);
     EXPECT_NE(json.find("\"classes\": 3"), std::string::npos);
     EXPECT_NE(json.find("\"methods\": 3"), std::string::npos);
     EXPECT_NE(json.find("\"fields\": 1"), std::string::npos);
@@ -169,7 +164,7 @@ TEST(MjtCliInfoTest, RendersDeterministicTextAndJson)
     EXPECT_NE(json.find("\"method_visibility\": {\"public\": 3}"), std::string::npos);
     EXPECT_NE(json.find("\"field_visibility\": {\"private\": 1}"), std::string::npos);
     EXPECT_NE(json.find("\"origins\": {\"unknown\": 3}"), std::string::npos);
-    EXPECT_NE(json.find("\"empty_segment\": 2"), std::string::npos);
+    EXPECT_NE(json.find("\"entry_shapes\": {\"regular\": 5}"), std::string::npos);
     EXPECT_NE(json.find("\"61\": 3"), std::string::npos);
     EXPECT_NE(json.find("\"has_manifest\": false"), std::string::npos);
 

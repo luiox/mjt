@@ -197,12 +197,14 @@ TEST(McpMaskTest, StringsExitMasksByRuleSuspectAndLengthGate)
     std::filesystem::remove_all(bundle, ec);
 }
 
-TEST(McpMaskTest, BundleWithoutAnalysisDbStaysPassThrough)
+TEST(McpMaskTest, FreshBundleMasksNothingUnderTrustedDefault)
 {
     McpSessionHarness server;
     const auto        fixture = writeMaskFixture();
 
-    //临时工程：无 analysis.mjdb → strings 出口直通，响应无 mask 侧车。
+    //工程 bundle 现必建分析库（DB 为 renames 覆盖层唯一真源），"无库直通"
+    // 前提退役。全新工程 = mask 侧车在场 + 零规则 + 默认 trusted 信任级别：
+    // 全部串照常出口（suspect 只计数不遮蔽）。
     const auto opened = call(server, "project_open", {{"path", fixture.string()}});
     ASSERT_FALSE(opened.at("result").at("isError")) << payload(opened).dump();
     const auto projectId = payload(opened).at("project_id").get<std::string>();
@@ -215,7 +217,12 @@ TEST(McpMaskTest, BundleWithoutAnalysisDbStaysPassThrough)
                                 {"match_mode", "regex"}});
     ASSERT_FALSE(searched.at("result").at("isError")) << payload(searched).dump();
     const auto& page = payload(searched);
-    EXPECT_FALSE(page.contains("mask"));
+    ASSERT_TRUE(page.contains("mask"));
+    const auto& mask = page.at("mask");
+    EXPECT_TRUE(mask.at("active").get<bool>());
+    EXPECT_EQ("trusted", mask.at("trust_level").get<std::string>());
+    EXPECT_EQ(0U, mask.at("rules").get<ca::usize>());
+    EXPECT_EQ(0U, mask.at("masked").get<ca::usize>());
     EXPECT_NE(nullptr, findRow(page.at("items"), "constant_pool_string", "MARKER-SECRET-42"));
 
     const auto closed = call(server, "project_close", {{"project_id", projectId}});
@@ -232,29 +239,28 @@ TEST(McpMaskTest, UnopenableMaskDbFailsLoud)
 
     const auto project = openMaskProject(server, fixture, bundle.string());
     ASSERT_FALSE(project.projectId.empty());
+    const auto dbPath =
+        (std::filesystem::path(project.projectDir) / "analysis.mjdb").string();
 
-    //非 SQLite 垃圾文件占位 analysis.mjdb：掩蔽面装载失败必须 fail-loud
-    //（不可信库的遮蔽失效是安全事件，不静默降级为直通）。
+    //会话内库句柄常驻（page cache + WAL，盘上篡改不影响在用句柄）：fail-loud
+    // 边界移到重开。先正常关会话落盘，再以非 SQLite 垃圾占位 analysis.mjdb，
+    // 下一次 project_open 必须报错——不可信库静默降级为直通是安全事件。
+    const auto closed = call(server, "project_close", {{"project_id", project.projectId}});
+    ASSERT_FALSE(closed.at("result").at("isError")) << payload(closed).dump();
     {
-        std::ofstream garbage(std::filesystem::path(project.projectDir) / "analysis.mjdb",
-                              std::ios::binary | std::ios::trunc);
+        std::ofstream garbage(dbPath, std::ios::binary | std::ios::trunc);
         garbage << "definitely not a sqlite database";
     }
 
-    const auto searched = call(server,
-                               "search",
-                               {{"project_id", project.projectId},
-                                {"kind", "strings"},
-                                {"query", "."},
-                                {"match_mode", "regex"}});
-    ASSERT_TRUE(searched.at("result").at("isError")) << payload(searched).dump();
+    const auto reopened = call(server,
+                               "project_open",
+                               {{"path", fixture.string()}, {"project_dir", project.projectDir}});
+    ASSERT_TRUE(reopened.at("result").at("isError")) << payload(reopened).dump();
     EXPECT_NE(std::string::npos,
-              payload(searched).at("status").at("message").get<std::string>().find(
-                  "mask exit analysis db"))
-        << payload(searched).dump();
+              payload(reopened).at("status").at("message").get<std::string>().find(
+                  "open analysis db"))
+        << payload(reopened).dump();
 
-    const auto closed = call(server, "project_close", {{"project_id", project.projectId}});
-    EXPECT_FALSE(closed.at("result").at("isError"));
     std::filesystem::remove_all(bundle, ec);
 }
 

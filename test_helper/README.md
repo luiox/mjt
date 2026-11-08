@@ -4,6 +4,8 @@ Shared test utility library for mjt subprojects. Provides resource loading and o
 
 `jdk_fixture.hpp` additionally provides shared JDK probing and cross-platform command execution:Windows commands run through a temporary `.bat`; POSIX commands run through a temporary `sh` script. Both stop at the first failing command and remove the temporary script before returning.
 
+`raw_zip_fixture.hpp` provides `test::writeRawZip`: writes a raw zip (all-STORED entries, entry names verbatim) to bypass jar write-side path normalization (mjbase#167 folding/rejection), for fixtures that need irregular entry shapes (trailing slash, double slash) to reach the read side intact. Consumers need the jzip header path (via the mjbase public dependency chain) and `libjzip` in their link closure.
+
 ## API
 
 ```cpp

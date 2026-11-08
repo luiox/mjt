@@ -43,14 +43,20 @@ std::filesystem::path uniqueFixtureJar()
     return target;
 }
 
-///打开 fixture 工程并在 jar 旁生成 v2 sidecar，返回 project_id。
-///（shadow_generate 已 SDK 化出 MCP 面：sidecar 由测试直连同一 mjbase 数据面
-///写出，与 `mjt shadow` 的产物字节同源。）
-std::string openWithSidecar(McpSessionHarness& server, const std::filesystem::path& jar)
+///打开 fixture 工程，返回 project_id。
+std::string openProject(McpSessionHarness& server, const std::filesystem::path& jar)
 {
     const auto opened = call(server, "project_open", {{"path", jar.string()}});
     EXPECT_FALSE(opened.at("result").at("isError")) << opened.dump();
-    const auto projectId = payload(opened).at("project_id").get<std::string>();
+    return payload(opened).at("project_id").get<std::string>();
+}
+
+///打开 fixture 工程并在 jar 旁生成 v2 sidecar（先写后开——shadow 落分析库：
+///openProjectSession 在 renames 覆盖层为空且 sidecar 存在时一次性导入，运行
+///时真源是 analysis.mjdb）。sidecar 由测试直连 mjbase 数据面写出，与
+///`mjt shadow` 的产物字节同源。
+std::string openWithSidecar(McpSessionHarness& server, const std::filesystem::path& jar)
+{
     mjbase::model::ResourceContainer container;
     const auto imported = mjbase::model::ResourceHelper::importFromJar(container, jar.string());
     EXPECT_FALSE(imported.is_err());
@@ -64,7 +70,19 @@ std::string openWithSidecar(McpSessionHarness& server, const std::filesystem::pa
     };
     const auto written = mjbase::mapping::writeShadowAliasFile(utf8Path(sidecar), table.toMapping());
     EXPECT_FALSE(written.is_err());
-    return projectId;
+    return openProject(server, jar);
+}
+
+///以给定内容为 sidecar 打开工程（手编表/损坏文件面的 open 前置写）。
+std::string openWithSidecarContent(McpSessionHarness&         server,
+                                   const std::filesystem::path& jar,
+                                   const std::string&           content)
+{
+    {
+        std::ofstream sidecar(jar.string() + ".mjt-shadow", std::ios::binary | std::ios::trunc);
+        sidecar << content;
+    }
+    return openProject(server, jar);
 }
 
 ///search(kind=shadow, direction=raw_to_shadow) 取回首个 match（可带 owner/symbol_kind 过滤）。
@@ -347,36 +365,53 @@ TEST(McpShadowTokenTest, RawOrRefNeverFallThroughAtToolBoundary)
 
 TEST(McpShadowTokenTest, MissingSidecarHardErrorsReferencesButRawStaysZeroDrift)
 {
-    //全新 fixture、无 sidecar：引用形状 → missing-sidecar 硬报错；raw → 原样。
+    //全新 fixture、无 sidecar：工程会话绑定的 analysis.mjdb renames 覆盖层为
+    //空表（在场源）——引用形状 → missing-sidecar（别名层整体无数据，引导
+    //生成；unknown-handle 是"表有条目但 token 不在"的语义，空表下误导）；
+    //raw → 原样零漂移（空表跳过核表）。
     const auto jar = uniqueFixtureJar();
     //复制路径可能残留上一轮运行的 sidecar，先清场保住"缺 sidecar"前提。
     std::error_code cleanupError;
     std::filesystem::remove(jar.string() + ".mjt-shadow", cleanupError);
     McpSessionHarness server;
-    const auto opened = call(server, "project_open", {{"path", jar.string()}});
-    const auto projectId = payload(opened).at("project_id").get<std::string>();
+    const auto projectId = openProject(server, jar);
 
     const auto reference =
         call(server, "class_query", {{"project_id", projectId}, {"kind", "class"}, {"class", "${Class_1.11111111}"}});
-    expectSlotError(reference, "missing-sidecar", "raw-not-found", "no sidecar");
-    expectSlotError(reference, "missing-sidecar", "unknown-handle", "no sidecar");
+    expectSlotError(reference, "missing-sidecar", "unknown-handle", "empty db table");
 
     const auto raw =
         call(server, "class_query", {{"project_id", projectId}, {"kind", "class"}, {"class", "mcp/Subject"}});
     EXPECT_FALSE(raw.at("result").at("isError")) << raw.dump();
     EXPECT_EQ("mcp/Subject", payload(raw).at("class"));
 
-    //损坏 sidecar：同缺表口径（note 带原因），raw 仍零漂移。
-    std::ofstream garbage(jar.string() + ".mjt-shadow", std::ios::binary);
-    garbage << "{not-json";
-    garbage.close();
+    //会话中写 sidecar 不再生效（sidecar 退役为 open 期一次性导入源；运行时
+    //真源是库）：引用仍 missing-sidecar（空库，盘上 sidecar 不入会话），raw
+    //仍零漂移。
+    {
+        std::ofstream garbage(jar.string() + ".mjt-shadow", std::ios::binary);
+        garbage << "{not-json";
+    }
     const auto invalidRef =
         call(server, "class_query", {{"project_id", projectId}, {"kind", "class"}, {"class", "${Class_1.11111111}"}});
-    expectSlotError(invalidRef, "missing-sidecar", "", "corrupt sidecar");
+    expectSlotError(invalidRef, "missing-sidecar", "unknown-handle", "mid-session sidecar");
     const auto rawAfter = call(server,
                                "class_query",
                                {{"project_id", projectId}, {"kind", "class"}, {"class", "mcp/Subject"}});
     EXPECT_FALSE(rawAfter.at("result").at("isError")) << rawAfter.dump();
+
+    //open 期损坏 sidecar = 数据损毁，fail-closed 拒开（删除/重建 sidecar 即解锁；
+    //静默丢弃用户的 shadow 名不可接受）。open 工具面 error 字段是通用文案
+    //（"open project failed"），细节在 status.message。
+    const auto blocked = uniqueFixtureJar();
+    {
+        std::ofstream garbage(blocked.string() + ".mjt-shadow", std::ios::binary);
+        garbage << "{not-json";
+    }
+    const auto refused = call(server, "project_open", {{"path", blocked.string()}});
+    ASSERT_TRUE(refused.at("result").at("isError").get<bool>()) << refused.dump();
+    const auto message = payload(refused).at("status").at("message").get<std::string>();
+    EXPECT_NE(std::string::npos, message.find("shadow sidecar")) << refused.dump();
 }
 
 TEST(McpShadowTokenTest, EscapedLiteralTakesRawPathNotHandlePath)
@@ -395,13 +430,11 @@ TEST(McpShadowTokenTest, EscapedLiteralTakesRawPathNotHandlePath)
 
 TEST(McpShadowTokenTest, AmbiguousMemberSurfacesWithDescriptorGuidance)
 {
-    //手编 v2 sidecar：同 owner 同影子名两条 desc（生成器不产、表 API 可达）。
+    //手编 v2 sidecar（open 前落盘，open 期一次性导入分析库）：同 owner 同
+    //影子名两条 desc（生成器不产、表 API 可达）。
     const auto jar = uniqueFixtureJar();
-    McpSessionHarness server;
-    const auto projectId = openWithSidecar(server, jar);
-    const auto sidecarPath = jar.string() + ".mjt-shadow";
 
-    //覆写为歧义表：mcp/Subject 名下 Method_1 两枚重载、token 各异。
+    //歧义表：mcp/Subject 名下 Method_1 两枚重载、token 各异。
     const char* ambiguous =
         "{\"version\":2,\"aliases\":["
         "{\"kind\":\"class\",\"name\":\"mcp/Subject\",\"shadow\":\"Class_1\",\"token\":\"11111111\"},"
@@ -409,10 +442,8 @@ TEST(McpShadowTokenTest, AmbiguousMemberSurfacesWithDescriptorGuidance)
         "\"shadow\":\"Method_1\",\"token\":\"22222222\"},"
         "{\"kind\":\"method\",\"owner\":\"mcp/Subject\",\"desc\":\"(J)V\",\"name\":\"value\","
         "\"shadow\":\"Method_1\",\"token\":\"55555555\"}]}";
-    {
-        std::ofstream sidecar(sidecarPath, std::ios::binary | std::ios::trunc);
-        sidecar << ambiguous;
-    }
+    McpSessionHarness server;
+    const auto projectId = openWithSidecarContent(server, jar, ambiguous);
     const auto response = call(server,
                                "class_query",
                                {{"project_id", projectId}, {"kind", "method"},
@@ -1007,6 +1038,310 @@ TEST(McpShadowTokenTest, OperandFilterResolvesThroughJasmBodySlot)
                              {"operand", "desc/Gift"}});
     ASSERT_FALSE(byRaw.at("result").at("isError")) << byRaw.dump();
     EXPECT_EQ(payload(byClass).at("items").size(), payload(byRaw).at("items").size());
+}
+
+//───────────────── 结构化变更嵌套引用槽（Json 子树面） ─────────────────
+
+TEST(McpShadowTokenTest, StructuredNestedRefsExpandAcrossFieldMethodAndInstructionFaces)
+{
+    const auto jar = uniqueDescriptorFixtureJar();
+    McpSessionHarness server;
+    const auto projectId = openWithSidecar(server, jar);
+
+    const auto giftRef   = firstMatch(server, projectId, "desc/Gift").at("ref").get<std::string>();
+    const auto holderRef = firstMatch(server, projectId, "desc/Holder").at("ref").get<std::string>();
+    const auto takeRef =
+        firstMatch(server, projectId, "take", holderRef, "method").at("ref").get<std::string>();
+    const auto useItRef =
+        firstMatch(server, projectId, "useIt", holderRef, "method").at("ref").get<std::string>();
+
+    //add_field：member_name 是新符号字面量（不解析），但新成员的类型描述符
+    //内嵌类 handle → Descriptor 槽展开为真名。
+    const auto addedField = call(server,
+                                 "edit_apply",
+                                 {{"project_id", projectId},
+                                  {"kind", "structured"},
+                                  {"class_uri", holderRef},
+                                  {"mutation_kind", "add_field"},
+                                  {"member_name", "payload"},
+                                  {"member_descriptor", "L" + giftRef + ";"},
+                                  {"access_flags", Json::array({"public"})}});
+    ASSERT_FALSE(addedField.at("result").at("isError")) << addedField.dump();
+    const auto fieldJasm = call(server,
+                                "class_query",
+                                {{"project_id", projectId}, {"kind", "jasm"}, {"class", holderRef}});
+    ASSERT_FALSE(fieldJasm.at("result").at("isError")) << fieldJasm.dump();
+    const auto fieldText = payload(fieldJasm).at("jasm").get<std::string>();
+    EXPECT_NE(std::string::npos, fieldText.find("payload")) << fieldText;
+    EXPECT_NE(std::string::npos, fieldText.find("Ldesc/Gift;")) << fieldText;
+    EXPECT_EQ(std::string::npos, fieldText.find("${")) << fieldText;
+
+    //replace_method_body：initial_instructions 里指令的 owner/name/descriptor
+    //三段全 handle 化（首枚 invoke 三元组全 Ref，次枚保留 raw 对照）。
+    const auto before = call(server,
+                             "search",
+                             {{"project_id", projectId},
+                              {"kind", "instructions"},
+                              {"operand", takeRef}});
+    ASSERT_FALSE(before.at("result").at("isError")) << before.dump();
+    const auto beforeCount = payload(before).at("items").size();
+    ASSERT_EQ(1U, beforeCount) << before.dump();
+    const auto replaced = call(server,
+                               "edit_apply",
+                               {{"project_id", projectId},
+                                {"kind", "structured"},
+                                {"class_uri", holderRef},
+                                {"mutation_kind", "replace_method_body"},
+                                {"member_name", useItRef},
+                                {"member_descriptor", "()V"},
+                                {"initial_instructions", Json::array(
+                                     {Json{{"kind", "simple"}, {"opcode", 1}},
+                                      Json{{"kind", "method"},
+                                           {"opcode", 184},
+                                           {"owner", holderRef},
+                                           {"name", takeRef},
+                                           {"descriptor", "(L" + giftRef + ";)V"}},
+                                      Json{{"kind", "simple"}, {"opcode", 1}},
+                                      Json{{"kind", "method"},
+                                           {"opcode", 184},
+                                           {"owner", "desc/Holder"},
+                                           {"name", "take"},
+                                           {"descriptor", "(Ldesc/Gift;)V"}},
+                                      Json{{"kind", "simple"}, {"opcode", 177}}})}});
+    ASSERT_FALSE(replaced.at("result").at("isError")) << replaced.dump();
+    const auto after = call(server,
+                            "search",
+                            {{"project_id", projectId},
+                             {"kind", "instructions"},
+                             {"operand", takeRef}});
+    ASSERT_FALSE(after.at("result").at("isError")) << after.dump();
+    EXPECT_EQ(beforeCount + 1, payload(after).at("items").size()) << after.dump();
+
+    //add_method：exceptions[]（throws 类名数组）经 Name 槽展开；初始指令体
+    //不带引用面（simple return）。
+    const auto addedMethod = call(server,
+                                  "edit_apply",
+                                  {{"project_id", projectId},
+                                   {"kind", "structured"},
+                                   {"class_uri", holderRef},
+                                   {"mutation_kind", "add_method"},
+                                   {"member_name", "call2"},
+                                   {"member_descriptor", "()V"},
+                                   {"access_flags", Json::array({"public", "static"})},
+                                   {"exceptions", Json::array({giftRef})},
+                                   {"initial_instructions", Json::array({Json{{"kind", "simple"},
+                                                                              {"opcode", 177}}})}});
+    ASSERT_FALSE(addedMethod.at("result").at("isError")) << addedMethod.dump();
+    const auto methodJasm = call(server,
+                                 "class_query",
+                                 {{"project_id", projectId}, {"kind", "jasm"}, {"class", holderRef}});
+    ASSERT_FALSE(methodJasm.at("result").at("isError")) << methodJasm.dump();
+    const auto methodText = payload(methodJasm).at("jasm").get<std::string>();
+    EXPECT_NE(std::string::npos, methodText.find("call2")) << methodText;
+    EXPECT_EQ(std::string::npos, methodText.find("${")) << methodText;
+}
+
+//──────────── rename/mapping/undo 真改名 → 分析库身份迁移 ────────────
+
+TEST(McpShadowTokenTest, RenameApplyMigratesAnalysisDbIdentityAndKeepsHandlesStable)
+{
+    const auto jar = uniqueDescriptorFixtureJar();
+    McpSessionHarness server;
+    const auto projectId = openWithSidecar(server, jar);
+
+    const auto giftRef   = firstMatch(server, projectId, "desc/Gift").at("ref").get<std::string>();
+    const auto holderRef = firstMatch(server, projectId, "desc/Holder").at("ref").get<std::string>();
+    const auto takeRef =
+        firstMatch(server, projectId, "take", holderRef, "method").at("ref").get<std::string>();
+
+    //类改名落盘：身份注记随台账事务落账，分析库 classes.internal_name 改写
+    //（renames 覆盖行按稳定 ID 键控零触碰——真改名后零补丁）；identity 统计
+    //回显。旧 shadow_sync 字段已随 sidecar 同步层退役。
+    const auto renamed = call(server,
+                              "edit_apply",
+                              {{"project_id", projectId},
+                               {"kind", "rename"},
+                               {"rename_kind", "class"},
+                               {"owner", holderRef},
+                               {"new_name", "desc/Box"}});
+    ASSERT_FALSE(renamed.at("result").at("isError")) << renamed.dump();
+    ASSERT_TRUE(payload(renamed).contains("identity")) << renamed.dump();
+    const auto& identity = payload(renamed).at("identity");
+    EXPECT_GE(identity.at("annotated").get<ca::u64>(), 1U) << renamed.dump();
+    EXPECT_GE(identity.at("migrated_classes").get<ca::u64>(), 1U) << renamed.dump();
+    EXPECT_FALSE(identity.at("failed").get<bool>()) << renamed.dump();
+    EXPECT_FALSE(identity.contains("warning")) << renamed.dump();
+    EXPECT_FALSE(payload(renamed).contains("shadow_sync")) << renamed.dump();
+
+    //旧类 handle 仍指向同一显示身份——raw 面已换到新名。
+    const auto byHandle = call(server,
+                               "class_query",
+                               {{"project_id", projectId}, {"kind", "class"}, {"class", holderRef}});
+    ASSERT_FALSE(byHandle.at("result").at("isError")) << byHandle.dump();
+    EXPECT_EQ("desc/Box", payload(byHandle).at("class"));
+
+    //级联：成员条目 owner 经 classes.class_id 外键连带（members 行零触碰），
+    //成员 handle 原样可用（回执 ref 不变）。
+    const auto stableTake = firstMatch(server, projectId, "take", holderRef, "method");
+    EXPECT_EQ(takeRef, stableTake.at("ref").get<std::string>()) << stableTake.dump();
+    const auto method = call(server,
+                             "class_query",
+                             {{"project_id", projectId},
+                              {"kind", "method"},
+                              {"owner", holderRef},
+                              {"name", takeRef},
+                              {"descriptor", "(L" + giftRef + ";)V"}});
+    ASSERT_FALSE(method.at("result").at("isError")) << method.dump();
+    EXPECT_EQ("take", payload(method).at("name"));
+
+    //对照：未涉及条目零漂移。
+    const auto untouched = call(server,
+                                "class_query",
+                                {{"project_id", projectId}, {"kind", "class"}, {"class", giftRef}});
+    ASSERT_FALSE(untouched.at("result").at("isError")) << untouched.dump();
+    EXPECT_EQ("desc/Gift", payload(untouched).at("class"));
+}
+
+TEST(McpShadowTokenTest, MappingApplyMigratesMemberIdentity)
+{
+    const auto jar = uniqueDescriptorFixtureJar();
+    McpSessionHarness server;
+    const auto projectId = openWithSidecar(server, jar);
+
+    const auto holderRef = firstMatch(server, projectId, "desc/Holder").at("ref").get<std::string>();
+    const auto takeRef =
+        firstMatch(server, projectId, "take", holderRef, "method").at("ref").get<std::string>();
+
+    //Simple 格式单成员改名（take → takeReal）：类不动，desc 内嵌类不动——
+    //members 行 (class_id, kind, name, desc) 只改 name，覆盖行零触碰。
+    const auto remapped = call(server,
+                              "edit_apply",
+                              {{"project_id", projectId},
+                               {"kind", "mapping"},
+                               {"format", "Simple"},
+                               {"mapping_text", "desc/Holder.take(Ldesc/Gift;)V takeReal"},
+                               {"policy", "bytecode-only"}});
+    ASSERT_FALSE(remapped.at("result").at("isError")) << remapped.dump();
+    const auto& identity = payload(remapped).at("identity");
+    EXPECT_GE(identity.at("annotated").get<ca::u64>(), 1U) << remapped.dump();
+    EXPECT_GE(identity.at("migrated_members").get<ca::u64>(), 1U) << remapped.dump();
+    EXPECT_FALSE(identity.at("failed").get<bool>()) << remapped.dump();
+
+    //成员 handle 跨 mapping 落盘稳定：展开面已是新真名。
+    const auto method = call(server,
+                             "class_query",
+                             {{"project_id", projectId},
+                              {"kind", "method"},
+                              {"owner", holderRef},
+                              {"name", takeRef},
+                              {"descriptor", "(Ldesc/Gift;)V"}});
+    ASSERT_FALSE(method.at("result").at("isError")) << method.dump();
+    EXPECT_EQ("takeReal", payload(method).at("name"));
+}
+
+TEST(McpShadowTokenTest, UndoReversesIdentityMigration)
+{
+    const auto jar = uniqueDescriptorFixtureJar();
+    McpSessionHarness server;
+    const auto projectId = openWithSidecar(server, jar);
+
+    const auto holderRef = firstMatch(server, projectId, "desc/Holder").at("ref").get<std::string>();
+    const auto renamed = call(server,
+                              "edit_apply",
+                              {{"project_id", projectId},
+                               {"kind", "rename"},
+                               {"rename_kind", "class"},
+                               {"owner", holderRef},
+                               {"new_name", "desc/Box"}});
+    ASSERT_FALSE(renamed.at("result").at("isError")) << renamed.dump();
+    const auto revision = payload(renamed).at("revision").get<int>();
+
+    //undo：台账头回退 + 身份注记反向迁移（跨句柄回旧名）。
+    const auto undone = call(server,
+                             "edit_history",
+                             {{"project_id", projectId},
+                              {"action", "undo"},
+                              {"expected_revision", revision}});
+    ASSERT_FALSE(undone.at("result").at("isError")) << undone.dump();
+    const auto& identity = payload(undone).at("identity");
+    EXPECT_GE(identity.at("annotated").get<ca::u64>(), 1U) << undone.dump();
+    EXPECT_GE(identity.at("migrated_classes").get<ca::u64>(), 1U) << undone.dump();
+    EXPECT_FALSE(identity.at("failed").get<bool>()) << undone.dump();
+
+    //同一 handle 解回旧真名（覆盖行 ID 未动，显示身份连续）。
+    const auto byHandle = call(server,
+                               "class_query",
+                               {{"project_id", projectId}, {"kind", "class"}, {"class", holderRef}});
+    ASSERT_FALSE(byHandle.at("result").at("isError")) << byHandle.dump();
+    EXPECT_EQ("desc/Holder", payload(byHandle).at("class"));
+
+    //redo：身份前向重放，handle 再指新名。
+    const auto redone = call(server,
+                             "edit_history",
+                             {{"project_id", projectId}, {"action", "redo"}});
+    ASSERT_FALSE(redone.at("result").at("isError")) << redone.dump();
+    const auto again = call(server,
+                            "class_query",
+                            {{"project_id", projectId}, {"kind", "class"}, {"class", holderRef}});
+    ASSERT_FALSE(again.at("result").at("isError")) << again.dump();
+    EXPECT_EQ("desc/Box", payload(again).at("class"));
+}
+
+TEST(McpShadowTokenTest, RenameWithoutSidecarStillMigratesViaAnalysisDb)
+{
+    //无 sidecar 的工程：会话照常绑分析库（open 期整库导入），rename 身份
+    //迁移照常发生——shadow 覆盖层为空表，handle 面不可用，但迁移统计在场。
+    const auto jar = uniqueDescriptorFixtureJar();
+    McpSessionHarness server;
+    const auto projectId = openProject(server, jar);
+
+    const auto renamed = call(server,
+                              "edit_apply",
+                              {{"project_id", projectId},
+                               {"kind", "rename"},
+                               {"rename_kind", "class"},
+                               {"owner", "desc/Gift"},
+                               {"new_name", "desc/Present"}});
+    ASSERT_FALSE(renamed.at("result").at("isError")) << renamed.dump();
+    const auto& identity = payload(renamed).at("identity");
+    EXPECT_GE(identity.at("annotated").get<ca::u64>(), 1U) << renamed.dump();
+    EXPECT_GE(identity.at("migrated_classes").get<ca::u64>(), 1U) << renamed.dump();
+    EXPECT_FALSE(identity.at("failed").get<bool>()) << renamed.dump();
+    EXPECT_TRUE(payload(renamed).contains("revision")) << renamed.dump();
+}
+
+TEST(McpShadowTokenTest, ShadowTableExportsTsvOnDemand)
+{
+    const auto jar = uniqueDescriptorFixtureJar();
+    McpSessionHarness server;
+    const auto projectId = openWithSidecar(server, jar);
+
+    const auto gift = firstMatch(server, projectId, "desc/Gift");
+    const auto tsv  = test::getTempOutPath("mjt_shadow_t2_export.tsv").string();
+
+    //导出 + 查询一次往返（tsv_path 与 name 并用）。
+    const auto exported = call(server,
+                               "search",
+                               {{"project_id", projectId},
+                                {"kind", "shadow"},
+                                {"direction", "raw_to_shadow"},
+                                {"name", "desc/Gift"},
+                                {"tsv_path", tsv}});
+    ASSERT_FALSE(exported.at("result").at("isError")) << exported.dump();
+    EXPECT_EQ(tsv, payload(exported).at("tsv").at("path").get<std::string>());
+
+    std::ifstream input(tsv, std::ios::binary);
+    ASSERT_TRUE(input.is_open()) << tsv;
+    std::string content((std::istreambuf_iterator<char>(input)),
+                        std::istreambuf_iterator<char>());
+    //表头 + 全表行（按行数不假设生成器细节，断言表头与目标行存在；token
+    //自回执 ref 的 '.' 后取 8 位 hex，避免句柄内类序号位宽假设）。
+    EXPECT_EQ(0U, content.find("kind\towner\tname\tdesc\tshadow\ttoken\n"));
+    const auto ref   = gift.at("ref").get<std::string>();
+    const auto token = ref.substr(ref.find('.') + 1, 8);
+    const auto row   = std::string("class\t\tdesc/Gift\t\t") +
+                     gift.at("shadow").get<std::string>() + "\t" + token + "\n";
+    EXPECT_NE(std::string::npos, content.find(row)) << content;
 }
 
 }   //namespace mjt::mcp

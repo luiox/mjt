@@ -7,6 +7,7 @@
 
 #include "mjbase/renamer/shadow_alias.hpp"
 #include "mjbase/renamer/shadow_token.hpp"
+#include "workspace/workspace_types.hpp"
 
 namespace mjt::workspace {
 class IWorkspace;
@@ -16,22 +17,26 @@ namespace mjt::mcp::slot {
 
 using Json = nlohmann::json;
 
-///@brief workspace 缺省 shadow sidecar 的加载产物（name 槽接线用）。
+///@brief workspace shadow 表的加载产物（name/descriptor/jasm 槽接线用）。
 ///
-///`present` = sidecar 文件存在且成功解析。文件缺失**或损坏**都按
-///`present=false`（空表）处理——raw 路径零漂移（今日无 sidecar 工作流不受
-///损），引用形状则由 resolveShadowSlot 判 missing-sidecar 硬报错，消息里
-///带上 `note`（absent/invalid 原因），不静默回落裸名。这与 mjt CLI
-///loadShadowDisplay 的"schema 错误告警 + 空表继续"失配容忍同口径。
+///加载序（shadow 落分析库）：workspace 绑定了分析库 → renames 覆盖层整表
+///还原（DB 是唯一真源；sidecar 已退役为 openProjectSession 的一次性导入
+///源，运行时不写回）；未绑库（无会话测试面/旧工作流）或 `file` 显式覆盖
+///→ sidecar 文件 `<jar>.mjt-shadow`。
+///
+///`present` = 加载成功（DB 或 sidecar）。加载失败按 `present=false`（空表）
+///处理——raw 路径零漂移（无 shadow 工作流不受损），引用形状则由
+///resolveShadowSlot 硬报错，消息里带上 `note`（absent/invalid 原因），
+///不静默回落裸名。
 struct WorkspaceShadowTable
 {
     mjbase::renamer::ShadowAliasTable table;
     bool        present = false;
-    std::string path;   ///< 参与判定的 sidecar 路径（诊断用）
+    std::string path;   ///< 参与判定的源（DB 占位名或 sidecar 路径；诊断用）
     std::string note;   ///< present=false 的原因（absent / invalid: …）
 };
 
-///@brief 加载 workspace 的缺省 sidecar（`<jar>.mjt-shadow`；`file` 显式覆盖）。
+///@brief 加载 workspace 的 shadow 表（DB 真源优先，sidecar 回退；见类型注释）。
 ///读取/解析失败不抛：记入 note 并按缺表继续（见类型注释）。
 WorkspaceShadowTable loadWorkspaceShadowTable(mjt::workspace::IWorkspace& workspace,
                                               const std::string& file = {});
@@ -143,6 +148,32 @@ bool resolveJasmBodyArgument(const WorkspaceShadowTable& slots,
                              const std::string&          input,
                              std::string&                out,
                              Json&                       error);
+
+///@brief patch_apply 结构化实参的嵌套引用就地改写（Json 子树面）。
+///
+///覆盖（值含 `${` 引用形状才动作，raw 零漂移直通）：
+///- `member_descriptor`——全 kind 提升：add_field/add_method 的新成员
+///  类型描述符内嵌类名也是引用语义（member_name 仍按新符号字面量豁免）；
+///- `annotation_descriptor` / `local_variables[].descriptor`——Descriptor 槽
+///  （`L…;` 类型位展开）；
+///- `exceptions[]` / `try_catch_blocks[].type`——Name 槽（开放类名面：
+///  verifyRaw=false，表外 raw 如 JDK 类直通）；
+///- `field_value` 常量树——kind=type 的 descriptor（裸内部类名 → Name 槽）、
+///  kind=dynamic 的 descriptor（真描述符）、handle 的 owner+name+descriptor、
+///  handle/bootstrap_method 子对象、bootstrap_arguments 递归；dynamic 的
+///  name 是 linkage 字面量（新符号），不接成员槽；
+///- `instruction` / `initial_instructions[]`——owner 全类指令接 Name 槽；
+///  descriptor 按位置分槽（type/ldc_type 裸内部类名走 Name 槽，field/
+///  method/multianewarray 等真描述符走 Descriptor 槽）；name 仅 field/method
+///  指令接成员槽（ldc_dynamic/invokedynamic 的 name 是 call site linkage
+///  字面量，不按成员解析）。
+///
+///`signature`（类/成员/局部变量）刻意不接：Descriptor 槽对泛型 `<>`
+///fail-loud，泛型签名展开是 mjbase v2 挂账。
+///@return false 时 `error` 已填结构化 toolError。
+bool resolveStructuredMutationRefs(const WorkspaceShadowTable& slots,
+                                   Json&                      args,
+                                   Json&                      error);
 
 ///@brief 显式描述符失配诊断：name 在宿主类存在但 descriptor 与任一候选都
 ///不符时，给结构化错误并列出该名全部候选描述符（与省略 descriptor 时的

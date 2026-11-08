@@ -812,8 +812,9 @@ def run_all():
           str(all_off))
     check("jarfix unselected", all(not issue["selected"] for issue in all_off["issues"]),
           str(all_off))
+    # jar 写出不合成目录占位条目（mjbase#167）：资源面 = 5 class + 1 注入 bin。
     check("jarfix class count", all_off["class_count"] == 5
-          and all_off["resource_count"] >= 7, str(all_off))
+          and all_off["resource_count"] == 6, str(all_off))
     all_on = mjt.jar_fix_analyze(h20, remove_invalid_class_entries=True,
                                  remove_corrupt_output_markers=True)
     check("jarfix selected", all(issue["selected"] for issue in all_on["issues"]),
@@ -1076,8 +1077,11 @@ def run_all():
     with open(report27["container_census"], "r", encoding="utf-8", newline="") as f27b:
         summary27 = dict(line.split("\t", 1) for line in f27b.read().splitlines()[2:])
     check("census summary classes", summary27.get("classes") == "5", str(summary27))
+    # 无目录占位（mjbase#167）：trailing_slash 形态行零计数不落盘，条目形态
+    # 全部落在 entry_shape_regular。
     check("census summary shapes",
-          summary27.get("entry_shape_trailing_slash") == "2", str(summary27))
+          summary27.get("entry_shape_trailing_slash") is None
+          and summary27.get("entry_shape_regular") == "5", str(summary27))
     # member_census.tsv（#148 批 2）：一行一成员，行序 = 投影复合键 BINARY 序
     # （owner → kind Field 在前 → 名字 → 描述符）直接落盘不重排；members 计数
     # 与数据行数、类级 Σ method_count + field_count 三方对账。

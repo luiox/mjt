@@ -4,6 +4,10 @@
 #include "class_mutation_service.hpp"
 #include "workspace_types.hpp"
 
+namespace mjbase::project {
+class AnalysisDb;   ///< 分析数据库连接（analysis_db.hpp；接口层仅前置声明）
+}
+
 namespace mjt::workspace {
 
 /// @file i_workspace.hpp
@@ -85,6 +89,11 @@ public:
 
     /// @brief 当前工作副本是否满足导出条件。
     virtual bool canExport() const noexcept = 0;
+
+    /// @brief 绑定的分析库（shadow 落分析库：renames 覆盖层按稳定 ID 键控的
+    ///        真源；nullptr = 未绑定，shadow 面回落 sidecar 文件）。借用指针，
+    ///        生命周期归会话方（bindAnalysisDb 接线）。
+    virtual mjbase::project::AnalysisDb* analysisDb() const noexcept { return nullptr; }
 
     /// @brief 返回主资源的稳定排序摘要。
     virtual WorkspaceResult<std::vector<ResourceSummary>> listResources(bool includeClasses = true) const = 0;

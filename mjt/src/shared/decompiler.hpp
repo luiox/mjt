@@ -39,6 +39,10 @@ enum class DecompilerKind
 {
     Cfr,
     Vineflower,
+    ///@brief jcdc（Rust 原生可执行文件，非 JAR、不经 JVM 启动）——第三实验
+    ///        后端（接线评估见 luiox/mjt#62）。产物发现/版本提取均按可执行件
+    ///        口径（MJT_JCDC_EXE / 文件名回退），decompilerJar 字段承载其路径。
+    Jcdc,
 };
 
 ///@brief 外部反编译请求。
@@ -50,7 +54,8 @@ struct DecompileRequest
     std::string outputPath;
     ///@brief 反编译器类型。
     DecompilerKind kind = DecompilerKind::Cfr;
-    ///@brief 显式反编译器 JAR；为空时按环境变量发现。
+    ///@brief 显式反编译器产物路径（CFR/Vineflower 为 JAR；Jcdc 为可执行文件）；
+    ///        为空时按环境变量发现。
     std::string decompilerJar;
     ///@brief Java 可执行程序；为空时按环境变量和 PATH 发现。
     std::string javaProgram;
@@ -70,7 +75,9 @@ struct DecompileRequest
     ///
     ///仅 class 输入生效：CFR 经 `--extraclasspath <path>`（选项值取下一
     ///token，置于输入之后），vineflower 经 `--add-external=<path>`（单 token
-    ///等号形，置于 source 之前）。jar 输入自带全部上下文，不消费本字段。
+    ///等号形，置于 source 之前），jcdc 经 `-cp <path>`（上游固定按 `:` 分隔、
+    ///不认 Windows 盘符路径——共享层先把含冒号路径改写成相对路径，仍含冒号
+    ///则丢弃该参数，宁缺上下文不炸请求）。jar 输入自带全部上下文，不消费本字段。
     std::string classPath;
     ///@brief 可选协作取消查询；返回 true 时终止正在运行的反编译器子进程。
     std::function<bool()> cancellationRequested;
@@ -79,7 +86,7 @@ struct DecompileRequest
 ///@brief 外部反编译执行结果。
 struct DecompileResult
 {
-    ///@brief 实际使用的反编译器 JAR。
+    ///@brief 实际使用的反编译器产物（JAR 或 jcdc 可执行文件路径）。
     std::string decompilerJar;
     ///@brief 子进程标准输出。
     std::string stdoutText;
@@ -106,33 +113,40 @@ struct DecompilerAvailability final
     ///@brief JAR 实际来源层：`explicit`（请求显式路径）/ `env`（环境变量命中）/
     ///        `package_dir`（exe 旁 package 目录兜底）；与发现优先级一致。
     std::string    discoverySource;
-    ///@brief discovery 解析后的 JAR 路径。
+    ///@brief discovery 解析后的产物路径（JAR 或 jcdc 可执行文件）。
     std::string    decompilerJar;
     ///@brief discovery 解析后的 Java 程序。
     std::string    javaProgram;
     ///@brief JAR 自报版本（MANIFEST Implementation-Version / Specification-Version，
-    ///        缺失时回退 JAR 文件名 `name-<version>.jar` 后缀）；无法确定时为空。
+    ///        缺失时回退 JAR 文件名 `name-<version>.jar` 后缀；jcdc 无 MANIFEST，
+    ///        走可执行文件名 `jcdc-v<version>-<os>-<arch>(.exe)` 回退）；
+    ///        无法确定时为空。
     std::string    version;
-    ///@brief JAR 是否为可读取常规文件。
+    ///@brief JAR 是否为可读取常规文件（jcdc 同口径：可执行文件是否落盘）。
     bool           artifactAvailable = false;
     ///@brief Java 是否能通过显式路径或 PATH 找到。
     bool           javaAvailable = false;
+    ///@brief 该后端是否依赖 Java 运行时。jcdc 为原生可执行文件，值为 false——
+    ///        此时 javaAvailable 仅作环境信息展示，不参与 available 判定与
+    ///        不可用原因拼装。
+    bool           requiresJava = true;
     ///@brief 不可用时的稳定可操作原因；可用时为空。
     std::string    unavailableReason;
 };
 
-///@brief 拉起 CFR 或 Vineflower 反编译 class/JAR，并归一化到请求的输出位置。
+///@brief 拉起 CFR / Vineflower / jcdc 反编译 class/JAR，并归一化到请求的输出位置。
 ///@note mapping 目前只支持 JAR 输入；函数在返回前清理自己创建的临时目录。
 ca::StatusOr<DecompileResult> decompile(const DecompileRequest& request);
 
-///@brief 解析 `cfr` 或 `vineflower` 名称。
+///@brief 解析 `cfr` / `vineflower` / `jcdc` 名称。
 ca::StatusOr<DecompilerKind> parseDecompilerKind(const std::string& name);
 
-///@brief 返回稳定的 `cfr` 或 `vineflower` 后端 ID。
+///@brief 返回稳定的 `cfr` / `vineflower` / `jcdc` 后端 ID。
 const char* decompilerKindId(DecompilerKind kind) noexcept;
 
-///@brief 按与真实执行相同的优先级发现反编译器 JAR 和 Java。
-///@param decompilerJar 非空时作为本次显式 JAR；空值继续查询环境变量和 home。
+///@brief 按与真实执行相同的优先级发现反编译器产物和 Java。
+///@param decompilerJar 非空时作为本次显式产物路径（jcdc 为可执行文件）；
+///        空值继续查询环境变量和 home。
 ///@param javaProgram 非空时作为本次显式 Java；空值继续查询环境变量、JAVA_HOME 和 PATH。
 DecompilerAvailability inspectDecompiler(DecompilerKind kind,
                                          const std::string& decompilerJar = {},
@@ -158,12 +172,13 @@ struct DecompilerJarDiscovery final
     std::vector<std::string> probed;
 };
 
-///@brief 按 fallback 序发现反编译器 JAR，并带回已探测候选清单。
+///@brief 按 fallback 序发现反编译器产物，并带回已探测候选清单。
 ///
-///优先级：显式 JAR → MJT_CFR_JAR / MJT_VINEFLOWER_JAR → MJT_DECOMPILER_HOME
-///固定名候选 → 可执行文件同级 `<exe_dir>/package` 与 `<exe_dir>/../package`
-///按「前缀 + .jar」目录扫描（mjt-mcp 发布包 / 开发树 artifact 布局，发布件
-///文件名带版本）。全空时 jar 为空、probed 非空。
+///优先级：显式路径 → MJT_CFR_JAR / MJT_VINEFLOWER_JAR / MJT_JCDC_EXE →
+///MJT_DECOMPILER_HOME 固定名候选 → 可执行文件同级 `<exe_dir>/package` 与
+///`<exe_dir>/../package` 目录扫描（JAR 后端按「前缀 + .jar」，jcdc 按
+///「前缀 jcdc + 可执行件规则」；mjt-mcp 发布包 / 开发树 artifact 布局，
+///发布件文件名带版本）。全空时 jar 为空、probed 非空。
 ///
 ///@param request 反编译请求；仅消费 decompilerJar 与 kind。
 ///@param executablePath 测试注入用可执行文件路径；空值取当前进程可执行文件。

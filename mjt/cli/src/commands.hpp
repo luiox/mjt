@@ -182,7 +182,7 @@ struct DecompileError
 struct DecompileCliOptions
 {
     DecompilerKind kind         = DecompilerKind::Cfr; ///< 后端类型
-    std::string    backendName  = "cfr";  ///< 稳定后端 ID（"cfr" / "vineflower"）
+    std::string    backendName  = "cfr";  ///< 稳定后端 ID（"cfr" / "vineflower" / "jcdc"）
     std::string    decompilerJar;         ///< 显式反编译器 JAR；空 = 按发现序解析
     ca::i64        timeoutMs    = 120000; ///< 子进程超时（毫秒）
     ca::i64        maxMemoryMiB = 1024;   ///< 后端 JVM 最大堆（MiB）
@@ -219,7 +219,7 @@ struct BatchDecompileReport
     std::vector<SkippedEntry> skipped;      ///< 无法落盘的条目（按名字典序）
 };
 
-/// @brief 解析 --decompiler 旗标值：ASCII 小写归一后匹配 cfr / vineflower。
+/// @brief 解析 --decompiler 旗标值：ASCII 小写归一后匹配 cfr / vineflower / jcdc。
 ///        未知名返回 UnknownBackend（退出码 1）。
 ca::Result<DecompilerKind, DecompileError> parseDecompilerBackendName(const std::string& name);
 

@@ -56,7 +56,7 @@ direction=to 列引用站点（target=method/field/class）；direction=from 仅
 
 ## decompile：源码还原
 
-- 同步：定位目标二选一——`class`（整类）或 `owner`+`name`+`descriptor`（该方法所在的类）；后端 `decompiler`=cfr/vineflower，`decompiler_jar`/`java` 缺省走本机发现；`timeout_ms`/`max_memory_mib`/`max_source_bytes` 是子进程防护上限。可用后端清单先看 project_info。
+- 同步：定位目标二选一——`class`（整类）或 `owner`+`name`+`descriptor`（该方法所在的类）；后端 `decompiler`=cfr/vineflower/jcdc（jcdc 为实验性原生 exe，无需 Java，`decompiler_jar` 承载其可执行文件路径），`decompiler_jar`/`java` 缺省走本机发现；`timeout_ms`/`max_memory_mib`/`max_source_bytes` 是子进程防护上限。可用后端清单先看 project_info。
 - 异步：`async=true` 返回 `job_id`；`action=poll` 取状态与结果、`cancel` 请求取消、`release` 回收（仅终态可 release，committing 不可 cancel）。缓存命中也走 poll 契约取结果。
 
 ## census 与批量只读面（pysdk）

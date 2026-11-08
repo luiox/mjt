@@ -18,8 +18,9 @@ target("mjt_shared")
     -- cli_fixture.hpp 惯例），符号经各 binary 的 add_links 闭包解析。
     -- 历史上根 require 0.0.3 与 mjbase 包链解析的 0.0.5 并存，显式挂包会
     -- 引入 0.0.3 实例扰动链接取档：0 字节 STORED 条目在 0.0.3 读路径回
-    -- 天花板扫描垃圾字节（mjt CI 实证，mask 语料炸串）；根随 mjbase
-    -- 0.0.22 对齐到 libjzip 0.0.5 后分裂已合流，惯例照旧（挂包无信息量）。
+    -- 天花板扫描垃圾字节（mjt CI 实证，mask 语料炸串）；根经 #84 跟随
+    -- mjbase 包词条浮动目标对齐到 0.0.5 后分裂已合流，惯例照旧（挂包
+    -- 无信息量）。
 
     add_includedirs("src", {public = true})
 

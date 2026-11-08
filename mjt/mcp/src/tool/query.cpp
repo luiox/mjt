@@ -903,36 +903,67 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
     if (name == "search" &&
         arguments.value("kind", std::string{}) == "shadow") {
         //shadow 双向查询（search kind=shadow）：direction=shadow_to_raw（缺省）
-        //= 显示名 → 真名，raw_to_shadow = 真名 → 显示名。sidecar 缺省解析
-        //`<jar>.mjt-shadow`，`file` 参数显式覆盖。机械占位名跨类重号，命中返回
-        //列表。T2：matches[] 增发 `ref` 引用句柄（§2 形态，缺 token/手工名
-        //省略列）；shadow_to_raw 接受整串 Ref 输入（handle → 条目反查，四分类
-        //同名槽口径）；`owner` 过滤接受 ClassRef；symbol_kind 是符号种类过滤
-        //（search 的 kind 槽已被工具级选择器占用）。
+        //= 显示名 → 真名，raw_to_shadow = 真名 → 显示名。表加载序（shadow 落
+        //分析库）：工程会话绑定的 analysis.mjdb renames 覆盖层（真源；sidecar
+        //已退役为 openProjectSession 的一次性导入源），`file` 参数显式覆盖时
+        //读 sidecar 文件（诊断/对比面）。机械占位名跨类重号，命中返回列表。
+        //T2：matches[] 增发 `ref` 引用句柄（§2 形态，缺 token/手工名省略列）；
+        //shadow_to_raw 接受整串 Ref 输入（handle → 条目反查，四分类同名槽
+        //口径）；`owner` 过滤接受 ClassRef；symbol_kind 是符号种类过滤
+        //（search 的 kind 槽已被工具级选择器占用）。`tsv_path` 非空时整表导
+        //出 TSV（表序：kind/owner/name/desc/shadow/token 六列 + 表头）。
         const auto lookupName  = arguments.value("name", std::string{});
         const auto fileArg     = arguments.value("file", std::string{});
+        const auto tsvPath     = arguments.value("tsv_path", std::string{});
         const auto ownerFilter = arguments.value("owner", std::string{});
         const auto kindFilter  = arguments.value("symbol_kind", std::string{});
         const auto toRaw = arguments.value("direction", std::string{"shadow_to_raw"}) ==
                            "shadow_to_raw";
-        if (lookupName.empty()) return toolError("name must be a non-empty string");
-        const auto sidecarPath =
-            fileArg.empty() ? mjt::resolveShadowPath(current->sourcePath().to_std_string(), "") : fileArg;
-        std::error_code fsError;
-        if (!std::filesystem::exists(sidecarPath, fsError)) {
-            return toolError("shadow sidecar not found: " + sidecarPath +
-                             " (generate it with `mjt shadow -i <jar>`)");
+        const auto slots = slot::loadWorkspaceShadowTable(*current, fileArg);
+        if (!slots.present) {
+            return toolError("shadow table not available: " + slots.note);
         }
-        auto sidecar = mjbase::mapping::readShadowAliasFile(
-            ca::str::Utf8StringRef::from_data(reinterpret_cast<const ca::u8*>(sidecarPath.data()),
-                                              sidecarPath.size()));
-        if (sidecar.is_err()) {
-            auto       err     = std::move(sidecar).unwrap_err();
-            const auto message = err.message.to_std_string();
-            return toolError("read shadow sidecar failed: " + message);
+        const auto& table = slots.table;
+        if (!tsvPath.empty()) {
+            //TSV 导出：调用方给定路径；覆盖写（导出面幂等重跑）。
+            std::string tsv = "kind\towner\tname\tdesc\tshadow\ttoken\n";
+            auto kindLabelOfTsv = [](mjbase::renamer::ShadowKind kind) {
+                switch (kind) {
+                case mjbase::renamer::ShadowKind::Class: return "class";
+                case mjbase::renamer::ShadowKind::Field: return "field";
+                case mjbase::renamer::ShadowKind::Method: return "method";
+                }
+                return "unknown";
+            };
+            ca::usize rows = 0;
+            for (const auto& entry : table.entries()) {
+                tsv += kindLabelOfTsv(entry.kind);
+                tsv += "\t";
+                tsv += std::string(entry.owner);
+                tsv += "\t";
+                tsv += std::string(entry.rawName);
+                tsv += "\t";
+                tsv += std::string(entry.desc);
+                tsv += "\t";
+                tsv += std::string(entry.shadowName);
+                tsv += "\t";
+                tsv += std::string(entry.token8);
+                tsv += "\n";
+                ++rows;
+            }
+            std::ofstream out(tsvPath, std::ios::binary | std::ios::trunc);
+            if (!out) return toolError("cannot open tsv output: " + tsvPath);
+            out.write(tsv.data(), static_cast<std::streamsize>(tsv.size()));
+            if (!out) return toolError("write tsv failed: " + tsvPath);
+            //name 可与 tsv_path 同时给（导出 + 查询一次往返）；name 空时只导出。
+            if (lookupName.empty()) {
+                return toolResult({{"file", slots.path},
+                                   {"tsv", {{"path", tsvPath}, {"rows", rows}}}});
+            }
         }
-        const auto table =
-            mjbase::renamer::ShadowAliasTable::fromMapping(std::move(sidecar).unwrap());
+        else if (lookupName.empty()) {
+            return toolError("name must be a non-empty string");
+        }
         std::vector<mjbase::renamer::ShadowAliasEntry> matches;
         mjbase::renamer::ShadowSlotResult              handleResult;
         auto handleEntry =
@@ -993,8 +1024,9 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
             if (!ref.empty()) match["ref"] = ref;
             values.push_back(std::move(match));
         }
-        return toolResult(
-            {{"file", sidecarPath}, {"count", values.size()}, {"matches", std::move(values)}});
+        Json body = {{"file", slots.path}, {"count", values.size()}, {"matches", std::move(values)}};
+        if (!tsvPath.empty()) body["tsv"] = {{"path", tsvPath}};
+        return toolResult(std::move(body));
     }
     return std::nullopt;
 }

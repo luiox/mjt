@@ -101,6 +101,21 @@ ca::Status validateDecompilerSettings(const DecompilerSessionSettings& settings)
     return ca::OkStatus();
 }
 
+namespace {
+///后端 → 会话设置里的产物路径字段（jcdcExe 为可执行文件路径，命名如实；
+///decompiler_jar 单次调用覆盖键保持既有名字，对 jcdc 承载同一「显式产物」语义）。
+const std::string& settingsArtifactFor(const DecompilerSessionSettings& settings,
+                                       DecompilerKind kind)
+{
+    switch (kind) {
+        case DecompilerKind::Cfr: return settings.cfrJar;
+        case DecompilerKind::Vineflower: return settings.vineflowerJar;
+        case DecompilerKind::Jcdc: return settings.jcdcExe;
+    }
+    return settings.cfrJar;
+}
+}   //namespace
+
 ca::Status parseDecompilerSettings(const Json& arguments,
                                    const DecompilerSessionSettings& current,
                                    DecompilerSessionSettings& output)
@@ -109,6 +124,7 @@ ca::Status parseDecompilerSettings(const Json& arguments,
     output.backend = arguments.value("backend", output.backend);
     output.cfrJar = arguments.value("cfr_jar", output.cfrJar);
     output.vineflowerJar = arguments.value("vineflower_jar", output.vineflowerJar);
+    output.jcdcExe = arguments.value("jcdc_exe", output.jcdcExe);
     output.javaProgram = arguments.value("java", output.javaProgram);
     output.timeoutMilliseconds = arguments.value("timeout_ms", output.timeoutMilliseconds);
     output.maxMemoryMiB = arguments.value("max_memory_mib", output.maxMemoryMiB);
@@ -134,9 +150,8 @@ ca::Status parseDecompilerOptions(const Json& arguments,
     if (validated.is_err()) return validated;
 
     options.kind          = kind.unwrap();
-    options.decompilerJar = arguments.value(
-        "decompiler_jar",
-        options.kind == DecompilerKind::Cfr ? settings.cfrJar : settings.vineflowerJar);
+    options.decompilerJar =
+        arguments.value("decompiler_jar", settingsArtifactFor(settings, options.kind));
     options.javaProgram   = effective.javaProgram;
     options.timeout       = std::chrono::milliseconds(effective.timeoutMilliseconds);
     options.maxMemoryMiB  = effective.maxMemoryMiB;
@@ -149,6 +164,7 @@ Json decompilerSettingsJson(const DecompilerSessionSettings& settings)
     return {{"backend", settings.backend},
             {"cfr_jar", settings.cfrJar},
             {"vineflower_jar", settings.vineflowerJar},
+            {"jcdc_exe", settings.jcdcExe},
             {"java", settings.javaProgram},
             {"timeout_ms", settings.timeoutMilliseconds},
             {"max_memory_mib", settings.maxMemoryMiB},
@@ -167,7 +183,10 @@ Json decompilerAvailabilityJson(const DecompilerAvailability& availability,
             {"java", availability.javaProgram},
             {"artifact_available", availability.artifactAvailable},
             {"java_available", availability.javaAvailable},
-            {"available", availability.artifactAvailable && availability.javaAvailable},
+            //jcdc（requiresJava=false）没有 Java 也能跑：可用性只看产物在不在。
+            {"available",
+             availability.artifactAvailable &&
+                 (availability.javaAvailable || !availability.requiresJava)},
             {"version", availability.version},
             {"unavailable_reason", availability.unavailableReason}};
 }
@@ -182,6 +201,8 @@ Json decompilerAvailabilityList(const DecompilerSessionSettings& settings)
                           settings.vineflowerJar,
                           settings.javaProgram),
         settings));
+    backends.push_back(decompilerAvailabilityJson(
+        inspectDecompiler(DecompilerKind::Jcdc, settings.jcdcExe, settings.javaProgram), settings));
     return backends;
 }
 
@@ -271,7 +292,7 @@ ca::StatusOr<DecompiledSource> decompileSnapshotClass(
     if (source.is_err()) return ca::Err(source.unwrap_err());
 
     return ca::Ok(DecompiledSource{internalName,
-                                   options.kind == DecompilerKind::Cfr ? "cfr" : "vineflower",
+                                   decompilerKindId(options.kind),
                                    std::move(decompiled).unwrap().decompilerJar,
                                    std::move(source).unwrap()});
 }

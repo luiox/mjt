@@ -10,6 +10,7 @@
 #include "tool/json.hpp"
 
 #include "mjbase/mapping/shadow_alias_format.hpp"
+#include "mjbase/renamer/shadow_alias_store.hpp"
 #include "workspace/i_workspace.hpp"
 
 namespace mjt::mcp::slot {
@@ -45,6 +46,24 @@ WorkspaceShadowTable loadWorkspaceShadowTable(mjt::workspace::IWorkspace& worksp
                                               const std::string& file)
 {
     WorkspaceShadowTable slots;
+    //DB 真源优先（shadow 落分析库）：workspace 绑定了分析库即从 renames 覆盖
+    //层整表还原——sidecar 退役为 openProjectSession 的一次性导入源，运行时
+    //不再读写 sidecar。`file` 显式覆盖仍走 sidecar 文件（诊断/对比面）。
+    if (file.empty()) {
+        if (auto* db = workspace.analysisDb(); db != nullptr) {
+            slots.path = "analysis.mjdb (project bundle)";
+            auto loaded = mjbase::renamer::loadShadowAliases(*db);
+            if (loaded.is_err()) {
+                slots.note = "invalid: load shadow aliases from analysis db failed: " +
+                             std::move(loaded).unwrap_err().message.to_std_string();
+                return slots;
+            }
+            slots.table   = std::move(loaded).unwrap();
+            slots.present = true;
+            return slots;
+        }
+    }
+    //未绑库（或显式 file）：sidecar 文件回退（旧工作流与无会话测试面）。
     slots.path = file.empty() ? mjt::resolveShadowPath(workspace.sourcePath().to_std_string(), "") : file;
     std::error_code fsError;
     if (!std::filesystem::exists(slots.path, fsError)) {
@@ -317,8 +336,10 @@ bool resolveClassUriArgument(mjt::workspace::IWorkspace& workspace,
     const auto slots = loadWorkspaceShadowTable(workspace);
     if (!refShaped) {
         //raw：内部名核表（URI 归一），命中后原样透传（URI 契约零漂移）。
+        //空表（在场源无任何登记——DB 真源下无 shadow 工作流的常态）不核：
+        //与 resolveShadowSlot 对空表的 verifyRaw 跳过同口径，raw 直通。
         const auto internal = mjt::internalNameOfUri(input);
-        if (!slots.present) {
+        if (!slots.present || slots.table.size() == 0) {
             out = input;
             return true;
         }
@@ -326,7 +347,7 @@ bool resolveClassUriArgument(mjt::workspace::IWorkspace& workspace,
             error = slotError(mjbase::renamer::shadowSlotErrorCode(
                                   mjbase::renamer::ShadowSlotError::RawNotFound) +
                               std::string(": bare selector '") + input +
-                              "' is not registered in the loaded shadow sidecar; do not "
+                              "' is not registered in the loaded shadow table; do not "
                               "hand-type obfuscated names, fetch the reference with "
                               "raw_to_shadow");
             return false;
@@ -374,6 +395,207 @@ bool resolveJasmBodyArgument(const WorkspaceShadowTable& slots,
         return false;
     }
     out = result.raw;
+    return true;
+}
+
+namespace {
+
+///Json 字符串槽改写的取值/写回通用体：先拷出输入再解析（Json 引用失效
+///防御——解析产物可能别名输入串），成功后写回。
+bool rewriteClassValue(const WorkspaceShadowTable& slots, Json& value, Json& error)
+{
+    if (!value.is_string()) return true;
+    const auto input = value.get_ref<const std::string&>();
+    SlotName   resolved;
+    //verifyRaw=false：开放类名面（exceptions/catch type/owner 等）允许表外
+    //raw 直通——JDK 类等外部类型不因无 sidecar 登记而拒收。
+    if (!resolveClassSlot(slots, input, false, resolved, error)) return false;
+    value = std::move(resolved.raw);
+    return true;
+}
+
+bool rewriteDescriptorValue(const WorkspaceShadowTable& slots, Json& value, Json& error)
+{
+    if (!value.is_string()) return true;
+    std::string resolved;
+    if (!resolveDescriptorArgument(slots, value.get_ref<const std::string&>(), resolved, error))
+        return false;
+    value = std::move(resolved);
+    return true;
+}
+
+///成员名槽改写（owner/descHint 为同对象内已展开的值；raw 直通不核表）。
+bool rewriteMemberValue(const WorkspaceShadowTable& slots,
+                        const std::string&          ownerRaw,
+                        const std::string&          descHint,
+                        Json&                       value,
+                        Json&                       error)
+{
+    if (!value.is_string()) return true;
+    const auto input = value.get_ref<const std::string&>();
+    SlotName   resolved;
+    if (!resolveMemberSlot(slots, ownerRaw, input, descHint, false, resolved, error))
+        return false;
+    value = std::move(resolved.raw);
+    return true;
+}
+
+///handle 子对象（field_value 与指令的 handle / bootstrap_method）：
+///descriptor → Descriptor 槽；owner → Name 槽；name → 成员槽
+///（descHint = 同对象展开后的 descriptor）。
+bool rewriteHandleObject(const WorkspaceShadowTable& slots, Json& object, Json& error)
+{
+    if (!object.is_object()) return true;
+    if (object.contains("descriptor") &&
+        !rewriteDescriptorValue(slots, object.at("descriptor"), error))
+        return false;
+    if (object.contains("owner") && !rewriteClassValue(slots, object.at("owner"), error))
+        return false;
+    if (object.contains("name")) {
+        if (!rewriteMemberValue(slots,
+                                object.value("owner", std::string{}),
+                                object.value("descriptor", std::string{}),
+                                object.at("name"),
+                                error))
+            return false;
+    }
+    return true;
+}
+
+///field_value 常量树：kind=type 的 descriptor（裸内部类名 → Name 槽；ldc
+///类常量的 CP 名就是内部名）、kind=dynamic 的 descriptor（真描述符 →
+///Descriptor 槽）、kind=handle 的 owner+name+descriptor、handle/
+///bootstrap_method 子对象、bootstrap_arguments 递归。dynamic 的 name 是
+///linkage 字面量（新符号），不接成员槽。
+bool rewriteConstantValue(const WorkspaceShadowTable& slots, Json& value, Json& error)
+{
+    if (!value.is_object()) return true;
+    const auto kind = value.value("kind", std::string{});
+    if (value.contains("descriptor")) {
+        if (kind == "type") {
+            if (!rewriteClassValue(slots, value.at("descriptor"), error)) return false;
+        }
+        else if (!rewriteDescriptorValue(slots, value.at("descriptor"), error))
+            return false;
+    }
+    if (kind == "handle") {
+        if (value.contains("owner") && !rewriteClassValue(slots, value.at("owner"), error))
+            return false;
+        if (value.contains("name")) {
+            if (!rewriteMemberValue(slots,
+                                    value.value("owner", std::string{}),
+                                    value.value("descriptor", std::string{}),
+                                    value.at("name"),
+                                    error))
+                return false;
+        }
+    }
+    if (value.contains("handle") && !rewriteHandleObject(slots, value.at("handle"), error))
+        return false;
+    if (value.contains("bootstrap_method") &&
+        !rewriteHandleObject(slots, value.at("bootstrap_method"), error))
+        return false;
+    if (value.contains("bootstrap_arguments")) {
+        auto& arguments = value.at("bootstrap_arguments");
+        if (arguments.is_array()) {
+            for (auto& argument : arguments) {
+                if (!rewriteConstantValue(slots, argument, error)) return false;
+            }
+        }
+    }
+    return true;
+}
+
+///指令对象：owner 全类指令接 Name 槽；descriptor 按位置分槽——type/
+///ldc_type 是裸内部类名（Name 槽），field/method/multianewarray 等是真
+///描述符（Descriptor 槽）；name 仅 field/method 指令接成员槽——
+///ldc_dynamic/invokedynamic 的 name 是 call site linkage 字面量，不按成员
+///解析。handle/bootstrap_method 子对象同 field_value。
+bool rewriteInstructionValue(const WorkspaceShadowTable& slots, Json& value, Json& error)
+{
+    if (!value.is_object()) return true;
+    const auto kind = value.value("kind", std::string{"simple"});
+    if (value.contains("descriptor")) {
+        if (kind == "type" || kind == "ldc_type") {
+            if (!rewriteClassValue(slots, value.at("descriptor"), error)) return false;
+        }
+        else if (!rewriteDescriptorValue(slots, value.at("descriptor"), error))
+            return false;
+    }
+    if (value.contains("owner") && !rewriteClassValue(slots, value.at("owner"), error))
+        return false;
+    if ((kind == "field" || kind == "method") && value.contains("name")) {
+        if (!rewriteMemberValue(slots,
+                                value.value("owner", std::string{}),
+                                value.value("descriptor", std::string{}),
+                                value.at("name"),
+                                error))
+            return false;
+    }
+    if (value.contains("handle") && !rewriteHandleObject(slots, value.at("handle"), error))
+        return false;
+    if (value.contains("bootstrap_method") &&
+        !rewriteHandleObject(slots, value.at("bootstrap_method"), error))
+        return false;
+    return true;
+}
+
+}   //namespace
+
+bool resolveStructuredMutationRefs(const WorkspaceShadowTable& slots,
+                                   Json&                      args,
+                                   Json&                      error)
+{
+    if (!args.is_object()) return true;
+    //member_descriptor 全 kind 提升：add_field/add_method 的新成员类型描述符
+    //内嵌类名也是引用语义（member_name 的「新符号字面量」豁免不覆盖类型）。
+    if (args.contains("member_descriptor") &&
+        !rewriteDescriptorValue(slots, args.at("member_descriptor"), error))
+        return false;
+    if (args.contains("annotation_descriptor") &&
+        !rewriteDescriptorValue(slots, args.at("annotation_descriptor"), error))
+        return false;
+    if (args.contains("exceptions")) {
+        auto& exceptions = args.at("exceptions");
+        if (exceptions.is_array()) {
+            for (auto& item : exceptions) {
+                if (!rewriteClassValue(slots, item, error)) return false;
+            }
+        }
+    }
+    if (args.contains("try_catch_blocks")) {
+        auto& blocks = args.at("try_catch_blocks");
+        if (blocks.is_array()) {
+            for (auto& item : blocks) {
+                if (!item.is_object() || !item.contains("type")) continue;
+                if (!rewriteClassValue(slots, item.at("type"), error)) return false;
+            }
+        }
+    }
+    if (args.contains("field_value") &&
+        !rewriteConstantValue(slots, args.at("field_value"), error))
+        return false;
+    if (args.contains("instruction") &&
+        !rewriteInstructionValue(slots, args.at("instruction"), error))
+        return false;
+    if (args.contains("initial_instructions")) {
+        auto& instructions = args.at("initial_instructions");
+        if (instructions.is_array()) {
+            for (auto& item : instructions) {
+                if (!rewriteInstructionValue(slots, item, error)) return false;
+            }
+        }
+    }
+    if (args.contains("local_variables")) {
+        auto& variables = args.at("local_variables");
+        if (variables.is_array()) {
+            for (auto& item : variables) {
+                //signature 刻意不接（泛型 `<>` Descriptor 槽 fail-loud，v2 挂账）。
+                if (!item.is_object() || !item.contains("descriptor")) continue;
+                if (!rewriteDescriptorValue(slots, item.at("descriptor"), error)) return false;
+            }
+        }
+    }
     return true;
 }
 

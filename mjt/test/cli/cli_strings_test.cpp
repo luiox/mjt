@@ -126,7 +126,9 @@ TEST(MjtCliStringsTest, SkippedAccountingMatchesContainerClassification)
     // 尾斜杠条目容器剥尾斜杠登记 ClassResource（计数侧须按类计），大小写
     // 变体 `.CLASS` 双侧都不计，坏字节 .class 单侧计（不进骨架）——三者
     // 合计 skipped 恰为 1，任何一侧口径漂移都会翻成 2 / 0 / 负数。
-    // JarWriter 会丢弃尾斜杠条目名，语料走原始 zip 直写（writeRawZip）。
+    // JarWriter 对显式尾斜杠条目忽略内容（目录语义零字节）且写侧路径规范化
+    // 会折叠/拒写非常规名（mjbase#167），语料要求 `.class/` 携类字节原样
+    // 落盘——走原始 zip 直写（writeRawZip）。
     const std::vector<std::pair<std::string, std::vector<ca::u8>>> entries = {
         {"fixture/Words.class", cli_fixture::assembleWordsClass()},
         {"fixture/Trail.class/", cli_fixture::assembleWordsClass()},

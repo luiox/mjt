@@ -317,7 +317,8 @@ std::optional<BranchKeys> branchKeysFor(const std::string& tool,
             branch.supported = withCommon({"query", "match_mode", "case_sensitive",
                                            "include_classes", "role"});
         else if (kind == "shadow")
-            branch.supported = withCommon({"name", "owner", "direction", "symbol_kind", "file"});
+            branch.supported =
+                withCommon({"name", "owner", "direction", "symbol_kind", "file", "tsv_path"});
         else return std::nullopt;
         return branch;
     }
@@ -504,6 +505,13 @@ Json mutationJson(const MutationResult& mutation)
     for (const auto& reference : mutation.affectedReferences)
         references.push_back({{"kind", reference.kind.to_std_string()},
                               {"target", reference.target.to_std_string()}});
+    Json identity = {{"annotated", mutation.identity.annotated},
+                     {"migrated_classes", mutation.identity.migratedClasses},
+                     {"migrated_members", mutation.identity.migratedMembers},
+                     {"skipped", mutation.identity.skipped},
+                     {"attempted", mutation.identity.attempted},
+                     {"failed", mutation.identity.failed}};
+    if (!mutation.identityWarning.empty()) identity["warning"] = mutation.identityWarning;
     return {{"status", statusJson(shared::toCaStatus(mutation.status))},
             {"revision", mutation.revision},
             {"committed", mutation.committed},
@@ -511,7 +519,8 @@ Json mutationJson(const MutationResult& mutation)
             {"diagnostics", std::move(diagnostics)},
             {"byte_diffs", std::move(diffs)},
             {"affected_classes", std::move(classes)},
-            {"affected_references", std::move(references)}};
+            {"affected_references", std::move(references)},
+            {"identity", std::move(identity)}};
 }
 
 Json jarRepairJson(const JarRepairResult& repair)

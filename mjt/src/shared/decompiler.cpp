@@ -103,20 +103,56 @@ bool isProgramAvailable(const std::string& program)
 
 std::string decompilerName(DecompilerKind kind)
 {
-    return kind == DecompilerKind::Cfr ? "CFR" : "Vineflower";
+    //jcdc 按上游品牌小写书写；CFR / Vineflower 沿用既有展示名。
+    switch (kind) {
+        case DecompilerKind::Cfr: return "CFR";
+        case DecompilerKind::Vineflower: return "Vineflower";
+        case DecompilerKind::Jcdc: return "jcdc";
+    }
+    return "CFR";
 }
 
-//反编译器 JAR 发现：五层 fallback，优先级从高到低。
+//反编译器产物发现：五层 fallback，优先级从高到低。
 //1. --decompiler-jar 显式参数
-//2. MJT_CFR_JAR / MJT_VINEFLOWER_JAR 环境变量（按 kind 选择）
+//2. MJT_CFR_JAR / MJT_VINEFLOWER_JAR / MJT_JCDC_EXE 环境变量（按 kind 选择）
 //3. MJT_DECOMPILER_HOME 下的候选文件名（cfr 单候选；vineflower 两个候选，
-//因发布件有 fat 与非 fat 两种命名）
+//因发布件有 fat 与非 fat 两种命名；jcdc 是可执行文件，按平台取 jcdc.exe /
+//jcdc——带版本的发布件文件名由第 4 层扫描兜住）
 //4. mjt(.exe) 同级的 package 布局（mjt-mcp 发布包 / 开发树 artifact 目录）：
-//<exe_dir>/package 与 <exe_dir>/../package 按「前缀 + .jar」探测——发布件
-//文件名带版本（cfr-0.152.jar / vineflower-1.12.0.jar），固定名候选不中，
+//<exe_dir>/package 与 <exe_dir>/../package 按「前缀 + .jar」探测（jcdc 按
+//「前缀 jcdc + 可执行件规则」）——发布件
+//文件名带版本（cfr-0.152.jar / vineflower-1.12.0.jar / jcdc-v0.1.4-…），固定名候选不中，
 //故做目录扫描；按文件名字典序取首个命中保证确定性（-sources/-javadoc
 //附属 jar 除外，N5 守卫）
 //5. 都没命中时 jar 为空，probed 带全部已探测候选（调用方拼进报错文案）
+
+//反编译器 → 显式环境变量名（发现序第 2 层与「产物未找到」报错文案同一来源）。
+const char* decompilerEnvironmentVariable(DecompilerKind kind)
+{
+    switch (kind) {
+        case DecompilerKind::Cfr: return "MJT_CFR_JAR";
+        case DecompilerKind::Vineflower: return "MJT_VINEFLOWER_JAR";
+        case DecompilerKind::Jcdc: return "MJT_JCDC_EXE";
+    }
+    return "MJT_CFR_JAR";
+}
+
+//MJT_DECOMPILER_HOME 固定名候选（发现序第 3 层）。jcdc 是可执行文件：Windows
+//发布件带 .exe，其余平台发布件是无扩展名二进制；固定名假定用户已把发布件
+//落成 jcdc(.exe)，带版本文件名由第 4 层目录扫描兜住。
+std::vector<std::string> decompilerHomeCandidates(DecompilerKind kind)
+{
+    switch (kind) {
+        case DecompilerKind::Cfr: return {"cfr.jar"};
+        case DecompilerKind::Vineflower: return {"vineflower.jar", "vineflower-fat.jar"};
+        case DecompilerKind::Jcdc: break;
+    }
+#if defined(_WIN32)
+    return {"jcdc.exe"};
+#else
+    return {"jcdc"};
+#endif
+}
 
 std::string asciiLower(std::string text)
 {
@@ -134,6 +170,9 @@ std::string asciiLower(std::string text)
 std::string probeDecompilerJarDirectory(const fs::path& directory, DecompilerKind kind)
 {
     static constexpr const char* kExcludedSuffixes[] = {"-sources.jar", "-javadoc.jar"};
+    //Jcdc 不消费 JAR 探测（走 probeDecompilerExecutableDirectory）；防御性早退，
+    //避免可执行件扫描口径被误判成 .jar（kind 走错分支时宁可不命中）。
+    if (kind == DecompilerKind::Jcdc) return {};
     std::error_code error;
     if (!fs::is_directory(directory, error) || error) return {};
     const std::string prefix = kind == DecompilerKind::Cfr ? "cfr" : "vineflower";
@@ -166,6 +205,56 @@ std::string probeDecompilerJarDirectory(const fs::path& directory, DecompilerKin
     if (hits.empty()) return {};
     std::sort(hits.begin(), hits.end());
     //..\package 形态的目录归一（报错文案与命中路径可读，且与用户视角一致）。
+    return (directory / hits.front()).lexically_normal().string();
+}
+
+//jcdc 可执行文件单目录探测（与 probeDecompilerJarDirectory 同口径：前缀 + ASCII
+//小写比较、文件名字典序取首个命中）。
+//规则按平台分：Windows 发布件是 .exe（jcdc-v<version>-windows-*.exe），必须
+//后缀 .exe（同前缀的 .exe.sha256 等旁文件天然出局）；非 Windows 发布件是无
+//扩展名二进制（jcdc-v<version>-linux-amd64），做不了扩展名要求，改为排除
+//可能同前缀的校验和/文档/归档旁文件。
+std::string probeDecompilerExecutableDirectory(const fs::path& directory, DecompilerKind kind)
+{
+    if (kind != DecompilerKind::Jcdc) return {};
+    static constexpr const char* kExcludedSuffixes[] = {".jar",  ".md",    ".txt",
+                                                        ".sha256", ".sig", ".asc",
+                                                        ".zip",   ".json",  ".toml",
+                                                        ".yml",   ".yaml"};
+    std::error_code error;
+    if (!fs::is_directory(directory, error) || error) return {};
+    std::vector<std::string> hits;
+    for (fs::directory_iterator it(directory,
+                                   fs::directory_options::skip_permission_denied,
+                                   error),
+         end;
+         it != end && !error;
+         it.increment(error)) {
+        if (!it->is_regular_file(error)) continue;
+        const auto name = it->path().filename().string();
+        const auto lower = asciiLower(name);
+        //前缀 "jcdc" 且至少还有一字符（纯 "jcdc" 不是带版本的发布件文件名，
+        //归第 3 层固定名候选）。
+        if (lower.size() <= 4 || lower.rfind("jcdc", 0) != 0) continue;
+        bool excluded = false;
+        for (const auto* suffix : kExcludedSuffixes) {
+            const auto length = std::char_traits<char>::length(suffix);
+            if (lower.size() >= length &&
+                lower.compare(lower.size() - length, length, suffix) == 0) {
+                excluded = true;
+                break;
+            }
+        }
+        if (excluded) continue;
+#if defined(_WIN32)
+        //Windows 发布件恒为 .exe：同前缀无 .exe 后缀的文件（文档、裸二进制、
+        //`.exe.bak` 等）一律出局。
+        if (lower.size() < 8 || lower.compare(lower.size() - 4, 4, ".exe") != 0) continue;
+#endif
+        hits.push_back(name);
+    }
+    if (hits.empty()) return {};
+    std::sort(hits.begin(), hits.end());
     return (directory / hits.front()).lexically_normal().string();
 }
 
@@ -225,8 +314,7 @@ DecompilerJarDiscovery discoverDecompilerJarDetailed(const DecompileRequest& req
         return discovery;
     }
 
-    const char* variable =
-        request.kind == DecompilerKind::Cfr ? "MJT_CFR_JAR" : "MJT_VINEFLOWER_JAR";
+    const char* variable = decompilerEnvironmentVariable(request.kind);
     auto explicitPath = environment(variable);
     if (!explicitPath.empty()) {
         discovery.jar = explicitPath;
@@ -235,10 +323,7 @@ DecompilerJarDiscovery discoverDecompilerJarDetailed(const DecompileRequest& req
     }
 
     auto home = environment("MJT_DECOMPILER_HOME");
-    const std::vector<std::string> candidates =
-        request.kind == DecompilerKind::Cfr
-            ? std::vector<std::string>{"cfr.jar"}
-            : std::vector<std::string>{"vineflower.jar", "vineflower-fat.jar"};
+    const std::vector<std::string> candidates = decompilerHomeCandidates(request.kind);
     if (!home.empty()) {
         for (const auto& candidate : candidates) {
             auto path = fs::path(home) / candidate;
@@ -259,7 +344,9 @@ DecompilerJarDiscovery discoverDecompilerJarDetailed(const DecompileRequest& req
             const auto normalized = packageDirectory.lexically_normal();
             discovery.probed.push_back(normalized.string());
             if (discovery.jar.empty())
-                discovery.jar = probeDecompilerJarDirectory(normalized, request.kind);
+                discovery.jar = request.kind == DecompilerKind::Jcdc
+                                    ? probeDecompilerExecutableDirectory(normalized, request.kind)
+                                    : probeDecompilerJarDirectory(normalized, request.kind);
         }
         if (!discovery.jar.empty()) return discovery;
     }
@@ -783,6 +870,55 @@ std::string versionFromJarFileName(const std::string& jarPath)
     return versionFromJarFileName(fs::u8path(jarPath));
 }
 
+///@brief 可执行文件名版本回退（jcdc 等原生件无 MANIFEST 可读）。
+///
+///`-` 分段，首个「数字开头段」起取余串；`v` 前缀段（发布件
+///`jcdc-v0.1.4-windows-amd64.exe` 的 `v0.1.4`）剥掉 `v` 后同样成立，余串连
+///平台段一并保留（版本串随制品自述，宁全不截——与 JAR 文件名回退口径一致）。
+///无数字开头段（如固定名 `jcdc.exe`）→ 空串（词尾不冒充版本，交由调用方
+///以产物路径兜底展示）。
+std::string versionFromExecutableFileName(const std::string& executablePath)
+{
+    if (executablePath.empty()) return {};
+    //executablePath 持 discovery 结果（UTF-8 交付契约），显式 u8path 清扫。
+    const auto stem = fs::u8path(executablePath).stem().u8string();
+    std::size_t segment = 0;
+    while (segment < stem.size()) {
+        std::size_t head = segment;
+        if ((stem[head] == 'v' || stem[head] == 'V') && head + 1 < stem.size() &&
+            stem[head + 1] >= '0' && stem[head + 1] <= '9') {
+            ++head;
+        }
+        if (stem[head] >= '0' && stem[head] <= '9')
+            return trimVersionValue(stem.substr(head));
+        const auto next = stem.find('-', segment);
+        if (next == std::string::npos) break;
+        segment = next + 1;
+    }
+    return {};
+}
+
+///@brief jcdc `-cp` 实参归一（Windows 盘符绕行）。
+///
+///jcdc 上游把 classpath 固定按 `:` 切分（帮助文本亦写 colon-separated），
+///Windows 盘符绝对路径 `C:\foo\bar.jar` 会被切成 `C` 并以 "unsupported
+///source" 硬失败（rc=2，整请求炸）。故：不含冒号的路径原样透传（POSIX 绝对/
+///相对路径、已是相对路径的形态都走这条）；含冒号（Windows 盘符）的改写成
+///相对当前目录的路径（同盘可达时无冒号）；改写后仍含冒号（跨盘）或改写失败
+///返回空串——调用方丢弃 -cp，宁缺跨类型上下文不炸请求。子进程继承本进程
+///cwd（libca Command 无 cwd 覆盖面），相对路径解析口径与本函数一致。
+std::string jcdcClasspathArgument(const std::string& classPath)
+{
+    if (classPath.find(':') == std::string::npos) return classPath;
+    std::error_code error;
+    const auto       base = fs::current_path(error);
+    if (error) return {};
+    const auto relative = fs::relative(fs::u8path(classPath), base, error);
+    if (error || relative.empty()) return {};
+    const auto text = relative.u8string();
+    return text.find(':') == std::string::npos ? text : std::string{};
+}
+
 }   //namespace
 
 std::string decompilerJarVersion(const std::string& jarPath)
@@ -829,13 +965,19 @@ ca::StatusOr<DecompilerKind> parseDecompilerKind(const std::string& name)
 {
     if (name == "cfr") return ca::Ok(DecompilerKind::Cfr);
     if (name == "vineflower") return ca::Ok(DecompilerKind::Vineflower);
+    if (name == "jcdc") return ca::Ok(DecompilerKind::Jcdc);
     return ca::Err(shared::errStatus(ca::StatusCode::INVALID_ARGUMENT,
                                          "mjt.shared.err.unknown_decompiler", {name}));
 }
 
 const char* decompilerKindId(DecompilerKind kind) noexcept
 {
-    return kind == DecompilerKind::Cfr ? "cfr" : "vineflower";
+    switch (kind) {
+        case DecompilerKind::Cfr: return "cfr";
+        case DecompilerKind::Vineflower: return "vineflower";
+        case DecompilerKind::Jcdc: return "jcdc";
+    }
+    return "cfr";
 }
 
 DecompilerAvailability inspectDecompiler(DecompilerKind kind,
@@ -851,7 +993,10 @@ DecompilerAvailability inspectDecompiler(DecompilerKind kind,
     result.kind                = kind;
     result.id                  = decompilerKindId(kind);
     result.name                = decompilerName(kind);
-    result.environmentVariable = kind == DecompilerKind::Cfr ? "MJT_CFR_JAR" : "MJT_VINEFLOWER_JAR";
+    result.environmentVariable = decompilerEnvironmentVariable(kind);
+    //jcdc 是原生可执行文件（不经 JVM 启动）：Java 不是它的运行前提，仅作环境
+    //信息展示，不参与 available 判定与不可用原因拼装。
+    result.requiresJava        = kind != DecompilerKind::Jcdc;
     result.decompilerJar       = discoverDecompilerJar(request);
     result.javaProgram         = discoverJava(request);
     result.artifactAvailable   = !result.decompilerJar.empty() && isRegularFile(result.decompilerJar);
@@ -869,10 +1014,7 @@ DecompilerAvailability inspectDecompiler(DecompilerKind kind,
         if (envJar.empty()) {
             const auto home = environment("MJT_DECOMPILER_HOME");
             if (!home.empty()) {
-                const std::vector<std::string> candidates =
-                    kind == DecompilerKind::Cfr
-                        ? std::vector<std::string>{"cfr.jar"}
-                        : std::vector<std::string>{"vineflower.jar", "vineflower-fat.jar"};
+                const auto candidates = decompilerHomeCandidates(kind);
                 for (const auto& candidate : candidates) {
                     if (isRegularFile(fs::path(home) / candidate)) {
                         envHomeHit = true;
@@ -883,13 +1025,20 @@ DecompilerAvailability inspectDecompiler(DecompilerKind kind,
         }
         result.discoverySource = !envJar.empty() || envHomeHit ? "env" : "package_dir";
     }
-    //版本是 JAR 自报的展示字段：仅在产物确实存在时读取，尽力而为（内部回退
-    //文件名、失败返空），不影响 artifactAvailable/javaAvailable 判定。
-    if (result.artifactAvailable) result.version = decompilerJarVersion(result.decompilerJar);
-    if (!result.artifactAvailable) {
-        result.unavailableReason = result.name + " JAR was not found";
+    //版本是产物自报的展示字段：仅在产物确实存在时读取，尽力而为（JAR 走
+    //MANIFEST、jcdc 走可执行文件名、失败返空），不影响
+    //artifactAvailable/javaAvailable 判定。
+    if (result.artifactAvailable) {
+        result.version = kind == DecompilerKind::Jcdc
+                             ? versionFromExecutableFileName(result.decompilerJar)
+                             : decompilerJarVersion(result.decompilerJar);
     }
-    if (!result.javaAvailable) {
+    if (!result.artifactAvailable) {
+        result.unavailableReason =
+            result.name + (kind == DecompilerKind::Jcdc ? " executable was not found"
+                                                        : " JAR was not found");
+    }
+    if (result.requiresJava && !result.javaAvailable) {
         if (!result.unavailableReason.empty()) result.unavailableReason += "; ";
         result.unavailableReason += "Java executable was not found";
     }
@@ -957,10 +1106,12 @@ ca::StatusOr<DecompileResult> decompile(const DecompileRequest& request)
 
     auto discovery = discoverDecompilerJarDetailed(request);
     if (discovery.jar.empty() || !isRegularFile(discovery.jar)) {
-        const char* variable =
-            request.kind == DecompilerKind::Cfr ? "MJT_CFR_JAR" : "MJT_VINEFLOWER_JAR";
-        auto message = shared::trfStr("mjt.shared.err.decompiler_jar_missing",
-                                      {decompilerName(request.kind), variable});
+        const char* variable = decompilerEnvironmentVariable(request.kind);
+        auto message =
+            shared::trfStr(request.kind == DecompilerKind::Jcdc
+                               ? "mjt.shared.err.decompiler_exe_missing"
+                               : "mjt.shared.err.decompiler_jar_missing",
+                           {decompilerName(request.kind), variable});
         //报错文案列出全部已探测候选（按序），区分「没配」与「配了但文件不在」。
         if (!discovery.probed.empty()) {
             std::string probed;
@@ -1014,42 +1165,72 @@ ca::StatusOr<DecompileResult> decompile(const DecompileRequest& request)
         }
 
         std::vector<std::string> arguments;
-        //T3 stderr 根治参数化实验：显式声明子进程编码为 UTF-8（JDK17 重定向
-        //stdio 默认跟随平台，中文 Windows 为 GBK，诊断文案需 text_codec GBK
-        //恢复）。-Dfile.encoding 管 System.getProperty/文件 API 默认，
-        //-Dsun.{stdout,stderr}.encoding 管 System.out/err 重定向流编码。
-        //验证门槛：真实 cfr-0.152.jar / vineflower-1.12.0.jar 成功场景产物
-        //与不加参数逐字节一致（见 work/report_mcp_sweep1.md §T3）。
-        arguments.push_back("-Dfile.encoding=UTF-8");
-        arguments.push_back("-Dsun.stdout.encoding=UTF-8");
-        arguments.push_back("-Dsun.stderr.encoding=UTF-8");
-        arguments.push_back("-Xmx" + std::to_string(request.maxMemoryMiB) + "m");
-        arguments.push_back("-jar");
-        arguments.push_back(decompilerJar);
-        if (request.kind == DecompilerKind::Cfr) {
-            //子进程 argv 按 libca 全库 UTF-8 窄串纪律交付：u8string 与 契约
-            //同源（UTF-8 ACP 进程里 .string 同值，零漂移；GBK ACP 进程里不再
-            //ACP 再编码）。
-            arguments.push_back(actualInput.u8string());
-            arguments.push_back("--outputdir");
+        const bool jcdcInput = request.kind == DecompilerKind::Jcdc;
+        if (jcdcInput) {
+            //jcdc 是原生可执行文件：不经 JVM 启动，不消费 -D/-Xmax/-Xmx，
+            //maxMemoryMiB 对它无意义（请求层校验仍要求正值，保持两后端同一条
+            //输入纪律）。argv 形态 = 选项先行 + 输入（与 --help 示例一致，
+            //实测选项后置亦可，此处取示例形）。
+            arguments.push_back("-o");
+            //zip 输出已被上面 zip_output 检查拒（非 vineflower），generatedRoot
+            //恒为已创建目录 → jcdc 按输出根写包结构树（单 class 只写目标类一个
+            //文件、jar 写整树，与 CFR 口径一致）。
             arguments.push_back(generatedRoot.u8string());
-            //单 class 输入的跨类型上下文：--extraclasspath 指向原 jar。CFR 的
-            //选项值取下一 token，与 --outputdir 同区置于输入之后。
+            //恒传 --synthetic：jcdc 默认隐藏 synthetic/bridge 成员（仅类头留
+            //计数注释），与 CFR/Vineflower 全量成员口径不齐——mjt#62 的头号
+            //发现就是该静默面，产品面按全量对齐（口径已确认）。
+            arguments.push_back("--synthetic");
+            //单 class 跨类型上下文：-cp（上游按 ':' 分隔、不认 Windows 盘符，
+            //见 jcdcClasspathArgument；返回空则丢弃该参数宁缺不炸）。
             if (classInput && !request.classPath.empty()) {
-                arguments.push_back("--extraclasspath");
-                arguments.push_back(request.classPath);
+                const auto classpath = jcdcClasspathArgument(request.classPath);
+                if (!classpath.empty()) {
+                    arguments.push_back("-cp");
+                    arguments.push_back(classpath);
+                }
             }
+            arguments.push_back(actualInput.u8string());
         }
         else {
-            //vineflower 选项必须在 source 之前（--<option>=<value> 单 token
-            //等号形）：--add-external 挂原 jar 保单类反编译的跨类型上下文。
-            if (classInput && !request.classPath.empty())
-                arguments.push_back("--add-external=" + request.classPath);
-            arguments.push_back(actualInput.u8string());
-            arguments.push_back(zipOutput ? output.u8string() : generatedRoot.u8string());
+            //T3 stderr 根治参数化实验：显式声明子进程编码为 UTF-8（JDK17 重定向
+            //stdio 默认跟随平台，中文 Windows 为 GBK，诊断文案需 text_codec GBK
+            //恢复）。-Dfile.encoding 管 System.getProperty/文件 API 默认，
+            //-Dsun.{stdout,stderr}.encoding 管 System.out/err 重定向流编码。
+            //验证门槛：真实 cfr-0.152.jar / vineflower-1.12.0.jar 成功场景产物
+            //与不加参数逐字节一致（见 work/report_mcp_sweep1.md §T3）。
+            arguments.push_back("-Dfile.encoding=UTF-8");
+            arguments.push_back("-Dsun.stdout.encoding=UTF-8");
+            arguments.push_back("-Dsun.stderr.encoding=UTF-8");
+            arguments.push_back("-Xmx" + std::to_string(request.maxMemoryMiB) + "m");
+            arguments.push_back("-jar");
+            arguments.push_back(decompilerJar);
+            if (request.kind == DecompilerKind::Cfr) {
+                //子进程 argv 按 libca 全库 UTF-8 窄串纪律交付：u8string 与 契约
+                //同源（UTF-8 ACP 进程里 .string 同值，零漂移；GBK ACP 进程里不再
+                //ACP 再编码）。
+                arguments.push_back(actualInput.u8string());
+                arguments.push_back("--outputdir");
+                arguments.push_back(generatedRoot.u8string());
+                //单 class 输入的跨类型上下文：--extraclasspath 指向原 jar。CFR 的
+                //选项值取下一 token，与 --outputdir 同区置于输入之后。
+                if (classInput && !request.classPath.empty()) {
+                    arguments.push_back("--extraclasspath");
+                    arguments.push_back(request.classPath);
+                }
+            }
+            else {
+                //vineflower 选项必须在 source 之前（--<option>=<value> 单 token
+                //等号形）：--add-external 挂原 jar 保单类反编译的跨类型上下文。
+                if (classInput && !request.classPath.empty())
+                    arguments.push_back("--add-external=" + request.classPath);
+                arguments.push_back(actualInput.u8string());
+                arguments.push_back(zipOutput ? output.u8string() : generatedRoot.u8string());
+            }
         }
 
-        auto process = runProcess(discoverJava(request),
+        //jcdc 直接以发现的可执行文件为程序；JVM 后端走 discoverJava。
+        const std::string program = jcdcInput ? decompilerJar : discoverJava(request);
+        auto process = runProcess(program,
                                   arguments,
                                   request.timeout,
                                   request.cancellationRequested);
