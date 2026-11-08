@@ -10,6 +10,7 @@
 #include "tool/json.hpp"
 
 #include "mjbase/mapping/shadow_alias_format.hpp"
+#include "mjbase/renamer/shadow_alias_store.hpp"
 #include "workspace/i_workspace.hpp"
 
 namespace mjt::mcp::slot {
