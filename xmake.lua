@@ -125,10 +125,13 @@ add_requires("libca " .. LUIOX_LIBCA_VERSION, {configs = {modules = LUIOX_LIBCA_
 -- test 模块必须显式点名：test_helper 调用 ca::test::top_project_path()，
 -- 缺模块时链接期 undefined reference；包 on_load 按依赖闭包展开排序链接项。
 -- libjstr/libjzip/libjhasm 与 mjbase main 根 require 清单字面对齐（mjbase
--- 包词条按同清单声明，消费图版本不一致会实例分裂）。
+-- 包词条按同清单声明，消费图版本不一致会实例分裂）。libjstr 0.0.4 = 审计
+-- 修正 + UTF-16 码元桥；libjzip 0.0.5 = 零大小条目 adopt 空对齐与空负载
+-- DEFLATED 回空——两者随 mjbase 0.0.22（f55a5d4 根清单）对齐，先前根钉
+-- 0.0.3 与包链浮动版本的实例分裂自此合流。
 add_requires("libmcp 0.1.0")
-add_requires("libjstr 0.0.3")
-add_requires("libjzip 0.0.3")
+add_requires("libjstr 0.0.4")
+add_requires("libjzip 0.0.5")
 add_requires("libjclassfile 0.0.2")
 -- libjbc 走项目内联包定义（git 直连 + commit 锁，≥ mjbase 门控下界 0.4.22）：
 -- luiox-repo 的发布版落后于 mjbase 需要的面，且内联定义不吃 requireconfs，
@@ -171,10 +174,17 @@ includes("xmake/libca_rules.lua")
 -- fail-loud 属预期，临时库重建即愈）。
 -- 0.0.18 = jar 导入同名重复条目改末现保留（对齐 JVM 类加载口径，PR #160）+
 -- asm/remapper 注解递归畸形输入边界守卫（#158）；词条面无新增依赖。
--- 本行待升：jasm 保留原帧档 FrameMode（mjbase#190，pysdk apply 族 frame 档
--- 消费）随 luiox/mjbase#197 合并后的包词条发版——词条落定后本行 bump 到对
--- 应版本号（词条面无新增依赖）。
-add_requires("mjbase 0.0.18")
+-- 0.0.19 = 全程序方法可达闭包入分析库（schema v8→v9 fail-loud，closure 两新
+-- 表 + reachability_closure 计算与查询面，#159/#162，设计稿 #161；旧 v8 库
+-- fail-loud 属预期，临时库重建即愈）。
+-- 0.0.20 = 真改名身份迁移（AnalysisDb::migrateIdentities 单事务批量改写，
+-- shadow 落分析库的基座前提，#198）+ jasm validate 语义级 flag 规则库（#193）
+-- + libjstr 0.0.4 对齐（根 libjstr 钉版随升）。
+-- 0.0.21 = 台账事务身份迁移注记（LedgerTransaction::identity 可空注记随
+-- append 原子落账 + MemberRemapPlan 只读枚举面，#200）。
+-- 0.0.22 = jasm assemble 保留原帧档 FrameMode（mjbase#190/#197：pysdk apply
+-- 族 frame 档消费本档；词条面无新增依赖）。
+add_requires("mjbase 0.0.22")
 
 includes("test_helper")
 includes("mjt")

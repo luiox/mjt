@@ -34,7 +34,7 @@ libjstr、libjzip、libgarena、libjclassfile、libjstd、
 libjdk_finder、libjhasm；zlib / nlohmann_json 走
 [xrepo](https://xmake.io)。libjbc 走项目内联包定义（git 直连 + commit 锁，≥
 mjbase 门控下界）。字节码基座本体是 mjbase，经 luiox-repo 直连包消费
-（`add_requires("mjbase 0.0.18")`，包词条钉上游 main commit）。
+（`add_requires("mjbase 0.0.22")`，包词条钉上游 main commit）。
 
 ### 测试
 

@@ -26,7 +26,7 @@ xmake f -p windows          # use -p linux on Linux
 xmake build mjt-mcp
 ```
 
-Dependencies are pulled directly from[luiox-repo](https://github.com/luiox/luiox-repo): libca, libmcp, libjstr,libjzip, libgarena, libjclassfile, libjstd, libjdk_finder,libjhasm; zlib / nlohmann_json come from[xrepo](https://xmake.io). libjbc is defined as an in-repo inline package(git direct with a pinned commit, at or above the floor mjbase requires). The bytecode foundation itself is mjbase, pulled directly from luiox-repo (`add_requires("mjbase 0.0.18")`, pinned to an upstream main commit).
+Dependencies are pulled directly from[luiox-repo](https://github.com/luiox/luiox-repo): libca, libmcp, libjstr,libjzip, libgarena, libjclassfile, libjstd, libjdk_finder,libjhasm; zlib / nlohmann_json come from[xrepo](https://xmake.io). libjbc is defined as an in-repo inline package(git direct with a pinned commit, at or above the floor mjbase requires). The bytecode foundation itself is mjbase, pulled directly from luiox-repo (`add_requires("mjbase 0.0.22")`, pinned to an upstream main commit).
 
 ### Tests
 
