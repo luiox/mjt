@@ -959,12 +959,30 @@ void appendUniqueImpact(std::vector<ReferenceImpact>&    impacts,
 }
 
 /// @brief 受影响引用事实（mjbase ReferenceScan 直连面：direct 方法/字段/类型引用）。
+///
+/// 扫描作用域收敛到 diff 条目自身：References-from 查询只读类的自身字节，
+/// 与容器其余类无关——全容器 IR 会话建面把每次 dry_run 编辑押上 O(容器)
+/// 解析（大 jar 上 off 档相对 relaxed 门禁早退多出数十秒尾差，#80），抽
+/// diff 条目到临时容器再建索引后成本为 O(受影响条目)。同一字节扫出同一
+/// sourceClass，去重 + 终排序后输出与全容器口径逐条一致。
 std::vector<ReferenceImpact> collectImpacts(const model::ResourceContainer& container,
+                                            const std::vector<ByteDiff>&    diffs,
                                             const std::vector<ca::str::Utf8String>& classes)
 {
     try {
+        model::ResourceContainer        scope;
+        std::unordered_set<std::string> scopedUris;
+        for (const auto& diff : diffs) {
+            const auto uri = diff.uri.to_std_string();
+            if (!scopedUris.insert(uri).second) continue;
+            const auto* classResource =
+                ca::core::tag_cast::dyn_cast<const model::ClassResource>(container.getResource(uri));
+            if (classResource == nullptr) continue;   // 非 class 条目（MANIFEST 等）不进扫描
+            scope.addResource(uri, std::make_unique<model::ClassResource>(
+                                       locationText(*classResource), classResource->get()));
+        }
         ReferenceScan                   index;
-        index.build(container);
+        index.build(scope);
         std::vector<ReferenceImpact>    impacts;
         std::unordered_set<std::string> seen;
         for (const auto& owner : classes) {
@@ -3207,7 +3225,7 @@ MutationResult WorkspaceBase::validateJasm(ca::str::Utf8StringRef uriRef,
         result.status             = WorkspaceErrorInfo{};
         result.byteDiffs          = diffContainers(*working_, *candidate);
         result.affectedClasses    = utf8List(changedClassNames(*candidate, result.byteDiffs));
-        result.affectedReferences = collectImpacts(*candidate, result.affectedClasses);
+        result.affectedReferences = collectImpacts(*candidate, result.byteDiffs, result.affectedClasses);
         return result;
     }
     catch (const std::exception& exception) {
@@ -3290,7 +3308,7 @@ MutationResult WorkspaceBase::commit(std::unique_ptr<model::ResourceContainer> c
         if (appended.is_err()) return stateFailure(ledgerFailure("commit", std::move(appended).unwrap_err()));
 
         result.affectedClasses    = utf8List(changedClassNames(*candidate, result.byteDiffs));
-        result.affectedReferences = collectImpacts(*candidate, result.affectedClasses);
+        result.affectedReferences = collectImpacts(*candidate, result.byteDiffs, result.affectedClasses);
         redoHint_.clear();
         working_ = std::move(candidate);
         ++revision_;
@@ -3383,7 +3401,7 @@ MutationResult WorkspaceBase::validateClassBytes(ca::str::Utf8StringRef     uriR
         if (result.status.is_err()) return result;
         result.byteDiffs          = diffContainers(*working_, *candidate);
         result.affectedClasses    = utf8List(changedClassNames(*candidate, result.byteDiffs));
-        result.affectedReferences = collectImpacts(*candidate, result.affectedClasses);
+        result.affectedReferences = collectImpacts(*candidate, result.byteDiffs, result.affectedClasses);
         return result;
     }
     catch (const std::exception& exception) {
@@ -3456,7 +3474,7 @@ MutationResult WorkspaceBase::validateClassMutation(const ClassMutation&   mutat
         result.status             = WorkspaceErrorInfo{};
         result.byteDiffs          = diffContainers(*working_, *candidate);
         result.affectedClasses    = utf8List(changedClassNames(*candidate, result.byteDiffs));
-        result.affectedReferences = collectImpacts(*candidate, result.affectedClasses);
+        result.affectedReferences = collectImpacts(*candidate, result.byteDiffs, result.affectedClasses);
         return result;
     }
     catch (const std::exception& exception) {
@@ -3558,7 +3576,7 @@ MutationResult WorkspaceBase::replaceClassBytes(ca::str::Utf8StringRef     uriOr
         result.diagnostics        = std::move(diagnostics);
         result.byteDiffs          = diffContainers(*working_, *candidate);
         result.affectedClasses    = utf8List(changedClassNames(*candidate, result.byteDiffs));
-        result.affectedReferences = collectImpacts(*candidate, result.affectedClasses);
+        result.affectedReferences = collectImpacts(*candidate, result.byteDiffs, result.affectedClasses);
         return result;
     }
     catch (const std::exception& exception) {
@@ -3962,8 +3980,8 @@ ImpactAnalysis WorkspaceBase::analyzeRemap(const asm_remapper::MemberRemapPlan& 
         result.byteDiffs         = std::move(byteDiffs);
         const auto beforeClasses = utf8List(changedClassNames(*working_, result.byteDiffs));
         const auto afterClasses  = utf8List(changedClassNames(*candidate, result.byteDiffs));
-        result.beforeReferences  = collectImpacts(*working_, beforeClasses);
-        result.afterReferences   = collectImpacts(*candidate, afterClasses);
+        result.beforeReferences  = collectImpacts(*working_, result.byteDiffs, beforeClasses);
+        result.afterReferences   = collectImpacts(*candidate, result.byteDiffs, afterClasses);
         for (const auto& diff : result.byteDiffs) {
             const auto uriText = diff.uri.to_std_string();
             if (uriText.find(".class") == std::string::npos)
@@ -4048,7 +4066,7 @@ MutationResult WorkspaceBase::validatePipeline(const PipelineRequest& pipeline,
         if (result.status.is_err()) return result;
         result.byteDiffs          = std::move(byteDiffs);
         result.affectedClasses    = utf8List(changedClassNames(*candidate, result.byteDiffs));
-        result.affectedReferences = collectImpacts(*candidate, result.affectedClasses);
+        result.affectedReferences = collectImpacts(*candidate, result.byteDiffs, result.affectedClasses);
         return result;
     }
     catch (const std::exception& exception) {
@@ -4213,7 +4231,7 @@ WorkflowResult WorkspaceBase::runWorkflow(const WorkflowRequest& workflow,
             result.mutation.affectedClasses =
                 utf8List(changedClassNames(*candidate, result.mutation.byteDiffs));
             result.mutation.affectedReferences =
-                collectImpacts(*candidate, result.mutation.affectedClasses);
+                collectImpacts(*candidate, result.mutation.byteDiffs, result.mutation.affectedClasses);
             return result;
         }
         result.mutation = commit(std::move(candidate), std::move(diagnostics), request);
@@ -4490,7 +4508,7 @@ WorkflowCandidateCommitResult WorkspaceBase::commitWorkflowCandidateJar(
             result.mutation.affectedClasses =
                 utf8List(changedClassNames(*candidate, result.mutation.byteDiffs));
             result.mutation.affectedReferences =
-                collectImpacts(*candidate, result.mutation.affectedClasses);
+                collectImpacts(*candidate, result.mutation.byteDiffs, result.mutation.affectedClasses);
             return result;
         }
 
@@ -4589,7 +4607,7 @@ JarRepairResult WorkspaceBase::analyzeJarRepair(const JarRepairRequest& repair,
         result.mutation.affectedClasses =
             utf8List(changedClassNames(*candidate, result.mutation.byteDiffs));
         result.mutation.affectedReferences =
-            collectImpacts(*candidate, result.mutation.affectedClasses);
+            collectImpacts(*candidate, result.mutation.byteDiffs, result.mutation.affectedClasses);
         return result;
     }
     catch (const std::exception& exception) {
@@ -4686,7 +4704,7 @@ MutationResult WorkspaceBase::revertClass(ca::str::Utf8StringRef uriRef,
         result.diagnostics        = std::move(diagnostics);
         result.byteDiffs          = diffContainers(*working_, *candidate);
         result.affectedClasses    = utf8List(changedClassNames(*candidate, result.byteDiffs));
-        result.affectedReferences = collectImpacts(*candidate, result.affectedClasses);
+        result.affectedReferences = collectImpacts(*candidate, result.byteDiffs, result.affectedClasses);
         return result;
     }
     catch (const std::exception& exception) {
@@ -4764,7 +4782,7 @@ MutationResult WorkspaceBase::undo(const MutationRequest& request)
         result.exportable         = true;
         result.byteDiffs          = std::move(diffs);
         result.affectedClasses    = utf8List(changedClassNames(*working_, result.byteDiffs));
-        result.affectedReferences = collectImpacts(*working_, result.affectedClasses);
+        result.affectedReferences = collectImpacts(*working_, result.byteDiffs, result.affectedClasses);
         // undo 也改方法体：指纹按恢复后的字节落库（整类批量面）。
         recordMethodVersionsForEdit(result, nullptr);
         return result;
@@ -4805,7 +4823,7 @@ MutationResult WorkspaceBase::redo(const MutationRequest& request)
         result.exportable         = true;
         result.byteDiffs          = std::move(diffs);
         result.affectedClasses    = utf8List(changedClassNames(*working_, result.byteDiffs));
-        result.affectedReferences = collectImpacts(*working_, result.affectedClasses);
+        result.affectedReferences = collectImpacts(*working_, result.byteDiffs, result.affectedClasses);
         // redo 同 undo：指纹按重放后的字节落库（整类批量面）。
         recordMethodVersionsForEdit(result, nullptr);
         return result;

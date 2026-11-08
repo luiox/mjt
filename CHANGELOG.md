@@ -45,6 +45,13 @@
 
 ### Fixed
 
+- `edit_apply` `validation=off` 档耗时回归（#80）：off 档 dry_run/apply 的
+  受影响引用扫描不再重建全容器 IR 索引——References-from 查询只读受影响
+  条目的自身字节，扫描作用域收敛到本次 byte diff 条目后成本由 O(容器) 降
+  为 O(受影响条目)。大 jar 上 `jasm_diff` × `off` 不再比 relaxed（门禁
+  早退）慢一个数量级（33MB 样本曾确定性超客户端 30s deadline 且无诊断
+  输出）；`class_bytes` / `structured` × `off` 的同尾部同步受益。
+  `affected_references` 输出逐条不变。
 - `project_export` 导出保真（#74）：MANIFEST 无编辑时产物逐字节复制源条目
   （LF 行尾、续行折行、主属性段外尾随内容原样，不再被 CRLF 重序列化改写）；
   移除「检测到 `META-INF/versions/` 条目就自动注入 `Multi-Release: true`」
