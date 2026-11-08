@@ -667,7 +667,7 @@ ShadowSyncReport syncShadowAfterRemap(mjt::workspace::IWorkspace& workspace,
         report.present = true;
         report.path    = slots.path;
         report.warning = "shadow sync skipped: list classes failed: " +
-                         std::move(classes).unwrap_err().message.to_std_string();
+                         std::move(classes).unwrap_err().message;
         return report;
     }
     for (const auto& clazz : std::move(classes).unwrap()) {
