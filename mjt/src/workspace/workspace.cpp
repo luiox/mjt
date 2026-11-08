@@ -59,6 +59,7 @@
 #include "jzip/zip_io.hpp"
 #include "libca/zip/checksum.hpp"
 #include "analysis_edit.hpp"
+#include "analysis_edit_sync.hpp"
 #include "export_manifest.hpp"
 #include "class_mutation_service.hpp"
 #include "classfile_support.hpp"
@@ -3328,6 +3329,9 @@ MutationResult WorkspaceBase::commit(std::unique_ptr<model::ResourceContainer> c
         // 身份迁移（shadow 落分析库）：注记已随事务落账，库迁移失败同样
         // 不回滚编辑（可按注记反推补齐），披露在 identity。
         migrateIdentitiesForEdit(result, identity);
+        // 类事实增量同步（查询面 DB-first）：条目锚/类事实/引用切片追平工作
+        // 副本——在身份迁移之后（改名先迁行、同步再换锚），失败不回滚。
+        syncAnalysisDbForEdit(result);
         return result;
     }
     catch (const std::exception& exception) {
@@ -3343,6 +3347,16 @@ void WorkspaceBase::recordMethodVersionsForEdit(MutationResult&          result,
     classUris.reserve(result.byteDiffs.size());
     for (const ByteDiff& diff : result.byteDiffs) classUris.push_back(diff.uri.clone());
     result.methodVersions = recordMethodVersionsAfterEdit(*analysisDb_, *working_, classUris, focus);
+}
+
+void WorkspaceBase::syncAnalysisDbForEdit(MutationResult& result)
+{
+    if (analysisDb_ == nullptr || result.byteDiffs.empty()) return;
+    std::vector<ca::str::Utf8String> changedUris;
+    changedUris.reserve(result.byteDiffs.size());
+    for (const ByteDiff& diff : result.byteDiffs) changedUris.push_back(diff.uri.clone());
+    result.analysisSync =
+        syncAnalysisDbAfterEdit(*this, *analysisDb_, *working_, changedUris);
 }
 
 void WorkspaceBase::migrateIdentitiesForEdit(
@@ -4986,6 +5000,9 @@ MutationResult WorkspaceBase::undo(const MutationRequest& request)
         // 身份迁移反向（undo 不走 commit——头指针回退）：被撤销事务的身份注记
         // 整体倒置（类/成员新旧互换，member owner 经批内类映射回译）。
         migrateIdentitiesForEdit(result, reversedIdentitySpecs(txn->identity));
+        // 类事实增量同步（undo 对称）：恢复后字节追平库事实（条目锚回滚是
+        // sha 锚命中——旧行原地复活，entry id 不漂移）。
+        syncAnalysisDbForEdit(result);
         return result;
     }
     catch (const std::exception& exception) {
@@ -5029,6 +5046,8 @@ MutationResult WorkspaceBase::redo(const MutationRequest& request)
         recordMethodVersionsForEdit(result, nullptr);
         // 身份迁移前向重放（redo 目标事务的注记原序）。
         migrateIdentitiesForEdit(result, txn->identity);
+        // 类事实增量同步（redo 对称，与 commit/undo 同一挂点纪律）。
+        syncAnalysisDbForEdit(result);
         return result;
     }
     catch (const std::exception& exception) {

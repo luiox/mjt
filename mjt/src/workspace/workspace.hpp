@@ -407,6 +407,11 @@ private:
     ///        @p result.identity。
     void migrateIdentitiesForEdit(MutationResult& result,
                                   const std::vector<project::LedgerIdentityRename>& specs);
+    /// @brief 提交锚点的类事实增量同步挂点：受影响类的条目锚/类事实/引用
+    ///        切片追平工作副本（analysis_edit_sync）。在身份迁移之后执行
+    ///        （改名先迁行、同步再换锚）；失败不回滚编辑，结果回填
+    ///        @p result.analysisSync。
+    void syncAnalysisDbForEdit(MutationResult& result);
     /// @brief remap 计划 → 身份注记（类映射 + 字段/方法规则；无描述符规则
     ///        按工作副本同名成员解析为逐重载规格）。类规格先于成员规格
     ///        （migrateIdentities 的处理序契约：成员 owner 是类规格先行后的

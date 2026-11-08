@@ -797,13 +797,13 @@ TEST(McpServerTest, ShadowAliasQueriesResolveBothDirections)
     std::filesystem::remove(sidecarPath, sidecarRemoveError);
 }
 
-///kind=classes DB-first 的回落纪律（查询面换轨）：干净会话（revision==0）
-///走 analysis.db；会话内一旦发生编辑（类事实滞后于工作副本）即回落引擎
-///扫描。分歧载具 = 真改名（mapping 漏斗）：条目搬家 mcp/Subject.class →
-///mcp/RenamedSubject.class，库内 internal_name 随身份迁移更新而条目 path
-///未随编辑同步——引擎扫描答新名 + 新条目路径，滞后的库会答旧 resource_uri；
-///DB 路径若不回落即翻车。
-TEST(McpServerTest, SearchClassesFallsBackToWorkingCopyAfterEdits)
+///kind=classes DB-first 的编辑会话保鲜（查询面换轨 + 编辑增量同步）：编辑
+///后不回落引擎扫描——commit 挂 analysis_edit_sync 把受影响类的条目锚/类
+///事实/引用切片追平工作副本，DB 路径全程可用。分歧载具 = 真改名（mapping
+///漏斗）：条目搬家 mcp/Subject.class → mcp/RenamedSubject.class，库内
+///internal_name 随身份迁移更新、条目锚靠增量同步换新——若同步缺席，DB
+///路径会答旧 resource_uri（此断言即翻车）。
+TEST(McpServerTest, SearchClassesStaysFreshAfterEditsViaIncrementalSync)
 {
     McpSessionHarness server;
     const auto fixture = writeFixture();
@@ -811,7 +811,7 @@ TEST(McpServerTest, SearchClassesFallsBackToWorkingCopyAfterEdits)
     ASSERT_FALSE(opened.at("result").at("isError"));
     const auto projectId = payload(opened).at("project_id").get<std::string>();
 
-    //干净会话：exact 查 Subject 一命中（此档走 analysis.db 路径）。
+    //干净会话：exact 查 Subject 一命中（analysis.db 路径，开期导入态）。
     const auto before = call(server,
                              "search",
                              {{"project_id", projectId},
@@ -823,7 +823,7 @@ TEST(McpServerTest, SearchClassesFallsBackToWorkingCopyAfterEdits)
     EXPECT_EQ("mcp/Subject", payload(before).at("items").at(0).at("class"));
     EXPECT_EQ("mcp/Subject.class", payload(before).at("items").at(0).at("resource_uri"));
 
-    //真改名（mapping）：工作副本条目路径随类名搬家，revision 递增。
+    //真改名（mapping）：工作副本条目路径随类名搬家，commit 增量同步换锚。
     const std::string mapping = "tiny\t2\t0\tintermediary\tnamed\n"
                                 "c\tmcp/Subject\tmcp/RenamedSubject\n";
     const auto edited = call(server,
@@ -836,8 +836,11 @@ TEST(McpServerTest, SearchClassesFallsBackToWorkingCopyAfterEdits)
                               {"expected_revision", 0}});
     ASSERT_FALSE(edited.at("result").at("isError")) << edited.dump();
     EXPECT_TRUE(payload(edited).at("committed"));
+    EXPECT_FALSE(payload(edited).at("analysis_sync").at("failed").get<bool>());
+    EXPECT_GE(payload(edited).at("analysis_sync").at("classes").get<unsigned>(), 1U);
 
-    //回落引擎扫描：新名可见且 resource_uri 是搬后的条目路径，旧名消失。
+    //DB 路径答新态：新名可见且 resource_uri 是搬后的条目路径（增量同步换锚
+    //的精确验收点），旧名消失。
     const auto afterNew = call(server,
                                "search",
                                {{"project_id", projectId},

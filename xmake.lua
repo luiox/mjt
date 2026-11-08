@@ -204,7 +204,12 @@ includes("xmake/libca_rules.lua")
 -- ASCII 折叠与扫描面同口径 + GLOB/= 字节档）、owner/packagePrefix 作用域、
 -- (path, internal_name) BINARY 行序、页附 total。消费方 = search
 -- kind=classes DB-first 接线（干净会话走库，编辑会话回落引擎扫描）。
-add_requires("mjbase 0.0.24")
+-- 0.0.25 = analysis_db 类头引用切片替换（PR #204）：replaceReferencesFromClass
+-- ——按类头切片替换引用行（super/interfaces 等 Type 引用），batchId 锚与
+-- ingestClasses 同 (2, class_id)。消费方 = 编辑增量同步 analysis_edit_sync
+-- 的逐类引用切片写入（commit/undo/redo 后类事实/条目锚/引用切片追平工作
+-- 副本，search kind=classes DB-first 解除干净会话守卫）。
+add_requires("mjbase 0.0.25")
 
 includes("test_helper")
 includes("mjt")

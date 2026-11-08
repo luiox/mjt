@@ -624,16 +624,17 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         SearchOptions options;
         std::string parseError;
         if (!parseSearchOptions(arguments, options, parseError)) return toolError(parseError);
-        //kind=classes DB-first（#121 查询面换轨）：干净会话（revision==0，
-        //工作副本 == open 期整库导入态）且 SQL 可表达档（contains/prefix/
-        //exact）时直接查 analysis_db——免工作副本全容器逐类解字节；库行序
-        //(path, internal_name) BINARY 即引擎命中行全序，不经客户端重排。
-        //回落引擎扫描的三种情形：本会话已编辑（类事实滞后于副本，增量同步
-        //是编辑批的活）、regex（SQLite 无原生等价）、query 边界态（空/超长
-        //走引擎同款校验报错，不在此重复口径）。
+        //kind=classes DB-first（#121 查询面换轨）：SQL 可表达档（contains/
+        //prefix/exact）直接查 analysis_db——免工作副本全容器逐类解字节；库
+        //行序 (path, internal_name) BINARY 即引擎命中行全序，不经客户端重排。
+        //编辑会话不再回落：commit/undo/redo 挂 analysis_edit_sync 增量同步，
+        //受影响类的条目锚/类事实/引用切片随编辑追平工作副本（早期版本以
+        //revision==0 收窄到干净会话，增量同步批解除）。回落引擎扫描的两种
+        //情形：regex（SQLite 无原生等价）、query 边界态（空/超长走引擎同款
+        //校验报错，不在此重复口径）。
         const bool classSearchFromDb =
             op == "search_classes" && matchMode != "regex" && !query.empty() &&
-            query.size() <= 1024 && current->revision() == 0 && session.analysisDb != nullptr;
+            query.size() <= 1024 && session.analysisDb != nullptr;
         std::vector<mjt::workspace::SearchHit> hitList;
         if (classSearchFromDb) {
             mjbase::project::DbClassSearchQuery dbQuery;

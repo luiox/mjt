@@ -203,6 +203,24 @@ struct IdentityMigrationStats final
     bool      failed          = false; ///< 库迁移失败（编辑不受影响，warning 披露）
 };
 
+/// @brief 编辑提交后的分析库增量同步统计（analysis_edit_sync）。
+///
+/// commit/undo/redo 在台账与身份迁移落定后，把受影响类的库事实追平工作副本
+/// （条目 sha 重锚 + 类事实 upsert 换锚 + 逐类引用切片替换），使编辑会话内
+/// 的 searchClassesPaged/census 可见域与引擎扫描一致。未绑定库、无字节差异
+/// 或库内无输入行时全零；落库失败不回滚编辑（open 期整库导入是兜底真源），
+/// failed 只作披露。
+struct AnalysisEditSyncStats final
+{
+    ca::usize entries       = 0;  ///< 参与重锚合并清单的活跃条目数
+    ca::usize classes       = 0;  ///< 类事实 upsert 的类数
+    ca::usize members       = 0;  ///< 类事实 upsert 随批登记的成员数
+    ca::usize references    = 0;  ///< 写入的引用行数（类头 + 方法体切片）
+    ca::usize slicesCleared = 0;  ///< 清空的引用切片数（编辑后消失的方法）
+    ca::usize skipped       = 0;  ///< 无输入行/非 class 条目/解码失败等跳过计数
+    bool      failed        = false; ///< 分析库写失败（编辑不受影响，开期导入兜底）
+};
+
 /// @brief 所有修改操作共用的稳定结果协议。
 ///
 /// status 为 Ok 时 committed/exportable/revision 才有意义；失败路径仍回填
@@ -222,6 +240,8 @@ struct MutationResult final
     IdentityMigrationStats             identity;
     /// identity.failed 时的诊断（库迁移错误消息；空 = 无失败）。
     std::string                        identityWarning;
+    /// 编辑后分析库增量同步（见 AnalysisEditSyncStats）。
+    AnalysisEditSyncStats              analysisSync;
 
     bool is_ok() const noexcept { return status.is_ok(); }
 };

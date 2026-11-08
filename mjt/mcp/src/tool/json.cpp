@@ -512,6 +512,19 @@ Json mutationJson(const MutationResult& mutation)
                      {"attempted", mutation.identity.attempted},
                      {"failed", mutation.identity.failed}};
     if (!mutation.identityWarning.empty()) identity["warning"] = mutation.identityWarning;
+    // 方法指纹版本与编辑增量同步的计数披露（落库失败不回滚编辑，靠响应面
+    // 可见；method_versions 随增量同步批一并补上历史缺档）。
+    Json methodVersions = {{"recorded", mutation.methodVersions.recorded},
+                           {"unchanged", mutation.methodVersions.unchanged},
+                           {"skipped", mutation.methodVersions.skipped},
+                           {"failed", mutation.methodVersions.failed}};
+    Json analysisSync = {{"entries", mutation.analysisSync.entries},
+                         {"classes", mutation.analysisSync.classes},
+                         {"members", mutation.analysisSync.members},
+                         {"references", mutation.analysisSync.references},
+                         {"slices_cleared", mutation.analysisSync.slicesCleared},
+                         {"skipped", mutation.analysisSync.skipped},
+                         {"failed", mutation.analysisSync.failed}};
     return {{"status", statusJson(shared::toCaStatus(mutation.status))},
             {"revision", mutation.revision},
             {"committed", mutation.committed},
@@ -520,7 +533,9 @@ Json mutationJson(const MutationResult& mutation)
             {"byte_diffs", std::move(diffs)},
             {"affected_classes", std::move(classes)},
             {"affected_references", std::move(references)},
-            {"identity", std::move(identity)}};
+            {"method_versions", std::move(methodVersions)},
+            {"identity", std::move(identity)},
+            {"analysis_sync", std::move(analysisSync)}};
 }
 
 Json jarRepairJson(const JarRepairResult& repair)

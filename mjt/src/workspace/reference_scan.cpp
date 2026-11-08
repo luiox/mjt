@@ -1,6 +1,7 @@
 #include "reference_scan.hpp"
 
 #include <algorithm>
+#include <unordered_set>
 
 #include "jbc/core/opcode.hpp"
 #include "jbc/ir/units.hpp"
@@ -49,10 +50,28 @@ bool isTypeOp(Op op)
 
 void ReferenceScan::build(const model::ResourceContainer& container)
 {
+    buildFiltered(container, nullptr);
+}
+
+void ReferenceScan::buildFor(const model::ResourceContainer&         container,
+                             const std::vector<ca::str::Utf8String>& uris)
+{
+    std::unordered_set<std::string_view> wanted;
+    wanted.reserve(uris.size());
+    for (const ca::str::Utf8String& uri : uris) {
+        wanted.emplace(reinterpret_cast<const char*>(uri.data()), uri.byte_length());
+    }
+    buildFiltered(container, &wanted);
+}
+
+void ReferenceScan::buildFiltered(const model::ResourceContainer&                container,
+                                  const std::unordered_set<std::string_view>*     filter)
+{
     methods_.clear();
     fields_.clear();
     types_.clear();
     container.visitResources([&](std::string_view uri, const model::IResource& resource) {
+        if (filter != nullptr && filter->find(uri) == filter->end()) return;
         const auto* classResource = ca::core::tag_cast::dyn_cast<const model::ClassResource>(&resource);
         if (!classResource) return;
         // 净化预检与 WorkspaceBase::validateCandidate 同口径：引用语义损坏的

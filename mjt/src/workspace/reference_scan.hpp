@@ -17,6 +17,7 @@
 #pragma once
 
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "libca/str/utf8_string.hpp"
@@ -114,6 +115,11 @@ public:
     /// @brief 扫描容器内全部 ClassResource；畸形 class 跳过（容错 CLI 纪律）。
     void build(const model::ResourceContainer& container);
 
+    /// @brief 过滤构建：只扫 @p uris 列出的 class 资源（编辑增量同步的受
+    ///        影响类切片）；未列出资源零触碰，扫描纪律与 build 同口径。
+    void buildFor(const model::ResourceContainer&         container,
+                  const std::vector<ca::str::Utf8String>& uris);
+
     /// 精确目标查询：编码目标为 owner/name/descriptor 的方法引用。
     std::vector<MethodReference> methodReferencesTo(const ca::str::Utf8StringRef& owner,
                                                     const ca::str::Utf8StringRef& name,
@@ -142,6 +148,9 @@ public:
     std::vector<TypeReference> typeReferencesFromClass(const ca::str::Utf8StringRef& owner) const;
 
 private:
+    /// 过滤扫描实现：@p filter 非空时只扫成员资源，空 = 全容器（build 委托）。
+    void buildFiltered(const model::ResourceContainer&            container,
+                       const std::unordered_set<std::string_view>* filter);
     std::vector<MethodReference> methods_;
     std::vector<FieldReference>  fields_;
     std::vector<TypeReference>   types_;
