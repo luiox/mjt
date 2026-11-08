@@ -460,10 +460,13 @@ JasmReport diffErrorReport(const std::string& error, ca::usize failedHunk)
 
 /// 方法级 patch 主体：source（全量）或 diff（相对 method_jasm 产物）定出
 /// 新方法文本 → 在类全文里恰好一处拼接 → 走 class 面 validate/apply。
+/// frameMode 缺省 Regenerate：validate 变体不暴露 frame 档（Python 面校验
+/// 无此 kwarg），走重生成档；apply 变体显式透传用户档位。
 JasmReport methodPatch(FacadeSession& s, const std::string& cls, const std::string& name,
                        const std::string& desc, const std::string& sourceName,
                        const std::string& source, const std::string& diff, bool apply,
-                       ValidationMode validation, FrameMode frameMode)
+                       ValidationMode validation,
+                       FrameMode frameMode = FrameMode::Regenerate)
 {
     const auto method = facadeMethodJasm(s, cls, name, desc);
 
