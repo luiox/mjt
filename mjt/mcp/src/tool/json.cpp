@@ -317,7 +317,8 @@ std::optional<BranchKeys> branchKeysFor(const std::string& tool,
             branch.supported = withCommon({"query", "match_mode", "case_sensitive",
                                            "include_classes", "role"});
         else if (kind == "shadow")
-            branch.supported = withCommon({"name", "owner", "direction", "symbol_kind", "file"});
+            branch.supported =
+                withCommon({"name", "owner", "direction", "symbol_kind", "file", "tsv_path"});
         else return std::nullopt;
         return branch;
     }
