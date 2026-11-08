@@ -96,13 +96,13 @@ TEST(MjtCliSmokeTest, InfoCommandReportsOverviewAndJson)
 
     const auto text = runCli("info -i \"" + jar.string() + "\"");
     EXPECT_EQ(text.exitCode, 0);
-    EXPECT_NE(text.output.find("entries: 9"), std::string::npos);
+    EXPECT_NE(text.output.find("entries: 5"), std::string::npos);   ///< mjbase#167 零目录占位
     EXPECT_NE(text.output.find("classes: 3"), std::string::npos);
     EXPECT_NE(text.output.find("manifest: absent"), std::string::npos);
 
     const auto json = runCli("info -i \"" + jar.string() + "\" --json");
     EXPECT_EQ(json.exitCode, 0);
-    EXPECT_NE(json.output.find("\"entries\": 9"), std::string::npos);
+    EXPECT_NE(json.output.find("\"entries\": 5"), std::string::npos);
     EXPECT_NE(json.output.find("\"has_manifest\": false"), std::string::npos);
 }
 
