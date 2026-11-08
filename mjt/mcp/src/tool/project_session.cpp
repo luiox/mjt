@@ -22,6 +22,7 @@
 
 #include "shared/shadow_display.hpp"
 #include "shared/status_convert.hpp"
+#include "workspace/analysis_db_heal.hpp"
 #include "workspace/analysis_ingest.hpp"
 
 //mask 出口状态完整类型：~ProjectSession 在此实例化 unique_ptr<MaskExitState>
@@ -356,6 +357,22 @@ ca::Status openProjectSession(const std::string&               jarPath,
         return analysisDbStatus(std::move(db).unwrap_err(), "open analysis db");
     session->analysisDb =
         std::make_unique<mjbase::project::AnalysisDb>(std::move(db).unwrap());
+    //身份迁移自愈（整库导入前）：bindLedgerStore 已把台账重放进工作副本，
+    //若上会话崩在「落账后、迁移前」窗内，库行名滞后于副本——先按注记补账
+    //再做按名 upsert 的导入，否则新名裂新 ID。对账撞名 = 真名冲突，
+    //fail-closed 拒开（宁停不裂）。常态（库与台账一致）全零开销幂等空转。
+    {
+        auto healed = mjt::workspace::healAnalysisDbIdentities(*session->workspace,
+                                                               *session->analysisDb);
+        if (healed.is_err()) {
+            const auto& failure = std::move(healed).unwrap_err();
+            return ca::ErrStatus(
+                failure.kind == mjt::workspace::AnalysisHealErrorKind::Workspace
+                    ? ca::StatusCode::INTERNAL
+                    : ca::StatusCode::DATA_LOSS,
+                "heal analysis db identities: " + failure.message);
+        }
+    }
     {
         auto ingested =
             mjt::workspace::ingestIntoAnalysisDb(*session->workspace, *session->analysisDb);

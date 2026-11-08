@@ -340,6 +340,14 @@ public:
     /// 台账事务号独立单调）。失败 = LedgerOpen 族错误（WorkspaceErrorInfo）。
     WorkspaceResult<void> bindLedgerStore(ca::str::Utf8StringRef bundleDir);
 
+    /// @brief head 链各事务的身份注记批次（chainTo(head) 序，只含非空批）。
+    ///
+    /// open 期自愈迁移的输入：bindLedgerStore 重放后，(锚, head] 区间每个携带
+    /// identity 注记的事务一组、按链序深拷贝返回。被 undo 出 head 或被 compact
+    /// 进基线的注记不在此列（前者本就不该生效，后者迁移效果已烤进库态）。
+    /// 纯内存台账（未绑定 bundle）恒返回空。
+    std::vector<std::vector<project::LedgerIdentityRename>> headIdentitySpecBatches() const;
+
     /// @brief 把 pending overlay 与台账事务落盘到绑定 bundle（无绑定 = no-op）。
     ///
     /// close/export 前的挂点：exportJar/exportClass 内部已前置调用。崩溃安全

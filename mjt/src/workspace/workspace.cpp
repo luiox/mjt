@@ -5423,6 +5423,25 @@ WorkspaceResult<void> WorkspaceBase::bindLedgerStore(ca::str::Utf8StringRef bund
     return ca::core::Ok();
 }
 
+std::vector<std::vector<project::LedgerIdentityRename>>
+WorkspaceBase::headIdentitySpecBatches() const
+{
+    std::vector<std::vector<project::LedgerIdentityRename>> batches;
+    //纯内存/基线态台账（head == base）无现役事务，天然空集；不抛错——
+    //自愈路径把"无事可补"当常态。
+    if (ledger_.headTxn() == ledger_.baseTxn()) return batches;
+    for (const ca::u64 step : ledger_.chainTo(ledger_.headTxn())) {
+        const auto* row = ledger_.transaction(step);
+        if (row == nullptr || row->identity.empty()) continue;
+        //LedgerIdentityRename move-only：逐条 clone 深拷贝出库。
+        std::vector<project::LedgerIdentityRename> batch;
+        batch.reserve(row->identity.size());
+        for (const auto& spec : row->identity) batch.push_back(spec.clone());
+        batches.push_back(std::move(batch));
+    }
+    return batches;
+}
+
 WorkspaceResult<void> WorkspaceBase::flushLedger()
 {
     auto flushed = ledger_.flush(project::rfc3339UtcNow());
