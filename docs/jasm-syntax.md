@@ -8,14 +8,14 @@
 
 | 环节 | 实现 |
 | --- | --- |
-| 解析（读侧） | libjhasm `Tokenizer` / `DeclarationParser` / `ASTProcessor`，二进制包 `libjhasm` 0.2.0（`get_lib_version()`），固定上游 revision `aacebfa`（`get_upstream_revision()`），头文件在 xmake 包目录 `include/jhasm/` |
+| 解析（读侧） | libjhasm `Tokenizer` / `DeclarationParser` / `ASTProcessor`，包 `libjhasm` 0.3.3（根 `xmake.lua` 钉定），固定上游 revision `aacebfa`（`get_upstream_revision()`） |
 | 规范化输出（写侧） | libjhasm `JvmPrinter::print`（契约：将 classfile bytes 打印为可重新汇编的规范化 Jasm） |
 | mjbase 门面 | `JvmJasmService::assemble` / `disassemble` / `disassembleMethod` / `validate`（mjbase `mjbase/jasm/jvm_jasm_service.cpp`，转调 `jhasm::assemble` / `jhasm::disassemble`） |
 | 转义原语 | libjhasm `util::EscapeUtil`（`escape_string` / `escape_literal` / `unescape`） |
 | mjt 显示层 | mjbase `IdentifierUtil::printReadable` / `needEscape` / `escapeUnicode` / `unescapeUnicode`（mjbase `mjbase/mapping/identifier_util.cpp`） |
 | 测试 | `unittest/jhasm/`（37 个用例），fixtures 在 `unittest/jhasm/test_resource/jasm/` |
 
-除引用实现外，本文的转义与规范化结论均经探针程序（链接 libjhasm 二进制，编译 fixture 与构造源码后取 `JvmPrinter` 输出与 classfile 常量池字节）实证，第 8 节标注了未能实证的存疑点。
+除引用实现外，本文的转义与规范化结论均经探针程序（链接 libjhasm 二进制，编译 fixture 与构造源码后取 `JvmPrinter` 输出与 classfile 常量池字节）实证，第 8 节标注了未能实证的存疑点。libjhasm 实现已随本组织开源（github.com/luiox/libjhasm），转义与规范化条目另对照其主线源码（`util/escape_util.cpp`）复核；探针结论与源码不一致处按源码更新。
 
 ## 2 词法：字符集与转义
 
@@ -39,9 +39,9 @@ Token 分六类（`jhasm::parser::TokenType`）：`Number`（整数/浮点，含
 
 ### 2.5 写侧：规范化输出的转义
 
-标识符位置（`EscapeUtil::escape_literal`，"按 Jasm identifier literal 规则转义"）：反斜杠写为 `\\`；NUL、空格、逗号写为 `\u0000`、`\u0020`、`\u002C`（十六进制大写，单测向量 `LiteralEscapeCoversSeparatorsNulAndSupplementaryCharacters`）；其余字符原样 UTF-8 输出，**非 ASCII 不转义**（探针实证：é 字段名打印为原文 é）。十六进制一律大写 `%04X` 风格。
+标识符位置（`EscapeUtil::escape_literal`，"按 Jasm identifier literal 规则转义"，源码 `util/escape_util.cpp` 自证）：反斜杠与两种引号写为 `\\` `\"` `\'`；空格、逗号、点、冒号、花括号及控制/不可见码位区段（NUL–0x1F、0x7F–0x9F、NBSP 0x00A0、全角空格 0x3000、私有区 0xE000–0xF8FF 等 13 段）写为 `\uXXXX`（十六进制大写 `%04X` 风格，单测向量 `LiteralEscapeCoversSeparatorsNulAndSupplementaryCharacters`）；孤立代理单元转 `\uXXXX`；其余字符（含成对增补平面代理、可显示非 ASCII 如 é）原样 UTF-8 输出。
 
-字符串位置（`EscapeUtil::escape_string`）：换行写为 `\u000A`（不用 `\n` 短形式，探针实证）、双引号写为 `\"`、反斜杠写为 `\\`；空格、逗号、花括号、冒号及一切非 ASCII 原样（探针实证 `ldc "a b,c{d}e:f\u000Ag\"h\\i"` 的重打印形态）。
+字符串位置（`EscapeUtil::escape_string`）：换行写为 `\u000A`（不用 `\n` 短形式，探针实证）、双引号写为 `\"`、反斜杠写为 `\\`；控制/不可见区段与 NBSP/全角空格同 literal 侧转 `\uXXXX`；空格、逗号、点、花括号、冒号及其余可显示非 ASCII 原样（探针实证 `ldc "a b,c{d}e:f\u000Ag\"h\\i"` 的重打印形态）。
 
 ### 2.6 mjbase 显示层：展示用激进转义
 
@@ -128,7 +128,7 @@ AI 生成 Jasm 时：可安全直出的字符集是 0x21–0x7E（除 `\`）加�
 
 ### 4.1 常量加载
 
-`ldc` 承载全部非常量池简单形态：整数 `ldc 41`、long `ldc 50L`、float `ldc 100.0F`、double `ldc 0.03333333333333333D`、`ldc NaN` / `NaND` / `NaNF`、`ldc infinity` / `-infinity`、类常量 `ldc Ljava/lang/String;`、字符串 `ldc "Hello, World!"`、字符 `ldc 'e'`（各 fixture 实证；`NaN` 等价 `NaND`，见 `Example-nan.jasm`）。浮点最短可往返表示用 `%.9g`（float）与 `%.17g`（double）口径（mjbase `class_render.cpp` 的同源注释口径）。
+`ldc` 承载全部非常量池简单形态：整数 `ldc 41`、long `ldc 50L`、float `ldc 100.0F`、double `ldc 0.03333333333333333D`、`ldc NaN` / `NaND` / `NaNF`、`ldc infinity` / `-infinity`、类常量 `ldc Ljava/lang/String;`、字符串 `ldc "Hello, World!"`、字符 `ldc 'e'`（各 fixture 实证；`NaN` 等价 `NaND`，见 `Example-nan.jasm`）。浮点最短可往返表示用 `%.9g`（float）与 `%.17g`（double）口径（mjt `mjt/src/shared/class_render.cpp` 的同源注释口径）。
 
 condy（摘自 `Example-condy.jasm`）：
 
@@ -154,7 +154,7 @@ invokedynamic hello (Ljava/io/PrintStream;Ljava/lang/String;)V { invokestatic, E
 
 ### 4.4 其余操作数
 
-`iinc <var> <incr>`（`iinc 1 25`）；`multianewarray <desc> <dims>`（`multianewarray [[I 2`）；`anewarray [Ljava/lang/Object;`；`new` / `checkcast` / `instanceof` 后接类型 internal name；`wide` 按其背板指令展开（mjbase `class_render.cpp` 的 `operandText` 对 `Wide` 委派背板）。
+`iinc <var> <incr>`（`iinc 1 25`）；`multianewarray <desc> <dims>`（`multianewarray [[I 2`）；`anewarray [Ljava/lang/Object;`；`new` / `checkcast` / `instanceof` 后接类型 internal name；`wide` 按其背板指令展开（mjt `mjt/src/shared/class_render.cpp` 的 `operandText` 对 `Wide` 委派背板）。
 
 ### 4.5 switch
 
@@ -195,7 +195,7 @@ exceptions: {
 上游 checkout 为 `/d/WorkSpace/Jasm`（origin `jumanji144/Jasm`，revision `aacebfa`），Java 实现；我们的 libjhasm 是其 C++ 重写魔改版。
 
 1. **标识符反转义语义相反**：上游 `ASTIdentifier.literal()` 返回 `EscapeUtil.unescape(content())`，即源里 `\u0020` 求值为真空格；我们 `jhasm::ast::Identifier::literal()` 返回 token 原文，`\u0020` 进名字的就是这 6 个字符。上游 `docs/language/Syntax.md`"escape sequences will be turned into the respective character"对我方标识符不成立。
-2. **写侧标识符转义范围不同**：上游 `EscapeUtil.escapeLiteral` 转义空格、逗号、点、冒号、花括号、两种引号，外加一大片控制/不可见码位区段（`LITERAL_UNICODE_ESCAPE_RANGES`）与 NBSP/全角空格；我们实证转义 `\\` 与 NUL/空格/逗号，非 ASCII 与其余字符原样。逐字符完整对照未验证（见第 8 节）。
+2. **写侧标识符转义范围基本对齐**：我方 `escape_literal`（libjhasm 源码自证）同样转义空格、逗号、点、冒号、花括号、两种引号、反斜杠，外加同族控制/不可见码位区段与 NBSP/全角空格；我方额外转义孤立代理单元（上游对应行为未对照）。与上游 `LITERAL_UNICODE_ESCAPE_RANGES` 的逐字符区段完整对照仍未做（见第 8 节）。
 3. **写侧字符串换行形态不同**：上游 `escapeString` 用 `\n` 短形式；我们输出 `\u000A`。
 4. **mjbase 显示层为我方独有**：`needEscape` 的"非 ASCII 一律 `\uXXXX` 大写"清洗策略（2.6 节）在上游无对应物，是本仓保证"AI 必定可输出、显示无歧义"的口径。
 5. **读侧诊断显式化**：上游 `unescape` 对未知转义静默透传；我们 `EscapeUtil::unescape` 返回 `UnescapeError`（`TrailingBackslash` / `TruncatedUnicodeEscape` / `InvalidUnicodeEscape`）带 code unit 偏移。
@@ -212,7 +212,7 @@ exceptions: {
 
 存疑点（实现未验证/待确认）：
 
-- `escape_literal` 对点、冒号、花括号、引号及上游不可见区段是否转义：libjhasm 为二进制包，头文件未逐字符明示，现有单测向量只覆盖反斜杠/NUL/空格/逗号/补充平面字符；来自 classfile 的真名若含这些语法字符，canonical 形态待实验确认。
+- 与上游 `LITERAL_UNICODE_ESCAPE_RANGES` 的逐字符区段对照仍未做；来自 classfile 的真名若含不可见区段码位，canonical 形态以 libjhasm 源码区段表为准（`util/escape_util.cpp` 的 `kUnicodeRanges`）。
 - `lookupswitch` 助记符的读侧接受性与多目 canonical 行形态未实证（现有 fixture 均用 `tableswitch`，单目已证并入 `tableswitch`）。
 - 常量加载规范化的精确边界（哪些窄形式并入 `ldc`、`iconst_*` 之外的保留集）只抽样实证，未系统验证。
-- 读侧字符串 `\uXXXX` 的代理对区（`\uD800` 单独出现）行为未实证；mjbase 显示层已证按 WTF-8 解码（`identifier_util_test.cpp`），libjhasm 读侧未测。
+- 读侧字符串 `\uXXXX` 的代理对区（`\uD800` 单独出现）行为未单测实证；实现注释声称 unescape + modifiedUtf8 对孤立代理逐位还原 CESU-8 三字节形（libjhasm `escape_util.cpp`），mjbase 显示层已证按 WTF-8 解码（`identifier_util_test.cpp`）。

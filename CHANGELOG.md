@@ -42,6 +42,21 @@
   pysdk 侧批量导出通道）；`decompile` 反编译子进程超时的失败面（同步与
   async job 两个出口）附通道指引（`async=true` + `job_get` 轮询、方法级
   粒度、pysdk 通道）。仅超时路径写入，成功路径零变化。
+- `decompile` 新增实验后端 `jcdc`（第三后端）：原生可执行文件、不经 JVM，
+  Java 缺席不拦可用性——发现顺序 `MJT_JCDC_EXE` → `MJT_DECOMPILER_HOME` →
+  包目录可执行件扫描；argv 恒传 `--synthetic` 对齐全量成员口径。MCP
+  `decompile` 枚举、`project_info` 可用性清单与 CLI `--decompiler` 旗标
+  同步放开。
+- shadow 覆盖扩展（#85）：结构化编辑的嵌套引用槽接入 shadow 改写（成员/
+  注解/局部变量描述符、异常表类型、指令族 type/ldc_type/name、handle 与
+  bootstrap 递归；signature 刻意不接）；`rename_apply` / `mapping_apply`
+  落盘后 shadow sidecar 同步（raw 面跟随真名，shadow 名与 token8 不变），
+  响应附加 `shadow_sync` 字段，无 sidecar 零操作。
+- shadow 落分析库（#87）：`project_open` 接线 analysis `.mjdb`（ReadWrite
+  开库 + 当前工作副本整库导入 + 旧 sidecar 一次性导入；损坏 sidecar
+  fail-closed 拒开），DB 覆盖层为唯一真源；rename/mapping 真改名走身份
+  迁移（类/成员行改写，ID 与 renames 覆盖零触碰），undo/redo/restore 的
+  shadow 规格跨会话持久。
 
 ### Fixed
 
