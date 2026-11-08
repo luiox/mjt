@@ -797,5 +797,68 @@ TEST(McpServerTest, ShadowAliasQueriesResolveBothDirections)
     std::filesystem::remove(sidecarPath, sidecarRemoveError);
 }
 
+///kind=classes DB-first 的回落纪律（查询面换轨）：干净会话（revision==0）
+///走 analysis.db；会话内一旦发生编辑（类事实滞后于工作副本）即回落引擎
+///扫描。分歧载具 = 真改名（mapping 漏斗）：条目搬家 mcp/Subject.class →
+///mcp/RenamedSubject.class，库内 internal_name 随身份迁移更新而条目 path
+///未随编辑同步——引擎扫描答新名 + 新条目路径，滞后的库会答旧 resource_uri；
+///DB 路径若不回落即翻车。
+TEST(McpServerTest, SearchClassesFallsBackToWorkingCopyAfterEdits)
+{
+    McpSessionHarness server;
+    const auto fixture = writeFixture();
+    const auto opened  = call(server, "project_open", {{"path", fixture.string()}});
+    ASSERT_FALSE(opened.at("result").at("isError"));
+    const auto projectId = payload(opened).at("project_id").get<std::string>();
+
+    //干净会话：exact 查 Subject 一命中（此档走 analysis.db 路径）。
+    const auto before = call(server,
+                             "search",
+                             {{"project_id", projectId},
+                              {"kind", "classes"},
+                              {"query", "mcp/Subject"},
+                              {"match_mode", "exact"}});
+    ASSERT_FALSE(before.at("result").at("isError")) << before.dump();
+    ASSERT_EQ(1U, payload(before).at("total").get<unsigned>());
+    EXPECT_EQ("mcp/Subject", payload(before).at("items").at(0).at("class"));
+    EXPECT_EQ("mcp/Subject.class", payload(before).at("items").at(0).at("resource_uri"));
+
+    //真改名（mapping）：工作副本条目路径随类名搬家，revision 递增。
+    const std::string mapping = "tiny\t2\t0\tintermediary\tnamed\n"
+                                "c\tmcp/Subject\tmcp/RenamedSubject\n";
+    const auto edited = call(server,
+                             "edit_apply",
+                             {{"project_id", projectId},
+                              {"kind", "mapping"},
+                              {"format", "Tiny-V2"},
+                              {"mapping_text", mapping},
+                              {"policy", "all"},
+                              {"expected_revision", 0}});
+    ASSERT_FALSE(edited.at("result").at("isError")) << edited.dump();
+    EXPECT_TRUE(payload(edited).at("committed"));
+
+    //回落引擎扫描：新名可见且 resource_uri 是搬后的条目路径，旧名消失。
+    const auto afterNew = call(server,
+                               "search",
+                               {{"project_id", projectId},
+                                {"kind", "classes"},
+                                {"query", "mcp/RenamedSubject"},
+                                {"match_mode", "exact"}});
+    ASSERT_FALSE(afterNew.at("result").at("isError")) << afterNew.dump();
+    ASSERT_EQ(1U, payload(afterNew).at("total").get<unsigned>());
+    EXPECT_EQ("mcp/RenamedSubject", payload(afterNew).at("items").at(0).at("class"));
+    EXPECT_EQ("mcp/RenamedSubject.class",
+              payload(afterNew).at("items").at(0).at("resource_uri"));
+
+    const auto afterOld = call(server,
+                               "search",
+                               {{"project_id", projectId},
+                                {"kind", "classes"},
+                                {"query", "mcp/Subject"},
+                                {"match_mode", "exact"}});
+    ASSERT_FALSE(afterOld.at("result").at("isError")) << afterOld.dump();
+    EXPECT_EQ(0U, payload(afterOld).at("total").get<unsigned>());
+}
+
 }   //namespace
 }   //namespace mjt::mcp

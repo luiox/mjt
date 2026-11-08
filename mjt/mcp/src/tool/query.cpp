@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <regex>
@@ -26,6 +27,7 @@
 #include "mjbase/mapping/shadow_alias_format.hpp"
 #include "mjbase/model/container_stack.hpp"
 #include "mjbase/model/resource_model.hpp"
+#include "mjbase/project/analysis_db.hpp"
 #include "mjbase/project/edit_ledger.hpp"
 #include "mjbase/project/project_store.hpp"
 #include "mjbase/renamer/shadow_alias.hpp"
@@ -622,22 +624,68 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         SearchOptions options;
         std::string parseError;
         if (!parseSearchOptions(arguments, options, parseError)) return toolError(parseError);
-        //结构化模式借道全量指令集（mjbase 拒绝空 query，单空格恒命中拼
-        //接文本），命中后再按结构化字段收紧。
-        auto hits =
-            op == "search_classes"
-                ? current->searchClasses(utf8Ref(query), options)
-                : op == "search_members"
-                      ? current->searchMembers(utf8Ref(query), options)
-                      : op == "search_strings"
-                            ? current->searchStrings(utf8Ref(query), options)
-                            : op == "search_numbers"
-                                  ? current->searchNumbers(utf8Ref(query), options)
-                                  : current->searchInstructions(
-                                        utf8Ref(structured ? std::string(" ") : query), options);
-        if (hits.is_err()) { const auto err = shared::toCaStatus(hits.unwrap_err()); return toolError("workspace search failed", &err); }
-        auto hitList = std::move(hits).unwrap();
-        //prefix 档在 mjt 侧收紧（contains 结果集恒为前缀命中的超集）。
+        //kind=classes DB-first（#121 查询面换轨）：干净会话（revision==0，
+        //工作副本 == open 期整库导入态）且 SQL 可表达档（contains/prefix/
+        //exact）时直接查 analysis_db——免工作副本全容器逐类解字节；库行序
+        //(path, internal_name) BINARY 即引擎命中行全序，不经客户端重排。
+        //回落引擎扫描的三种情形：本会话已编辑（类事实滞后于副本，增量同步
+        //是编辑批的活）、regex（SQLite 无原生等价）、query 边界态（空/超长
+        //走引擎同款校验报错，不在此重复口径）。
+        const bool classSearchFromDb =
+            op == "search_classes" && matchMode != "regex" && !query.empty() &&
+            query.size() <= 1024 && current->revision() == 0 && session.analysisDb != nullptr;
+        std::vector<mjt::workspace::SearchHit> hitList;
+        if (classSearchFromDb) {
+            mjbase::project::DbClassSearchQuery dbQuery;
+            dbQuery.needle       = ca::str::Utf8String::from_data_unchecked(
+                reinterpret_cast<const ca::u8*>(query.data()), query.size());
+            dbQuery.match        = matchMode == "exact" ? mjbase::project::DbTextMatchKind::Exact
+                             : matchMode == "prefix" ? mjbase::project::DbTextMatchKind::Prefix
+                                                     : mjbase::project::DbTextMatchKind::Contains;
+            dbQuery.caseSensitive = options.caseSensitive;
+            dbQuery.owner         = options.owner.clone();
+            dbQuery.packagePrefix = options.packagePrefix.clone();
+            //全量行（分页归 page() 统一口径：total/offset/cursor/投影在响应层，
+            //库侧窗口在此无增益）；LIMIT 上限取 i64 极值即「取尽」。
+            auto searched = session.analysisDb->searchClassesPaged(
+                dbQuery, std::numeric_limits<ca::i64>::max(), 0);
+            if (searched.is_err()) {
+                const auto failure = std::move(searched).unwrap_err();
+                const auto code    = failure.kind == mjbase::project::AnalysisDbErrorKind::Schema
+                                        ? ca::StatusCode::FAILED_PRECONDITION
+                                        : ca::StatusCode::INTERNAL;
+                const auto status  = ca::ErrStatus(
+                    code, "analysis db search failed: " + failure.message.to_std_string());
+                return toolError("analysis db search failed", &status);
+            }
+            auto page = std::move(searched).unwrap();
+            hitList.reserve(page.rows.size());
+            for (auto& row : page.rows) {
+                hitList.push_back({std::move(row.entryPath),
+                                   ca::str::Utf8String::from_cstr("class"),
+                                   row.internalName.clone(), {}, {}, -1,
+                                   std::move(row.internalName)});
+            }
+        }
+        else {
+            //结构化模式借道全量指令集（mjbase 拒绝空 query，单空格恒命中拼
+            //接文本），命中后再按结构化字段收紧。
+            auto hits =
+                op == "search_classes"
+                    ? current->searchClasses(utf8Ref(query), options)
+                    : op == "search_members"
+                          ? current->searchMembers(utf8Ref(query), options)
+                          : op == "search_strings"
+                                ? current->searchStrings(utf8Ref(query), options)
+                                : op == "search_numbers"
+                                      ? current->searchNumbers(utf8Ref(query), options)
+                                      : current->searchInstructions(
+                                            utf8Ref(structured ? std::string(" ") : query), options);
+            if (hits.is_err()) { const auto err = shared::toCaStatus(hits.unwrap_err()); return toolError("workspace search failed", &err); }
+            hitList = std::move(hits).unwrap();
+        }
+        //prefix 档在 mjt 侧收紧（contains 结果集恒为前缀命中的超集；DB 路径
+        //的 Prefix 档已是真前缀，收紧为无操作幂等）。
         if (matchMode == "prefix") {
             const bool caseSensitive = options.caseSensitive;
             const auto hasPrefix = [&](const std::string& text) {

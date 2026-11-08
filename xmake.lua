@@ -199,7 +199,12 @@ includes("xmake/libca_rules.lua")
 -- 头位脏跟踪使 undo-only 会话 flush 落换代。open 期身份自愈（#88）的 undo
 -- 方向对账前提——undo 后反迁移失败的库行名分歧，重开须工作副本停在 undo
 -- 位而非复活改名态，阶段二路径对账才有靶子。
-add_requires("mjbase 0.0.23")
+-- 0.0.24 = analysis_db 类文本搜索面（PR #203）：searchClassesPaged——活跃
+-- 锚类跨输入并集、internal_name/path 双面、contains/prefix/exact（LOWER
+-- ASCII 折叠与扫描面同口径 + GLOB/= 字节档）、owner/packagePrefix 作用域、
+-- (path, internal_name) BINARY 行序、页附 total。消费方 = search
+-- kind=classes DB-first 接线（干净会话走库，编辑会话回落引擎扫描）。
+add_requires("mjbase 0.0.24")
 
 includes("test_helper")
 includes("mjt")
