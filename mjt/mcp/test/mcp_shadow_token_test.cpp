@@ -366,8 +366,9 @@ TEST(McpShadowTokenTest, RawOrRefNeverFallThroughAtToolBoundary)
 TEST(McpShadowTokenTest, MissingSidecarHardErrorsReferencesButRawStaysZeroDrift)
 {
     //全新 fixture、无 sidecar：工程会话绑定的 analysis.mjdb renames 覆盖层为
-    //空表（在场源）——引用形状 → unknown-handle（有源无条目）；raw → 原样
-    //零漂移（空表跳过核表）。
+    //空表（在场源）——引用形状 → missing-sidecar（别名层整体无数据，引导
+    //生成；unknown-handle 是"表有条目但 token 不在"的语义，空表下误导）；
+    //raw → 原样零漂移（空表跳过核表）。
     const auto jar = uniqueFixtureJar();
     //复制路径可能残留上一轮运行的 sidecar，先清场保住"缺 sidecar"前提。
     std::error_code cleanupError;
@@ -377,8 +378,7 @@ TEST(McpShadowTokenTest, MissingSidecarHardErrorsReferencesButRawStaysZeroDrift)
 
     const auto reference =
         call(server, "class_query", {{"project_id", projectId}, {"kind", "class"}, {"class", "${Class_1.11111111}"}});
-    expectSlotError(reference, "unknown-handle", "raw-not-found", "empty db table");
-    expectSlotError(reference, "unknown-handle", "missing-sidecar", "empty db table");
+    expectSlotError(reference, "missing-sidecar", "unknown-handle", "empty db table");
 
     const auto raw =
         call(server, "class_query", {{"project_id", projectId}, {"kind", "class"}, {"class", "mcp/Subject"}});
@@ -386,21 +386,23 @@ TEST(McpShadowTokenTest, MissingSidecarHardErrorsReferencesButRawStaysZeroDrift)
     EXPECT_EQ("mcp/Subject", payload(raw).at("class"));
 
     //会话中写 sidecar 不再生效（sidecar 退役为 open 期一次性导入源；运行时
-    //真源是库）：引用仍按空库 unknown-handle，raw 仍零漂移。
+    //真源是库）：引用仍 missing-sidecar（空库，盘上 sidecar 不入会话），raw
+    //仍零漂移。
     {
         std::ofstream garbage(jar.string() + ".mjt-shadow", std::ios::binary);
         garbage << "{not-json";
     }
     const auto invalidRef =
         call(server, "class_query", {{"project_id", projectId}, {"kind", "class"}, {"class", "${Class_1.11111111}"}});
-    expectSlotError(invalidRef, "unknown-handle", "missing-sidecar", "mid-session sidecar");
+    expectSlotError(invalidRef, "missing-sidecar", "unknown-handle", "mid-session sidecar");
     const auto rawAfter = call(server,
                                "class_query",
                                {{"project_id", projectId}, {"kind", "class"}, {"class", "mcp/Subject"}});
     EXPECT_FALSE(rawAfter.at("result").at("isError")) << rawAfter.dump();
 
     //open 期损坏 sidecar = 数据损毁，fail-closed 拒开（删除/重建 sidecar 即解锁；
-    //静默丢弃用户的 shadow 名不可接受）。
+    //静默丢弃用户的 shadow 名不可接受）。open 工具面 error 字段是通用文案
+    //（"open project failed"），细节在 status.message。
     const auto blocked = uniqueFixtureJar();
     {
         std::ofstream garbage(blocked.string() + ".mjt-shadow", std::ios::binary);
@@ -408,8 +410,8 @@ TEST(McpShadowTokenTest, MissingSidecarHardErrorsReferencesButRawStaysZeroDrift)
     }
     const auto refused = call(server, "project_open", {{"path", blocked.string()}});
     ASSERT_TRUE(refused.at("result").at("isError").get<bool>()) << refused.dump();
-    const auto message = payload(refused).at("error").get<std::string>();
-    EXPECT_NE(std::string::npos, message.find("shadow sidecar")) << message;
+    const auto message = payload(refused).at("status").at("message").get<std::string>();
+    EXPECT_NE(std::string::npos, message.find("shadow sidecar")) << refused.dump();
 }
 
 TEST(McpShadowTokenTest, EscapedLiteralTakesRawPathNotHandlePath)
