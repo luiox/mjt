@@ -1045,7 +1045,8 @@ TEST(McpShadowTokenTest, StructuredNestedRefsExpandAcrossFieldMethodAndInstructi
     EXPECT_NE(std::string::npos, fieldText.find("Ldesc/Gift;")) << fieldText;
     EXPECT_EQ(std::string::npos, fieldText.find("${")) << fieldText;
 
-    //insert_instruction：指令的 owner/name/descriptor 三段全 handle 化。
+    //replace_method_body：initial_instructions 里指令的 owner/name/descriptor
+    //三段全 handle 化（首枚 invoke 三元组全 Ref，次枚保留 raw 对照）。
     const auto before = call(server,
                              "search",
                              {{"project_id", projectId},
@@ -1054,22 +1055,29 @@ TEST(McpShadowTokenTest, StructuredNestedRefsExpandAcrossFieldMethodAndInstructi
     ASSERT_FALSE(before.at("result").at("isError")) << before.dump();
     const auto beforeCount = payload(before).at("items").size();
     ASSERT_EQ(1U, beforeCount) << before.dump();
-    const auto inserted = call(server,
+    const auto replaced = call(server,
                                "edit_apply",
                                {{"project_id", projectId},
                                 {"kind", "structured"},
                                 {"class_uri", holderRef},
-                                {"mutation_kind", "insert_instruction"},
+                                {"mutation_kind", "replace_method_body"},
                                 {"member_name", useItRef},
                                 {"member_descriptor", "()V"},
-                                {"instruction_index", 0},
-                                {"insert_after", true},
-                                {"instruction", Json{{"kind", "method"},
-                                                     {"opcode", 184},
-                                                     {"owner", holderRef},
-                                                     {"name", takeRef},
-                                                     {"descriptor", "(L" + giftRef + ";)V"}}}});
-    ASSERT_FALSE(inserted.at("result").at("isError")) << inserted.dump();
+                                {"initial_instructions", Json::array(
+                                     {Json{{"kind", "simple"}, {"opcode", 1}},
+                                      Json{{"kind", "method"},
+                                           {"opcode", 184},
+                                           {"owner", holderRef},
+                                           {"name", takeRef},
+                                           {"descriptor", "(L" + giftRef + ";)V"}},
+                                      Json{{"kind", "simple"}, {"opcode", 1}},
+                                      Json{{"kind", "method"},
+                                           {"opcode", 184},
+                                           {"owner", "desc/Holder"},
+                                           {"name", "take"},
+                                           {"descriptor", "(Ldesc/Gift;)V"}},
+                                      Json{{"kind", "simple"}, {"opcode", 177}}})}});
+    ASSERT_FALSE(replaced.at("result").at("isError")) << replaced.dump();
     const auto after = call(server,
                             "search",
                             {{"project_id", projectId},
