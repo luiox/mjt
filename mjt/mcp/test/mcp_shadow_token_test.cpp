@@ -1442,13 +1442,9 @@ TEST(McpShadowTokenTest, ReopenHealsUndoDirectionDivergence)
     //基线（注记不在 head 链，阶段一无从补账）——重开只能靠阶段二的
     //entry 路径对账（条目 path → 副本现行名 ≠ 行名即补回位迁移）收口，
     //classId 全程不裂。本组 rename+undo 同会话进行：类行的条目锚仍是
-    //原路径 desc/Holder.class，阶段二可锚定。
-    //
-    //已知留档（实现缺口，另行报告）：若 undo 走「close → 重开 → undo」
-    //流，中间重开的整库导入会把类行条目锚换到改名后路径（desc/Box.class）；
-    //反迁移失败后阶段二在副本侧找不到该路径（按设计跳过），随后的按名
-    //upsert 会给旧名裂新行新 ID——该变体当前实现不自愈，故本组取同会话
-    //崩溃窗形态（undo 调用内迁移失败后 close 落账，重开对账回位）。
+    //原路径 desc/Holder.class，阶段二可锚定。「close → 重开 → undo」
+    //变体（行锚已被重开期导入挂到改名后路径）由阶段二二段兜底收口，见
+    //ReopenHealsUndoDivergenceAfterReopen。
     const auto jar    = uniqueDescriptorFixtureJar();
     const auto bundle = test::getTempOutPath("mjt_shadow_heal_undo_bundle");
     std::error_code ec;
@@ -1523,6 +1519,98 @@ TEST(McpShadowTokenTest, ReopenHealsUndoDirectionDivergence)
         ASSERT_TRUE(opened.is_ok());
         auto db       = std::move(opened).unwrap();
         auto holder   = db.findClass(dbRef("desc/Holder"));
+        ASSERT_TRUE(holder.is_ok());
+        auto holderInfo = std::move(holder).unwrap();
+        ASSERT_TRUE(holderInfo.has_value());
+        EXPECT_EQ(recordedClassId, holderInfo->classId);
+        auto boxed = db.findClass(dbRef("desc/Box"));
+        ASSERT_TRUE(boxed.is_ok());
+        EXPECT_FALSE(std::move(boxed).unwrap().has_value());
+    }
+}
+
+TEST(McpShadowTokenTest, ReopenHealsUndoDivergenceAfterReopen)
+{
+    //undo 方向分歧的严苛变体：undo 发生在重开之后。中间重开的整库导入
+    //已把类行条目锚换到改名后路径（desc/Box.class 活跃、desc/Holder.class
+    //墓碑），反迁移只回写行名不动锚——滞留新名时副本侧无 Box.class 可锚，
+    //阶段二主路径按设计跳过，由二段兜底收口：唯一未锚行 × 唯一副本未对账
+    //类 + 墓碑佐证 → 1:1 消去配对补回位迁移，classId 不裂；其后的整库导入
+    //再把锚修回 Holder.class（sha 复活墓碑条目）。
+    const auto jar    = uniqueDescriptorFixtureJar();
+    const auto bundle = test::getTempOutPath("mjt_shadow_heal_reopen_undo_bundle");
+    std::error_code ec;
+    std::filesystem::remove_all(bundle, ec);
+
+    McpSessionHarness server;
+    const auto projectId = openProjectInDir(server, jar, bundle.string());
+    const auto dbPath    = analysisDbPath(bundle.string());
+
+    const auto renamed = call(server,
+                              "edit_apply",
+                              {{"project_id", projectId},
+                               {"kind", "rename"},
+                               {"rename_kind", "class"},
+                               {"owner", "desc/Holder"},
+                               {"new_name", "desc/Box"}});
+    ASSERT_FALSE(renamed.at("result").at("isError")) << renamed.dump();
+    const auto closed = call(server, "project_close", {{"project_id", projectId}});
+    ASSERT_FALSE(closed.at("result").at("isError")) << payload(closed).dump();
+
+    //重开（行锚在此被导入换到 desc/Box.class），undo（head 回基线 + 反向
+    //迁移正常落库），再关。重开会话 revision 从 0 重计。
+    const auto reopened = call(server,
+                               "project_open",
+                               {{"path", jar.string()}, {"project_dir", bundle.string()}});
+    ASSERT_FALSE(reopened.at("result").at("isError")) << payload(reopened).dump();
+    const auto reopenId = payload(reopened).at("project_id").get<std::string>();
+    const auto undone =
+        call(server, "edit_history", {{"project_id", reopenId}, {"action", "undo"},
+                                      {"expected_revision", 0}});
+    ASSERT_FALSE(undone.at("result").at("isError")) << undone.dump();
+    const auto closedAgain = call(server, "project_close", {{"project_id", reopenId}});
+    ASSERT_FALSE(closedAgain.at("result").at("isError")) << payload(closedAgain).dump();
+
+    //模拟反迁移失败：库行名被推回新名（行锚仍挂 desc/Box.class 活跃条目）。
+    ca::i64 recordedClassId = 0;
+    {
+        auto opened = mjbase::project::AnalysisDb::open(dbRef(dbPath));
+        ASSERT_TRUE(opened.is_ok());
+        auto db    = std::move(opened).unwrap();
+        auto found = db.findClass(dbRef("desc/Holder"));
+        ASSERT_TRUE(found.is_ok());
+        auto info = std::move(found).unwrap();
+        ASSERT_TRUE(info.has_value());
+        recordedClassId = info->classId;
+        std::vector<mjbase::project::DbIdentityRename> specs;
+        mjbase::project::DbIdentityRename              spec;
+        spec.target  = mjbase::project::RenameTargetKind::Class;
+        spec.name    = ca::str::Utf8String::from_cstr("desc/Holder");
+        spec.newName = ca::str::Utf8String::from_cstr("desc/Box");
+        specs.push_back(std::move(spec));
+        auto pushed = db.migrateIdentities(std::move(specs));
+        ASSERT_TRUE(pushed.is_ok());
+        EXPECT_EQ(1U, std::move(pushed).unwrap().migratedClasses);
+        ASSERT_TRUE(db.save().is_ok());
+        ASSERT_TRUE(db.close().is_ok());
+    }
+
+    //重开：二段兜底配对回位（透明，open 不报错），再关落盘。
+    const auto healed = call(server,
+                             "project_open",
+                             {{"path", jar.string()}, {"project_dir", bundle.string()}});
+    ASSERT_FALSE(healed.at("result").at("isError")) << payload(healed).dump();
+    const auto healedId = payload(healed).at("project_id").get<std::string>();
+    const auto closedThird = call(server, "project_close", {{"project_id", healedId}});
+    ASSERT_FALSE(closedThird.at("result").at("isError")) << payload(closedThird).dump();
+
+    //直读库：旧名命中且 classId 一致；滞留新名 miss——ID 未裂。
+    {
+        auto opened = mjbase::project::AnalysisDb::open(
+            dbRef(dbPath), mjbase::project::AnalysisDbOpenMode::ReadOnly);
+        ASSERT_TRUE(opened.is_ok());
+        auto db         = std::move(opened).unwrap();
+        auto holder     = db.findClass(dbRef("desc/Holder"));
         ASSERT_TRUE(holder.is_ok());
         auto holderInfo = std::move(holder).unwrap();
         ASSERT_TRUE(holderInfo.has_value());

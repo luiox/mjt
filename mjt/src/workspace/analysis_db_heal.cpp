@@ -3,6 +3,7 @@
 #include "analysis_db_heal.hpp"
 
 #include <map>
+#include <set>
 #include <string>
 #include <utility>
 
@@ -123,6 +124,7 @@ ca::Result<AnalysisHealStats, AnalysisHealError> healAnalysisDbIdentities(
             return ca::core::Err(std::move(error));
         }
         std::map<ca::i64, std::string> entryPath;   ///< entry_id → 条目 path
+        std::map<std::string, bool>    entryDead;   ///< path → 墓碑旗标
         for (const auto& input : std::move(inputs).unwrap()) {
             auto entries = db.listEntries(input.inputId);
             if (entries.is_err()) {
@@ -131,8 +133,10 @@ ca::Result<AnalysisHealStats, AnalysisHealError> healAnalysisDbIdentities(
                                 std::move(entries).unwrap_err().message.to_std_string();
                 return ca::core::Err(std::move(error));
             }
-            for (const auto& entry : std::move(entries).unwrap())
+            for (const auto& entry : std::move(entries).unwrap()) {
                 entryPath[entry.entryId] = entry.path.to_std_string();
+                entryDead[entry.path.to_std_string()] = entry.tombstoned;
+            }
         }
 
         auto classes = db.listClasses();
@@ -143,12 +147,20 @@ ca::Result<AnalysisHealStats, AnalysisHealError> healAnalysisDbIdentities(
             return ca::core::Err(std::move(error));
         }
         std::vector<mjbase::project::DbIdentityRename> reconcile;
+        std::vector<mjbase::project::DbClassInfo> unanchored;   ///< 行锚路径不在副本
+        std::set<std::string> matchedUri;                       ///< 已被行锚对上的副本 uri
         for (const auto& row : std::move(classes).unwrap()) {
             if (row.entryId == 0) continue;   //未关联条目：无路径锚，交阶段三
             const auto path = entryPath.find(row.entryId);
             if (path == entryPath.end()) continue;
             const auto live = byUri.find(path->second);
-            if (live == byUri.end()) continue;   //副本侧类已不存在：导入期墓碑面
+            if (live == byUri.end()) {
+                //副本侧类不在此路径：改名纪元的行锚（重开期 ingest 已把
+                //entry_id 挂到改名后路径）或类确已删除——二段兜底甄别。
+                unanchored.push_back(row);
+                continue;
+            }
+            matchedUri.insert(live->first);
             const auto rowName = row.internalName.to_std_string();
             if (rowName == live->second) continue;
             mjbase::project::DbIdentityRename spec;
@@ -156,6 +168,30 @@ ca::Result<AnalysisHealStats, AnalysisHealError> healAnalysisDbIdentities(
             spec.name    = row.internalName.clone();
             spec.newName = utf8(live->second);
             reconcile.push_back(std::move(spec));
+        }
+        //二段兜底：唯一未锚行 × 唯一副本未对账类（其路径存在墓碑条目，佐证
+        //该类曾以此名活跃、行锚在改名纪元漂移）→ 1:1 消去配对补迁移。多于
+        //一对或佐证不成立的错位组合无序可依，计歧义跳过（统计披露，导入期
+        //整库对账收尾）。空库/全新工程（无未锚行）不触发——常态零噪音。
+        if (!unanchored.empty()) {
+            std::vector<std::pair<std::string, std::string>> unmatched;
+            for (const auto& [uri, name] : byUri)
+                if (matchedUri.count(uri) == 0) unmatched.emplace_back(uri, name);
+            const auto dead = entryDead.find(unmatched.size() == 1
+                                                 ? unmatched.front().first
+                                                 : std::string{});
+            const bool pairable = unanchored.size() == 1 && unmatched.size() == 1 &&
+                                  dead != entryDead.end() && dead->second;
+            if (pairable) {
+                mjbase::project::DbIdentityRename spec;
+                spec.target  = mjbase::project::RenameTargetKind::Class;
+                spec.name    = unanchored.front().internalName.clone();
+                spec.newName = utf8(unmatched.front().second);
+                reconcile.push_back(std::move(spec));
+            }
+            else {
+                stats.ambiguousSkipped += unanchored.size() + unmatched.size();
+            }
         }
         if (!reconcile.empty()) {
             const auto before = stats.migratedClasses;
