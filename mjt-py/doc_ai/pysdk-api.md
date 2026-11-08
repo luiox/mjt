@@ -119,7 +119,7 @@ MethodPass.run 返回值：报告本 pass 有改动。
 ### mjt.class_apply_jasm
 
 ```
-class_apply_jasm(h: typing.SupportsInt | typing.SupportsIndex, name: str, source: str, source_name: str = '', validation: str = 'relaxed') -> dict
+class_apply_jasm(h: typing.SupportsInt | typing.SupportsIndex, name: str, source: str, source_name: str = '', validation: str = 'relaxed', frame: str = 'regenerate') -> dict
 
 事务式汇编替换类字节（名称校验 + 候选工作区复验全过才落）。
 
@@ -129,9 +129,16 @@ Args:
     source: 完整 Jasm 文本。
     source_name: 诊断定位用的源名；缺省 <name>.jasm。
     validation: 校验档位（同 class_validate_jasm）。
+    frame: StackMapTable 处置档 "regenerate"（默认，数据流重生成帧）/
+        "preserve"（保留原类帧字节——坏帧类 validation=off 的逃生门；
+        指令面改动按 fail-closed 逐方法申报，事务不落改动）。非法值
+        抛 ValueError。
 Returns:
     报告 dict（同 class_validate_jasm；成功时 written 为新类字节数），
     成功后该类缓存树作废。
+Warns:
+    RuntimeWarning: 事务零落盘（ok=False, written=0）——点名 API 与
+        首条错误诊断；返回值契约不变，仅消除静默空操作。
 Raises:
     StaleRefError: 类名不存在。
     RuntimeError: 现类字节反汇编失败或事务落容器失败。
@@ -140,7 +147,7 @@ Raises:
 ### mjt.class_apply_jasm_diff
 
 ```
-class_apply_jasm_diff(h: typing.SupportsInt | typing.SupportsIndex, name: str, diff: str, validation: str = 'relaxed') -> dict
+class_apply_jasm_diff(h: typing.SupportsInt | typing.SupportsIndex, name: str, diff: str, validation: str = 'relaxed', frame: str = 'regenerate') -> dict
 
 diff 应用后事务式汇编替换类字节。
 
@@ -149,8 +156,11 @@ Args:
     name: 目标类 internal name。
     diff: 对当前规范全文的 unified diff。
     validation: 校验档位（同 class_validate_jasm）。
+    frame: StackMapTable 处置档（同 class_apply_jasm）。
 Returns:
     报告 dict（同 class_apply_jasm），成功后该类缓存树作废。
+Warns:
+    RuntimeWarning: 事务零落盘（同 class_apply_jasm）。
 Raises:
     StaleRefError: 类名不存在。
     RuntimeError: 现类字节反汇编失败或事务落容器失败。
@@ -1071,7 +1081,7 @@ Raises:
 ### mjt.method_apply_jasm
 
 ```
-method_apply_jasm(h: typing.SupportsInt | typing.SupportsIndex, cls: str, name: str, desc: str, source: str, source_name: str = '', validation: str = 'relaxed') -> dict
+method_apply_jasm(h: typing.SupportsInt | typing.SupportsIndex, cls: str, name: str, desc: str, source: str, source_name: str = '', validation: str = 'relaxed', frame: str = 'regenerate') -> dict
 
 方法级 Jasm 全量替换（source 拼接回类全文后事务式汇编落容器）。
 
@@ -1081,8 +1091,11 @@ Args:
     source: 完整 .method 声明文本。
     source_name: 诊断定位用的源名；缺省 <name>.jasm。
     validation: 校验档位（同 class_validate_jasm）。
+    frame: StackMapTable 处置档（同 class_apply_jasm）。
 Returns:
     报告 dict（同 class_apply_jasm），成功后该类缓存树作废。
+Warns:
+    RuntimeWarning: 事务零落盘（同 class_apply_jasm）。
 Raises:
     StaleRefError: 类或方法不存在。
     RuntimeError: 现类字节反汇编失败或事务落容器失败。
@@ -1091,7 +1104,7 @@ Raises:
 ### mjt.method_apply_jasm_diff
 
 ```
-method_apply_jasm_diff(h: typing.SupportsInt | typing.SupportsIndex, cls: str, name: str, desc: str, diff: str, validation: str = 'relaxed') -> dict
+method_apply_jasm_diff(h: typing.SupportsInt | typing.SupportsIndex, cls: str, name: str, desc: str, diff: str, validation: str = 'relaxed', frame: str = 'regenerate') -> dict
 
 方法级 diff 应用：diff 相对 method_jasm 产物应用，拼接回类全文后
 事务式汇编落容器。
@@ -1101,8 +1114,11 @@ Args:
     cls/name/desc: 目标方法坐标。
     diff: 对 method_jasm 产物的 unified diff。
     validation: 校验档位（同 class_validate_jasm）。
+    frame: StackMapTable 处置档（同 class_apply_jasm）。
 Returns:
     报告 dict（同 class_apply_jasm），成功后该类缓存树作废。
+Warns:
+    RuntimeWarning: 事务零落盘（同 class_apply_jasm）。
 Raises:
     StaleRefError: 类或方法不存在。
     RuntimeError: 现类字节反汇编失败或事务落容器失败。

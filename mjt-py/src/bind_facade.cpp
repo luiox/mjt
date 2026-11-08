@@ -99,6 +99,28 @@ py::dict jasmReportToPy(const JasmReport& report)
     return out;
 }
 
+/// apply 族静默空转告警（mjbase#190）：事务失败 = ok=False 且 written=0，
+/// 既有返回值契约（内容性错误走报告 dict 不抛异常）保持不变，但不再静默——
+/// RuntimeWarning 点名 API 与首条错误诊断；调用方以
+/// warnings.filterwarnings / -W error::RuntimeWarning 升级为异常。语义与
+/// 成功路径零写入（written>0）不受影响。
+void warnIfApplyNoop(const JasmReport& report, const char* api)
+{
+    if (report.ok() || report.written != 0) return;
+    std::string first;
+    for (const auto& diagnostic : report.diagnostics) {
+        if (diagnostic.severity == 0) {
+            first = diagnostic.message;
+            break;
+        }
+    }
+    std::string text = std::string(api) + ": transaction made no changes"
+                       " (ok=False, written=0)";
+    if (!first.empty()) text += "; first error: " + first;
+    if (PyErr_WarnEx(PyExc_RuntimeWarning, text.c_str(), 1) == -1)
+        throw py::error_already_set();
+}
+
 py::dict jasmClassTextToPy(const JasmClassText& text)
 {
     py::dict out;
@@ -1672,13 +1694,16 @@ void bindFacade(py::module_& m)
     m.def(
         "class_apply_jasm",
         [](ca::u64 h, const std::string& name, const std::string& source,
-           const std::string& source_name, const std::string& validation) {
+           const std::string& source_name, const std::string& validation,
+           const std::string& frame) {
             auto& session = FacadeRegistry::instance().get(h);
-            return jasmReportToPy(
-                facadeApplyJasm(session, name, source_name, source, validation));
+            const auto report =
+                facadeApplyJasm(session, name, source_name, source, validation, frame);
+            warnIfApplyNoop(report, "class_apply_jasm");
+            return jasmReportToPy(report);
         },
         py::arg("h"), py::arg("name"), py::arg("source"), py::arg("source_name") = "",
-        py::arg("validation") = "relaxed",
+        py::arg("validation") = "relaxed", py::arg("frame") = "regenerate",
         "事务式汇编替换类字节（名称校验 + 候选工作区复验全过才落）。\n\n"
         "Args:\n"
         "    h: 容器句柄。\n"
@@ -1686,9 +1711,16 @@ void bindFacade(py::module_& m)
         "    source: 完整 Jasm 文本。\n"
         "    source_name: 诊断定位用的源名；缺省 <name>.jasm。\n"
         "    validation: 校验档位（同 class_validate_jasm）。\n"
+        "    frame: StackMapTable 处置档 \"regenerate\"（默认，数据流重生成帧）/\n"
+        "        \"preserve\"（保留原类帧字节——坏帧类 validation=off 的逃生门；\n"
+        "        指令面改动按 fail-closed 逐方法申报，事务不落改动）。非法值\n"
+        "        抛 ValueError。\n"
         "Returns:\n"
         "    报告 dict（同 class_validate_jasm；成功时 written 为新类字节数），\n"
         "    成功后该类缓存树作废。\n"
+        "Warns:\n"
+        "    RuntimeWarning: 事务零落盘（ok=False, written=0）——点名 API 与\n"
+        "        首条错误诊断；返回值契约不变，仅消除静默空操作。\n"
         "Raises:\n"
         "    StaleRefError: 类名不存在。\n"
         "    RuntimeError: 现类字节反汇编失败或事务落容器失败。");
@@ -1716,19 +1748,25 @@ void bindFacade(py::module_& m)
     m.def(
         "class_apply_jasm_diff",
         [](ca::u64 h, const std::string& name, const std::string& diff,
-           const std::string& validation) {
+           const std::string& validation, const std::string& frame) {
             auto& session = FacadeRegistry::instance().get(h);
-            return jasmReportToPy(facadeApplyJasmDiff(session, name, diff, validation));
+            const auto report = facadeApplyJasmDiff(session, name, diff, validation, frame);
+            warnIfApplyNoop(report, "class_apply_jasm_diff");
+            return jasmReportToPy(report);
         },
         py::arg("h"), py::arg("name"), py::arg("diff"), py::arg("validation") = "relaxed",
+        py::arg("frame") = "regenerate",
         "diff 应用后事务式汇编替换类字节。\n\n"
         "Args:\n"
         "    h: 容器句柄。\n"
         "    name: 目标类 internal name。\n"
         "    diff: 对当前规范全文的 unified diff。\n"
         "    validation: 校验档位（同 class_validate_jasm）。\n"
+        "    frame: StackMapTable 处置档（同 class_apply_jasm）。\n"
         "Returns:\n"
         "    报告 dict（同 class_apply_jasm），成功后该类缓存树作废。\n"
+        "Warns:\n"
+        "    RuntimeWarning: 事务零落盘（同 class_apply_jasm）。\n"
         "Raises:\n"
         "    StaleRefError: 类名不存在。\n"
         "    RuntimeError: 现类字节反汇编失败或事务落容器失败。");
@@ -1760,14 +1798,17 @@ void bindFacade(py::module_& m)
         "method_apply_jasm",
         [](ca::u64 h, const std::string& cls, const std::string& name,
            const std::string& desc, const std::string& source,
-           const std::string& source_name, const std::string& validation) {
+           const std::string& source_name, const std::string& validation,
+           const std::string& frame) {
             auto& session = FacadeRegistry::instance().get(h);
-            return jasmReportToPy(facadeApplyMethodJasm(session, cls, name, desc,
-                                                        source_name, source, validation));
+            const auto report = facadeApplyMethodJasm(session, cls, name, desc, source_name,
+                                                      source, validation, frame);
+            warnIfApplyNoop(report, "method_apply_jasm");
+            return jasmReportToPy(report);
         },
         py::arg("h"), py::arg("cls"), py::arg("name"), py::arg("desc"), py::arg("source"),
         py::arg("source_name") = "",
-        py::arg("validation") = "relaxed",
+        py::arg("validation") = "relaxed", py::arg("frame") = "regenerate",
         "方法级 Jasm 全量替换（source 拼接回类全文后事务式汇编落容器）。\n\n"
         "Args:\n"
         "    h: 容器句柄。\n"
@@ -1775,8 +1816,11 @@ void bindFacade(py::module_& m)
         "    source: 完整 .method 声明文本。\n"
         "    source_name: 诊断定位用的源名；缺省 <name>.jasm。\n"
         "    validation: 校验档位（同 class_validate_jasm）。\n"
+        "    frame: StackMapTable 处置档（同 class_apply_jasm）。\n"
         "Returns:\n"
         "    报告 dict（同 class_apply_jasm），成功后该类缓存树作废。\n"
+        "Warns:\n"
+        "    RuntimeWarning: 事务零落盘（同 class_apply_jasm）。\n"
         "Raises:\n"
         "    StaleRefError: 类或方法不存在。\n"
         "    RuntimeError: 现类字节反汇编失败或事务落容器失败。");
@@ -1807,13 +1851,15 @@ void bindFacade(py::module_& m)
         "method_apply_jasm_diff",
         [](ca::u64 h, const std::string& cls, const std::string& name,
            const std::string& desc, const std::string& diff,
-           const std::string& validation) {
+           const std::string& validation, const std::string& frame) {
             auto& session = FacadeRegistry::instance().get(h);
-            return jasmReportToPy(
-                facadeApplyMethodJasmDiff(session, cls, name, desc, diff, validation));
+            const auto report = facadeApplyMethodJasmDiff(session, cls, name, desc, diff,
+                                                          validation, frame);
+            warnIfApplyNoop(report, "method_apply_jasm_diff");
+            return jasmReportToPy(report);
         },
         py::arg("h"), py::arg("cls"), py::arg("name"), py::arg("desc"), py::arg("diff"),
-        py::arg("validation") = "relaxed",
+        py::arg("validation") = "relaxed", py::arg("frame") = "regenerate",
         "方法级 diff 应用：diff 相对 method_jasm 产物应用，拼接回类全文后\n"
         "事务式汇编落容器。\n\n"
         "Args:\n"
@@ -1821,8 +1867,11 @@ void bindFacade(py::module_& m)
         "    cls/name/desc: 目标方法坐标。\n"
         "    diff: 对 method_jasm 产物的 unified diff。\n"
         "    validation: 校验档位（同 class_validate_jasm）。\n"
+        "    frame: StackMapTable 处置档（同 class_apply_jasm）。\n"
         "Returns:\n"
         "    报告 dict（同 class_apply_jasm），成功后该类缓存树作废。\n"
+        "Warns:\n"
+        "    RuntimeWarning: 事务零落盘（同 class_apply_jasm）。\n"
         "Raises:\n"
         "    StaleRefError: 类或方法不存在。\n"
         "    RuntimeError: 现类字节反汇编失败或事务落容器失败。");

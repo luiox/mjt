@@ -67,3 +67,17 @@
   维持整类门；门失败时同档位重验先在字节，先在字节同样不过门的错误信息
   注明归因（先在问题，非本次编辑引入）。`validation=off` 直通与 byte_diffs
   行为不变。
+- pysdk Jasm apply 族零落盘不再静默（mjbase#190）：`class_apply_jasm` /
+  `class_apply_jasm_diff` / `method_apply_jasm` / `method_apply_jasm_diff`
+  事务失败（`ok=False` 且 `written=0`）时在返回值之外追加发一条
+  `RuntimeWarning`（点名 API 与首条错误诊断）——返回值契约不变（内容性
+  错误仍走报告 dict 不抛异常，向后兼容），不看返回值的调用方也不再静默
+  空操作；需要异常语义的调用方以 `warnings.filterwarnings("error",
+  category=RuntimeWarning)`（或 `-W error::RuntimeWarning`）升级。
+- pysdk Jasm apply 族新增 `frame` 档（mjbase#190，随保留原帧档 mjbase 包
+  词条发版）：
+  `"regenerate"`（默认，现状语义）外新增 `"preserve"`——保留原类
+  StackMapTable 字节不重生成，坏帧类（混淆产物 conflict/unnamed slot 面）
+  `validation=off` 下的逃生门；指令面改动按 fail-closed 逐方法申报、事务
+  不落改动，非法值抛 `ValueError`。仅 apply 族消费；`class_validate_jasm`
+  等 validate 面签名不变。

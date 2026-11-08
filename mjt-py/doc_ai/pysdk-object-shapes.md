@@ -83,3 +83,17 @@ verify_ok / verify_error / changed / diff（方法名到 Cleanliness 差值的 d
 ## jasm 面读落账字节
 
 class_jasm / method_jasm / class_validate_jasm 读的是容器落账字节，不是树缓存：add_method、emit_*、class_set_super 等树编辑之后要先 `mjt.flush(h, compute_frames=…)`（或 write_back / export）再取 jasm，否则读到旧字节。init_order 走 jasm 面，同受此约束。
+
+## 树级编辑两注意点
+
+实战申报（mjbase#190 附带注记，行为合理但易踩）：
+
+1. **remove_insn 拒删 label 锚定的首条指令**：指令还被跳转目标引用时报
+   `insn remove refused: uid N (still used)`——不是 bug，是树一致性守卫。
+   想消除该指令时用 `emit_insn(mref, 0x00 /* nop */, pos=uid)` 原位替换语义
+   （先 nop 再删旧指令不可行，删除仍会被拒），或重绑跳转目标后再删。
+2. **尾插落在既有 return 之后**：`emit_*(mref, …)` 不给 `pos` 是尾插，位置在
+   现有 `ireturn`/`areturn` 等 return 指令之后——插进去的指令永远执行不到。
+   改返回值语义时必须显式 `pos=<return 的 uid>` 插到 return 之前，并删除旧
+   return（或改插的位置使旧 return 变为不可达后清理）。
+

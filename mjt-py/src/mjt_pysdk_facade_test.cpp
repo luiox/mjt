@@ -12,9 +12,12 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
+
+#include "jbc/jbc.hpp"
 
 #include "pysdk_facade.hpp"
 #include "pysdk_jar.hpp"
@@ -1441,6 +1444,241 @@ TEST(FacadeJasm, UnknownClassAndMethodFailClosed)
     EXPECT_THROW(facadeMethodJasm(s, "me/demo/Util", "nope", "()V"), StaleRefError);
     EXPECT_THROW(facadeMethodJasm(s, "me/demo/Util", "add", "(JJ)J"), StaleRefError);
     EXPECT_THROW(facadeValidateJasm(s, "me/demo/Nope", "", "x"), StaleRefError);
+    FacadeRegistry::instance().close(h);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 保留原帧档（mjbase#190）：apply 族 frame 档透传——坏帧类 validation=off
+// 的逃生门。夹具例外①申报，两条构造路线（与 mjbase frame_preserve_test
+// 同口径）：
+//   1. jsr/ret 子程序类（preserve 档目标面）：jsr 文本 v49 直装（分析干净、
+//      无帧参与），DOM 单点抬 major 61——v61 + jsr/ret 类数据流重算可过、
+//      StackMapTable 序列化必败。头条用例钉：Regenerate 如实失败零落盘、
+//      preserve 落盘且版本回填。
+//   2. branchy 类 1 字节 opcode 偏差（aconst_null→iconst_2，int vs ref 合并
+//      Bottom 槽）：jhasm 对数据流 Strict 拒绝一律硬失败，与版本和 frame 档
+//      无关——只用于钉边界申报用例（指令面改动 fail-closed），不是 preserve
+//      可救面。
+// 边界申报：preserve 档豁免的是帧序列化，不是数据流分析。
+// ═══════════════════════════════════════════════════════════════════════
+
+namespace {
+
+ca::str::Utf16String frameTestUtf16(const std::string& text)
+{
+    return ca::str::Utf16String::from_utf8_string(
+        ca::str::Utf8StringRef::from_data(reinterpret_cast<const ca::u8*>(text.data()),
+                                          text.size()));
+}
+
+/// v61 分支基类源（join 合并两侧同为 ref——装配即生成 StackMapTable）。
+/// 指令流全流仅两个 0x01 字节，即两条 aconst_null（偏差定位锚）。
+std::string branchClassSource(const std::string& internalName)
+{
+    return ".super java/lang/Object\n"
+           ".class public super " + internalName + " {\n"
+           "  .method public static pick (Z)Ljava/lang/Object; {\n"
+           "    parameters: { flag },\n"
+           "    code: {\n"
+           "      iload flag\n"
+           "      ifeq right\n"
+           "      aconst_null\n"
+           "      goto join\n"
+           "    right:\n"
+           "      aconst_null\n"
+           "    join:\n"
+           "      areturn\n"
+           "    }\n"
+           "  }\n"
+           "}\n";
+}
+
+std::vector<ca::u8> assembleBranchClass(const std::string& internalName)
+{
+    mjbase::jasm::JvmJasmService jasm;
+    mjbase::jasm::JvmJasmContext context;
+    context.classMajorVersion = 61;
+    const auto sourceName = frameTestUtf16(internalName + ".jasm");
+    const auto sourceText = frameTestUtf16(branchClassSource(internalName));
+    const auto assembled  = jasm.assemble(sourceName.ref(), sourceText.ref(), context);
+    EXPECT_TRUE(assembled.isOk());
+    if (!assembled.isOk() || !assembled.value.has_value()) return {};
+    return assembled.value->bytes;
+}
+
+/// 单点最小偏差：首支 aconst_null(0x01) → iconst_2(0x05)。AttrSlot 置脏
+/// 纪律：Decoded 态写回走源 span copy，必须 mutate() 偏差才真正落盘。
+std::vector<ca::u8> deviateFirstAconstNull(const std::vector<ca::u8>& bytes)
+{
+    auto read = jbc::core::readClass(jbc::core::ByteView{bytes.data(), bytes.size()});
+    EXPECT_TRUE(read.is_ok());
+    if (read.is_err()) return {};
+    auto                  parsed = std::move(read).unwrap();
+    jbc::core::ClassFile& cf     = *parsed.file;
+    bool                  patched = false;
+    for (auto& method : cf.methods) {
+        for (auto& slot : method.attrs) {
+            if (cf.utf8(slot.nameCp) != "Code") continue;
+            auto decoded = cf.decodeAttr(slot);
+            EXPECT_TRUE(decoded.is_ok());
+            if (decoded.is_err()) return {};
+            auto* code = static_cast<jbc::core::CodeAttr*>(decoded.unwrap());
+            for (auto& byte : code->code) {
+                if (byte == 0x01) {
+                    byte = 0x05;
+                    patched = true;
+                    break;
+                }
+            }
+            (void)slot.mutate();
+            break;
+        }
+        if (patched) break;
+    }
+    EXPECT_TRUE(patched) << "夹具指令流无 aconst_null";
+    if (!patched) return {};
+    auto written = jbc::core::writeClass(cf);
+    EXPECT_TRUE(written.is_ok());
+    if (written.is_err()) return {};
+    return std::move(written).unwrap();
+}
+
+/// 首个方法的 Code 嵌套 StackMapTable 内容字节（span 原样副本）；无则空。
+std::vector<ca::u8> firstStackMapTableOf(const std::vector<ca::u8>& bytes)
+{
+    auto read = jbc::core::readClass(jbc::core::ByteView{bytes.data(), bytes.size()});
+    if (read.is_err()) return {};
+    auto                  parsed = std::move(read).unwrap();
+    jbc::core::ClassFile& cf     = *parsed.file;
+    for (auto& method : cf.methods) {
+        for (auto& slot : method.attrs) {
+            if (cf.utf8(slot.nameCp) != "Code") continue;
+            auto decoded = cf.decodeAttr(slot);
+            if (decoded.is_err()) return {};
+            auto* code = static_cast<jbc::core::CodeAttr*>(decoded.unwrap());
+            for (const auto& nested : code->attrs) {
+                if (cf.utf8(nested.nameCp) != "StackMapTable") continue;
+                const auto raw = cf.source().spanOrEmpty(nested.data);
+                return std::vector<ca::u8>(raw.data(), raw.data() + raw.size());
+            }
+            return {};
+        }
+    }
+    return {};
+}
+
+/// jsr/ret 子程序类源（preserve 档目标面，构造路线①）。
+std::string subroutineClassSource(const std::string& internalName)
+{
+    return ".super java/lang/Object\n"
+           ".class public super " + internalName + " {\n"
+           "  .method public static pick (Z)Ljava/lang/Object; {\n"
+           "    code: {\n"
+           "      jsr sub\n"
+           "      aconst_null\n"
+           "      areturn\n"
+           "    sub:\n"
+           "      astore 1\n"
+           "      ret 1\n"
+           "    }\n"
+           "  }\n"
+           "}\n";
+}
+
+/// 构造路线①装配：jsr 文本 v49 直装（分析干净、无帧参与）→ DOM 抬
+/// major 61——v61 + jsr/ret 类：数据流重算可过、SMT 序列化必败。
+std::vector<ca::u8> assembleSubroutineClassAt61(const std::string& internalName)
+{
+    mjbase::jasm::JvmJasmService jasm;
+    mjbase::jasm::JvmJasmContext context;
+    context.classMajorVersion = 49;   // jsr 形态按夹具版本口径 ≤49 直装
+    const auto sourceName     = frameTestUtf16(internalName + ".jasm");
+    const auto sourceText     = frameTestUtf16(subroutineClassSource(internalName));
+    const auto assembled      = jasm.assemble(sourceName.ref(), sourceText.ref(), context);
+    EXPECT_TRUE(assembled.isOk());
+    if (!assembled.isOk() || !assembled.value.has_value()) return {};
+    auto read = jbc::core::readClass(assembled.value->bytes);
+    EXPECT_TRUE(read.is_ok());
+    if (read.is_err()) return {};
+    auto parsed = std::move(read).unwrap();
+    parsed.file->major = 61;
+    auto written = jbc::core::writeClass(*parsed.file);
+    EXPECT_TRUE(written.is_ok());
+    if (written.is_err()) return {};
+    return std::move(written).unwrap();
+}
+
+/// 类文件 major 版本号（读失败返回 0）。
+ca::u16 classMajorOf(const std::vector<ca::u8>& bytes)
+{
+    auto read = jbc::core::readClass(jbc::core::ByteView{bytes.data(), bytes.size()});
+    if (read.is_err()) return 0;
+    auto parsed = std::move(read).unwrap();
+    return parsed.file->major;
+}
+
+}   // namespace
+
+TEST(FacadeJasm, FramePreserveLandsBadFrameClassOffGate)
+{
+    const auto h = openDemo("mjt_facade_jasm_frame.jar");
+    auto&      s = FacadeRegistry::instance().get(h);
+
+    const auto badFrame = assembleSubroutineClassAt61("me/demo/Framed");
+    ASSERT_FALSE(badFrame.empty());
+    ASSERT_TRUE(firstStackMapTableOf(badFrame).empty());   // v49 直装产物无帧
+    facadeSetClassBytes(s, "me/demo/Framed", badFrame);
+    const auto text = facadeClassJasm(s, "me/demo/Framed").source;
+
+    // Regenerate（缺省档）+ off：v61 + jsr/ret 的帧序列化失败如实上报，
+    // 事务零落盘。
+    const auto regen = facadeApplyJasm(s, "me/demo/Framed", "", text, "off");
+    EXPECT_FALSE(regen.ok());
+    EXPECT_FALSE(regen.diagnostics.empty());
+    EXPECT_EQ(facadeClassBytes(s, "me/demo/Framed"), badFrame);
+
+    // preserve + off：v49 杠杆跳过帧序列化后装配通过，落盘且版本回填原类；
+    // 原类无帧（v49 直装产物），preserve 保持无帧不凭空发帧；指令面 = 提交
+    // 文本往返。
+    const auto kept = facadeApplyJasm(s, "me/demo/Framed", "", text, "off", "preserve");
+    ASSERT_TRUE(kept.ok()) << (kept.diagnostics.empty() ? "" :
+                               kept.diagnostics.front().message);
+    EXPECT_GT(kept.written, ca::usize{0});
+    const auto landed = facadeClassBytes(s, "me/demo/Framed");
+    EXPECT_EQ(classMajorOf(landed), 61);
+    EXPECT_TRUE(firstStackMapTableOf(landed).empty());
+    EXPECT_NE(facadeClassJasm(s, "me/demo/Framed").source.find("jsr"),
+              std::string::npos);
+    FacadeRegistry::instance().close(h);
+}
+
+TEST(FacadeJasm, FramePreserveRejectsInstructionChangeAndBadValue)
+{
+    const auto h = openDemo("mjt_facade_jasm_frame2.jar");
+    auto&      s = FacadeRegistry::instance().get(h);
+    const auto deviated = deviateFirstAconstNull(assembleBranchClass("me/demo/Framed"));
+    ASSERT_FALSE(deviated.empty());
+    facadeSetClassBytes(s, "me/demo/Framed", deviated);
+
+    // 提交合法基类文本：code[] 与容器内偏差类不一致——原帧对指令流的描述
+    // 失效，保留即产坏类，fail-closed 逐方法申报、事务不落改动。
+    const auto report = facadeApplyJasm(s, "me/demo/Framed", "",
+                                        branchClassSource("me/demo/Framed"), "off",
+                                        "preserve");
+    EXPECT_FALSE(report.ok());
+    bool boundaryReported = false;
+    for (const auto& diagnostic : report.diagnostics) {
+        if (diagnostic.severity == 0
+            && diagnostic.message.find("instructions changed") != std::string::npos)
+            boundaryReported = true;
+    }
+    EXPECT_TRUE(boundaryReported);
+    EXPECT_EQ(facadeClassBytes(s, "me/demo/Framed"), deviated);
+
+    // frame 非法值 → 参数错误（绑定层映射 ValueError）。
+    EXPECT_THROW(facadeApplyJasm(s, "me/demo/Framed", "",
+                                 branchClassSource("me/demo/Framed"), "off", "bogus"),
+                 std::invalid_argument);
     FacadeRegistry::instance().close(h);
 }
 

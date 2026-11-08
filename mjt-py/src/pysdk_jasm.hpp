@@ -62,19 +62,25 @@ JasmMethodText facadeMethodJasm(FacadeSession& s, const std::string& cls,
 // ── class 级 patch（source = 完整 Jasm；diff = 对当前规范全文的 unified diff） ──
 // validation：编辑门与重建管线共用的校验档位（"relaxed"/"strict"/"off"），
 // 与 MCP edit_apply 的同名键等位；非法值抛 std::invalid_argument。
+// frame（apply 族，mjbase#190）：StackMapTable 处置档——"regenerate"（默认，
+// 数据流重生成帧）/ "preserve"（保留原类帧字节：坏帧类 validation=off 的
+// 逃生门；指令面改动按 fail-closed 逐方法申报，事务不落改动）；非法值同走
+// std::invalid_argument。
 
 JasmReport facadeValidateJasm(FacadeSession& s, const std::string& name,
                               const std::string& sourceName, const std::string& source,
                               const std::string& validation = "relaxed");
 JasmReport facadeApplyJasm(FacadeSession& s, const std::string& name,
                            const std::string& sourceName, const std::string& source,
-                           const std::string& validation = "relaxed");
+                           const std::string& validation = "relaxed",
+                           const std::string& frame = "regenerate");
 JasmReport facadeValidateJasmDiff(FacadeSession& s, const std::string& name,
                                   const std::string& diff,
                                   const std::string& validation = "relaxed");
 JasmReport facadeApplyJasmDiff(FacadeSession& s, const std::string& name,
                                const std::string& diff,
-                               const std::string& validation = "relaxed");
+                               const std::string& validation = "relaxed",
+                               const std::string& frame = "regenerate");
 
 // ── 方法级 patch（source/diff 相对 method_jasm 产物；拼接回类全文后走 class 面） ──
 
@@ -85,7 +91,8 @@ JasmReport facadeValidateMethodJasm(FacadeSession& s, const std::string& cls,
 JasmReport facadeApplyMethodJasm(FacadeSession& s, const std::string& cls,
                                  const std::string& name, const std::string& desc,
                                  const std::string& sourceName, const std::string& source,
-                                 const std::string& validation = "relaxed");
+                                 const std::string& validation = "relaxed",
+                                 const std::string& frame = "regenerate");
 JasmReport facadeValidateMethodJasmDiff(FacadeSession& s, const std::string& cls,
                                         const std::string& name, const std::string& desc,
                                         const std::string& diff,
@@ -93,6 +100,7 @@ JasmReport facadeValidateMethodJasmDiff(FacadeSession& s, const std::string& cls
 JasmReport facadeApplyMethodJasmDiff(FacadeSession& s, const std::string& cls,
                                      const std::string& name, const std::string& desc,
                                      const std::string& diff,
-                                     const std::string& validation = "relaxed");
+                                     const std::string& validation = "relaxed",
+                                     const std::string& frame = "regenerate");
 
 }   // namespace mjt::pysdk

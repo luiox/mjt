@@ -19,6 +19,7 @@ using mjbase::jasm::DiagnosticSeverity;
 using mjbase::jasm::DiagnosticStage;
 using mjbase::jasm::JvmJasmContext;
 using mjbase::jasm::JvmJasmService;
+using mjbase::jasm::FrameMode;
 using mjbase::jasm::ValidationMode;
 using mjbase::model::ClassResource;
 using mjbase::model::IResource;
@@ -142,6 +143,14 @@ ValidationMode parseValidation(const std::string& value)
     throw std::invalid_argument("validation must be one of relaxed, strict, off");
 }
 
+/// frame 档（mjbase#190）：StackMapTable 处置档；非法值走参数错误。
+FrameMode parseFrame(const std::string& value)
+{
+    if (value == "regenerate") return FrameMode::Regenerate;
+    if (value == "preserve") return FrameMode::PreserveOriginal;
+    throw std::invalid_argument("frame must be one of regenerate, preserve");
+}
+
 /// validate = 在容器拷贝上试汇编（名称校验 + 候选工作区复验，零提交）。
 JasmReport validateOnClone(FacadeSession& s, const std::string& uri, const std::string& name,
                            const std::string& sourceName, const std::string& source,
@@ -165,16 +174,19 @@ JasmReport validateOnClone(FacadeSession& s, const std::string& uri, const std::
 
 /// apply = 事务式替换 ClassResource（内部校验全过才 set）；成功后该类缓存树
 /// 作废（外部改字节同款纪律——脏树未 write_back 的编辑就此让位）。
+/// frameMode（mjbase#190）：preserve 档保留原类 StackMapTable——坏帧类
+/// validation=off 的逃生门；边界申报（指令面改动/新方法体等）逐条落 Error
+/// 诊断，事务不落改动。
 JasmReport applyInPlace(FacadeSession& s, const std::string& uri, const std::string& name,
                         const std::string& sourceName, const std::string& source,
-                        ValidationMode validation)
+                        ValidationMode validation, FrameMode frameMode)
 {
     JvmJasmContext context;
     context.validationMode = validation;
     const auto assembled = mjbase::jasm::ResourceJasmService(*s.container)
                                .assemble(uri,
                                          toUtf16(defaultSourceName(name, sourceName)).ref(),
-                                         toUtf16(source).ref(), context);
+                                         toUtf16(source).ref(), context, frameMode);
     JasmReport report;
     report.diagnostics = toJasmDiagnostics(assembled.diagnostics);
     if (assembled.isOk()) {
@@ -187,9 +199,9 @@ JasmReport applyInPlace(FacadeSession& s, const std::string& uri, const std::str
 
 JasmReport validateOrApply(FacadeSession& s, const std::string& uri, const std::string& name,
                            const std::string& sourceName, const std::string& source, bool apply,
-                           ValidationMode validation)
+                           ValidationMode validation, FrameMode frameMode)
 {
-    return apply ? applyInPlace(s, uri, name, sourceName, source, validation)
+    return apply ? applyInPlace(s, uri, name, sourceName, source, validation, frameMode)
                  : validateOnClone(s, uri, name, sourceName, source, validation);
 }
 
@@ -451,7 +463,7 @@ JasmReport diffErrorReport(const std::string& error, ca::usize failedHunk)
 JasmReport methodPatch(FacadeSession& s, const std::string& cls, const std::string& name,
                        const std::string& desc, const std::string& sourceName,
                        const std::string& source, const std::string& diff, bool apply,
-                       ValidationMode validation)
+                       ValidationMode validation, FrameMode frameMode)
 {
     const auto method = facadeMethodJasm(s, cls, name, desc);
 
@@ -494,7 +506,7 @@ JasmReport methodPatch(FacadeSession& s, const std::string& cls, const std::stri
     newClassSource.replace(first, method.source.size(), newMethodSource);
 
     return validateOrApply(s, uri, cls, defaultSourceName(cls + "." + name, sourceName),
-                           newClassSource, apply, validation);
+                           newClassSource, apply, validation, frameMode);
 }
 
 }   // namespace
@@ -541,10 +553,10 @@ JasmReport facadeValidateJasm(FacadeSession& s, const std::string& name,
 
 JasmReport facadeApplyJasm(FacadeSession& s, const std::string& name,
                            const std::string& sourceName, const std::string& source,
-                           const std::string& validation)
+                           const std::string& validation, const std::string& frame)
 {
     return applyInPlace(s, jasmTargetUri(s, name), name, sourceName, source,
-                        parseValidation(validation));
+                        parseValidation(validation), parseFrame(frame));
 }
 
 JasmReport facadeValidateJasmDiff(FacadeSession& s, const std::string& name,
@@ -558,13 +570,14 @@ JasmReport facadeValidateJasmDiff(FacadeSession& s, const std::string& name,
 }
 
 JasmReport facadeApplyJasmDiff(FacadeSession& s, const std::string& name,
-                               const std::string& diff, const std::string& validation)
+                               const std::string& diff, const std::string& validation,
+                               const std::string& frame)
 {
     const auto base     = facadeClassJasm(s, name).source;
     const auto applied = applyUnifiedDiff(base, diff);
     if (!applied.error.empty()) return diffErrorReport(applied.error, applied.failedHunk);
     return applyInPlace(s, jasmTargetUri(s, name), name, "", applied.text,
-                        parseValidation(validation));
+                        parseValidation(validation), parseFrame(frame));
 }
 
 JasmReport facadeValidateMethodJasm(FacadeSession& s, const std::string& cls,
@@ -579,10 +592,10 @@ JasmReport facadeValidateMethodJasm(FacadeSession& s, const std::string& cls,
 JasmReport facadeApplyMethodJasm(FacadeSession& s, const std::string& cls,
                                  const std::string& name, const std::string& desc,
                                  const std::string& sourceName, const std::string& source,
-                                 const std::string& validation)
+                                 const std::string& validation, const std::string& frame)
 {
     return methodPatch(s, cls, name, desc, sourceName, source, "", true,
-                       parseValidation(validation));
+                       parseValidation(validation), parseFrame(frame));
 }
 
 JasmReport facadeValidateMethodJasmDiff(FacadeSession& s, const std::string& cls,
@@ -595,9 +608,11 @@ JasmReport facadeValidateMethodJasmDiff(FacadeSession& s, const std::string& cls
 
 JasmReport facadeApplyMethodJasmDiff(FacadeSession& s, const std::string& cls,
                                      const std::string& name, const std::string& desc,
-                                     const std::string& diff, const std::string& validation)
+                                     const std::string& diff, const std::string& validation,
+                                     const std::string& frame)
 {
-    return methodPatch(s, cls, name, desc, "", "", diff, true, parseValidation(validation));
+    return methodPatch(s, cls, name, desc, "", "", diff, true, parseValidation(validation),
+                       parseFrame(frame));
 }
 
 }   // namespace mjt::pysdk

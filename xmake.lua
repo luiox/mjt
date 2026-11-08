@@ -171,6 +171,9 @@ includes("xmake/libca_rules.lua")
 -- fail-loud 属预期，临时库重建即愈）。
 -- 0.0.18 = jar 导入同名重复条目改末现保留（对齐 JVM 类加载口径，PR #160）+
 -- asm/remapper 注解递归畸形输入边界守卫（#158）；词条面无新增依赖。
+-- 本行待升：jasm 保留原帧档 FrameMode（mjbase#190，pysdk apply 族 frame 档
+-- 消费）随 luiox/mjbase#197 合并后的包词条发版——词条落定后本行 bump 到对
+-- 应版本号（词条面无新增依赖）。
 add_requires("mjbase 0.0.18")
 
 includes("test_helper")

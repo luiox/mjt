@@ -734,6 +734,34 @@ def run_all():
         check("jasm unknown class", False, "no exception")
     except KeyError:
         check("jasm unknown class", True)
+
+    # frame 档透传 + 静默空转告警（mjbase#190）：preserve 合法类往返 ok 且
+    # 文本恒等（保留档只动帧不动指令）；非法 frame 值 ValueError；失败 apply
+    # （零落盘）必发 RuntimeWarning，成功路径不告警——返回值契约不变，只消
+    # 除静默空操作。坏帧类 preserve E2E 在 facade C++ 直测（DOM 级夹具）。
+    import warnings
+
+    text_now = mjt.class_jasm(h18, "me/demo/Util")["source"]
+    kept = mjt.class_apply_jasm(h18, "me/demo/Util", text_now, frame="preserve")
+    check("jasm frame preserve ok", kept["ok"], str(kept))
+    check("jasm frame preserve roundtrip",
+          mjt.class_jasm(h18, "me/demo/Util")["source"] == text_now, "preserve drift")
+    try:
+        mjt.class_apply_jasm(h18, "me/demo/Util", text_now, frame="bogus")
+        check("jasm frame bogus raises", False, "no exception")
+    except ValueError:
+        check("jasm frame bogus raises", True)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        noop = mjt.class_apply_jasm(h18, "me/demo/Util", other_source)
+    check("jasm noop apply warns", not noop["ok"]
+          and any(issubclass(w.category, RuntimeWarning) for w in caught), str(caught))
+    check("jasm noop apply no land",
+          mjt.class_jasm(h18, "me/demo/Util")["source"] == text_now, "failed apply landed")
+    with warnings.catch_warnings(record=True) as caught_ok:
+        warnings.simplefilter("always")
+        mjt.class_apply_jasm(h18, "me/demo/Util", text_now)
+    check("jasm ok apply silent", not caught_ok, str(caught_ok))
     mjt.close_container(h18)
 
     # ── 19. jar_diff（自身零差异 + 单类修改识别 + 缺文件 fail-closed） ──
