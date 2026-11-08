@@ -336,8 +336,10 @@ bool resolveClassUriArgument(mjt::workspace::IWorkspace& workspace,
     const auto slots = loadWorkspaceShadowTable(workspace);
     if (!refShaped) {
         //raw：内部名核表（URI 归一），命中后原样透传（URI 契约零漂移）。
+        //空表（在场源无任何登记——DB 真源下无 shadow 工作流的常态）不核：
+        //与 resolveShadowSlot 对空表的 verifyRaw 跳过同口径，raw 直通。
         const auto internal = mjt::internalNameOfUri(input);
-        if (!slots.present) {
+        if (!slots.present || slots.table.size() == 0) {
             out = input;
             return true;
         }
@@ -345,7 +347,7 @@ bool resolveClassUriArgument(mjt::workspace::IWorkspace& workspace,
             error = slotError(mjbase::renamer::shadowSlotErrorCode(
                                   mjbase::renamer::ShadowSlotError::RawNotFound) +
                               std::string(": bare selector '") + input +
-                              "' is not registered in the loaded shadow sidecar; do not "
+                              "' is not registered in the loaded shadow table; do not "
                               "hand-type obfuscated names, fetch the reference with "
                               "raw_to_shadow");
             return false;
