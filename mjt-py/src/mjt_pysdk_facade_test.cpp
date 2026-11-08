@@ -860,7 +860,8 @@ TEST(FacadeContainer, VerifyContainerCountsMismatchMalformedDeps)
         EXPECT_EQ(rep.match, 5u);
         EXPECT_EQ(rep.mismatch, 0u);
         EXPECT_EQ(rep.malformed, 0u);
-        EXPECT_GE(rep.nonClass, std::size_t{1});   // 目录条目（+/MANIFEST）
+        // jar 写出不合成目录占位条目（mjbase#167）：全 class 条目，nonClass=0。
+        EXPECT_EQ(rep.nonClass, 0u);
     }
     // mismatch：条目字节声明的类名与 entry 路径不符。
     facadeSetEntryBytes(s, "me/demo/Util.class", facadeClassBytes(s, "me/demo/App"));
@@ -1496,8 +1497,9 @@ TEST(FacadeCensus, ExportsVersionedDeterministicTables)
     // members = member_census 行数 = Σ 类行 method_count + field_count。
     EXPECT_EQ(report.members, 12U);
     EXPECT_EQ(report.members, report.methods + report.fields);
-    EXPECT_EQ(report.entriesActive, 7U);   // 5 class 条目 + jar 写入器两级目录占位
-    EXPECT_EQ(report.entriesIrregular, 2U);
+    // jar 写出不合成目录占位条目（mjbase#167）：条目面 = 5 class 条目全常规。
+    EXPECT_EQ(report.entriesActive, 5U);
+    EXPECT_EQ(report.entriesIrregular, 0U);
     ASSERT_TRUE(std::filesystem::is_regular_file(report.classCensusFile));
     ASSERT_TRUE(std::filesystem::is_regular_file(report.containerCensusFile));
     ASSERT_TRUE(std::filesystem::is_regular_file(report.memberCensusFile));
@@ -1549,12 +1551,15 @@ TEST(FacadeCensus, ExportsVersionedDeterministicTables)
     const auto containerTsv = readFileBytes(report.containerCensusFile);
     const std::string containerText(containerTsv.begin(), containerTsv.end());
     EXPECT_NE(containerText.find("# container-census v2\n"), std::string::npos);
-    EXPECT_NE(containerText.find("entries_active\t7\n"), std::string::npos);
+    EXPECT_NE(containerText.find("entries_active\t5\n"), std::string::npos);
     EXPECT_NE(containerText.find("entries_regular\t5\n"), std::string::npos);
-    EXPECT_NE(containerText.find("entries_irregular\t2\n"), std::string::npos);
-    EXPECT_NE(containerText.find("entry_shape_trailing_slash\t2\n"), std::string::npos);
+    EXPECT_NE(containerText.find("entries_irregular\t0\n"), std::string::npos);
+    // 无目录占位（mjbase#167）：trailing_slash 与 resource 形态行零计数不落盘，
+    // 条目形态由 entry_shape_regular 全覆盖。
+    EXPECT_NE(containerText.find("entry_shape_regular\t5\n"), std::string::npos);
     EXPECT_NE(containerText.find("entry_kind_class\t5\n"), std::string::npos);
-    EXPECT_NE(containerText.find("entry_kind_resource\t2\n"), std::string::npos);
+    EXPECT_EQ(containerText.find("entry_shape_trailing_slash"), std::string::npos);
+    EXPECT_EQ(containerText.find("entry_kind_resource"), std::string::npos);
     EXPECT_NE(containerText.find("classes\t5\n"), std::string::npos);
     // 汇总 sha256 行 = 64 位 hex 内容锚形状。
     const auto shaLine = containerText.find("input_sha256\t");
