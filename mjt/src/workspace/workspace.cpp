@@ -4914,15 +4914,21 @@ MutationResult WorkspaceBase::restoreSavepoint(ca::str::Utf8StringRef nameRef,
         //身份规格 = 书签位与头之间的注记差量（方向感知）：书签在头之前 =
         ///活动链 (bookmark, head] 的反向倒置；在头之后 = (head, bookmark] 的
         //前向正序。随 restore 事务落账（undo 该 restore 即整体反向回补）。
+        //LedgerIdentityRename move-only：段间拼接走 clone/move，不经
+        //vector::insert 的拷贝路径。
         std::vector<project::LedgerIdentityRename> identitySpecs;
         if (bookmark->txn < ledger_.headTxn()) {
             const auto chain = ledger_.chainTo(ledger_.headTxn());
+            std::vector<std::vector<project::LedgerIdentityRename>> segments;
             for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
                 if (*it <= bookmark->txn) continue;
                 const auto* row = ledger_.transaction(*it);
                 if (row == nullptr || row->identity.empty()) continue;
-                const auto reversed = reversedIdentitySpecs(row->identity);
-                identitySpecs.insert(identitySpecs.begin(), reversed.begin(), reversed.end());
+                segments.push_back(reversedIdentitySpecs(row->identity));
+            }
+            for (auto& segment : segments) {
+                identitySpecs.reserve(identitySpecs.size() + segment.size());
+                for (auto& spec : segment) identitySpecs.push_back(std::move(spec));
             }
         }
         else if (bookmark->txn > ledger_.headTxn()) {
@@ -4930,8 +4936,9 @@ MutationResult WorkspaceBase::restoreSavepoint(ca::str::Utf8StringRef nameRef,
                 if (step <= ledger_.headTxn()) continue;
                 const auto* row = ledger_.transaction(step);
                 if (row == nullptr) continue;
-                identitySpecs.insert(identitySpecs.end(), row->identity.begin(),
-                                     row->identity.end());
+                identitySpecs.reserve(identitySpecs.size() + row->identity.size());
+                for (const auto& spec : row->identity)
+                    identitySpecs.push_back(spec.clone());
             }
         }
         return commit(std::move(candidate), {}, request, nullptr, identitySpecs);
