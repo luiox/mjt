@@ -193,7 +193,13 @@ includes("xmake/libca_rules.lua")
 -- 第 5 参缺省兼容——v49 杠杆跳过 smt_build 帧序列化层（unnamed slot/
 -- returnAddress 形可救，数据流分析失败两档同败）+ fail-closed pc 对齐门；
 -- pysdk apply 族 frame 档消费本档）；词条面无新增依赖。
-add_requires("mjbase 0.0.22")
+-- 0.0.23 = 台账头位持久化——头指针行 row=head（PR #202）：LedgerRow 增
+-- Head 行型承载 undo 态头位（head 落后于链尾），闭合「undo 作为末动作落盘、
+-- 重开静默复活到链尾」的格式缺陷；条件写出保常态字节不变；persistedHead_
+-- 头位脏跟踪使 undo-only 会话 flush 落换代。open 期身份自愈（#88）的 undo
+-- 方向对账前提——undo 后反迁移失败的库行名分歧，重开须工作副本停在 undo
+-- 位而非复活改名态，阶段二路径对账才有靶子。
+add_requires("mjbase 0.0.23")
 
 includes("test_helper")
 includes("mjt")
