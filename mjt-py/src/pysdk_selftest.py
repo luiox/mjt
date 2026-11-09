@@ -1387,7 +1387,7 @@ def run_all():
           any(r["owner"] == "me/demo/Util" and r["name"] == "add"
               for r in mjt.search(h30, "members", "add")),
           str(mjt.search(h30, "members", "add")))
-    mjt.rename_method((h30, "me/demo/Util"), "add", "(II)I", "add2")
+    mjt.rename_method((h30, "me/demo/Util", "add", "(II)I"), "add2")
     mjt.write_back((h30, "me/demo/Util"), compute_frames=False)
     adds30 = mjt.search(h30, "members", "add")
     check("sessiondb member rename fresh",
