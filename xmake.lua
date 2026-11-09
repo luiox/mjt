@@ -216,7 +216,7 @@ includes("xmake/libca_rules.lua")
 -- searchNumbers，切片替换面 replaceCpStringsFromClass / replaceNumbersFromMember /
 -- replaceCpNumbersFromClass。消费方 = search kind=strings / kind=numbers
 -- DB-first 接线（ingest/edit_sync 常量切片入库）。
-add_requires("mjbase 0.0.27")
+add_requires("mjbase 0.0.28")
 
 includes("test_helper")
 includes("mjt")
