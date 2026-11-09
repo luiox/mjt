@@ -17,7 +17,10 @@
 # 初始化拓扑序：超类边 + clinit 引用边 + 环报告 + roots 子图）→
 # class_census 文件面（#39 S0 量化基线：导出 → 读回 → 确定性 + 缺省目录）→
 # search/xref 查询面（analysis.db DB-first，语义随 mjt #94：四档 + to/from，
-# 每命令临时库即弃、新增条目即时可见、regex 引擎回落、错误面 fail-closed）。
+# 每命令临时库即弃、新增条目即时可见、regex 引擎回落、错误面 fail-closed）→
+# hierarchy 层次闭包面（analysis.db DB-only 无引擎回落：super_chain /
+# direct_subclasses / all_subclasses / implementors + *Paged 窗口拼接、脏树
+# 不参与、起点未登记 fail-closed）。
 # 全程合成样本（mjt.write_demo_jar），零样本字节入库。
 # 文件尾有 __main__ 兜底入口：--script 宿主 exec 的 __name__ 是 "__main__"，
 # 直接 `--script pysdk_selftest.py` 即跑全套并按 fail 数定退出码。
@@ -1225,6 +1228,83 @@ def run_all():
         check("search stale handle", False, "no exception")
     except KeyError:
         check("search stale handle", True, "")
+
+    # ── 29. hierarchy 层次闭包面（analysis.db DB-only，无引擎回落） ──
+    # 四档（super_chain/direct_subclasses/all_subclasses/implementors）+ 分页
+    # 窗口 + 错误面 fail-closed。闭包只吃类头事实（super/interfaces）——demo
+    # jar 原生层次只有 Api 接口 + Color implements Api，树面改写 super/
+    # interfaces 造 extends 链，flush 落账后即时可见（新鲜 ingest）；脏树
+    # 不参与（未 flush 的类头改写查询不见）。
+    p29, h29 = fresh("hier")
+    mjt.class_set_super((h29, "me/demo/App"), "me/demo/Crypto")
+    mjt.class_set_interfaces((h29, "me/demo/Crypto"), ["me/demo/Api"])
+    mjt.flush(h29, compute_frames=False)
+    chain29 = mjt.hierarchy(h29, "super_chain", "me/demo/App")
+    check("hierarchy super chain",
+          [(r["class"], r["resource_uri"]) for r in chain29]
+          == [("me/demo/App", "me/demo/App.class"),
+              ("me/demo/Crypto", "me/demo/Crypto.class"),
+              ("java/lang/Object", "")],
+          str(chain29))
+    direct29 = mjt.hierarchy(h29, "direct_subclasses", "me/demo/Crypto")
+    check("hierarchy direct subclasses",
+          [r["class"] for r in direct29] == ["me/demo/App"], str(direct29))
+    all29 = mjt.hierarchy(h29, "all_subclasses", "me/demo/Crypto")
+    check("hierarchy all subclasses",
+          [r["class"] for r in all29] == ["me/demo/App"], str(all29))
+    impl29 = mjt.hierarchy(h29, "implementors", "me/demo/Api")
+    check("hierarchy implementors",
+          [(r["class"], r["resource_uri"]) for r in impl29]
+          == [("me/demo/Color", "me/demo/Color.class"),
+              ("me/demo/Crypto", "me/demo/Crypto.class")],
+          str(impl29))
+    # 脏树不参与：未 flush 的类头改写（App super → Util）不进查询口径。
+    mjt.class_set_super((h29, "me/demo/App"), "me/demo/Util")
+    check("hierarchy dirty tree excluded",
+          [r["class"] for r in mjt.hierarchy(h29, "super_chain", "me/demo/App")]
+          == ["me/demo/App", "me/demo/Crypto", "java/lang/Object"],
+          "stale super visible")
+    # 分页窗口（仅闭包两方向）：各页 offset 升序拼接 = 全量；超闭包空页；
+    # limit=0 空页。
+    paged29 = (mjt.hierarchy(h29, "implementors", "me/demo/Api", limit=1, offset=0)
+               + mjt.hierarchy(h29, "implementors", "me/demo/Api", limit=1, offset=1))
+    check("hierarchy paged concat",
+          [r["class"] for r in paged29] == [r["class"] for r in impl29]
+          and mjt.hierarchy(h29, "implementors", "me/demo/Api", limit=1, offset=5) == []
+          and mjt.hierarchy(h29, "implementors", "me/demo/Api", limit=0, offset=0) == [],
+          str(paged29))
+    # 错误面：kind 词表外 / 起点（内部名）未登记 / 分页位错位 / 负值窗口走库
+    # Invalid（RuntimeError）。
+    try:
+        mjt.hierarchy(h29, "ancestors", "me/demo/App")
+        check("hierarchy bad kind", False, "no exception")
+    except ValueError as e:
+        check("hierarchy bad kind", "kind must be" in str(e), str(e))
+    try:
+        mjt.hierarchy(h29, "super_chain", "me/demo/Nope")
+        check("hierarchy unknown class", False, "no exception")
+    except ValueError as e:
+        check("hierarchy unknown class", "not registered" in str(e), str(e))
+    try:
+        mjt.hierarchy(h29, "super_chain", "")
+        check("hierarchy empty query", False, "no exception")
+    except ValueError as e:
+        check("hierarchy empty query", "required" in str(e), str(e))
+    try:
+        mjt.hierarchy(h29, "all_subclasses", "me/demo/Crypto", limit=1)
+        check("hierarchy half window", False, "no exception")
+    except ValueError as e:
+        check("hierarchy half window", "together" in str(e), str(e))
+    try:
+        mjt.hierarchy(h29, "super_chain", "me/demo/App", limit=1, offset=0)
+        check("hierarchy chain paged", False, "no exception")
+    except ValueError as e:
+        check("hierarchy chain paged", "does not take limit/offset" in str(e), str(e))
+    try:
+        mjt.hierarchy(h29, "all_subclasses", "me/demo/Crypto", limit=-1, offset=0)
+        check("hierarchy negative window", False, "no exception")
+    except RuntimeError as e:
+        check("hierarchy negative window", "page limit" in str(e), str(e))
 
     if fallback_tmp is not None:
         import shutil

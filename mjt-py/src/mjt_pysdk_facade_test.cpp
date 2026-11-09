@@ -2294,3 +2294,253 @@ TEST(FacadeXref, SelectorAndParamGuards)
 
     reg.close(s.handle);
 }
+
+// ── 层次闭包面（analysis.db DB-only，无引擎回落；mjbase AnalysisDb 等位物） ──
+
+namespace {
+
+/// 层次闭包夹具罐（hierarchy DB-first 端到端）：Base←Mid←Leaf 传递链 + 兄弟
+/// Other（direct_subclasses 排序对照）；IFoo 接口 + 子接口 IBar（接口闭包经
+/// implements 边展开）+ Impl implements IFoo + SubImpl extends Impl implements
+/// IBar（implementors 后代展开）。全部空体类——层次查询只吃类头事实（super/
+/// interfaces），方法体零成本。jasm 文本 raw string 定版规则同 makeQueryFacesJar。
+std::string makeHierarchyJar(const char* name)
+{
+    mjbase::jasm::JvmJasmService assembler;
+    const auto assemble = [&](const char* sourceName, const std::string& source) {
+        const auto nameText   = utf16Text(sourceName);
+        const auto sourceText = utf16Text(source);
+        const auto assembled  = assembler.assemble(nameText.ref(), sourceText.ref());
+        if (!assembled.isOk()) throw std::runtime_error("hierarchy fixture did not assemble");
+        return assembled.value->bytes;
+    };
+
+    const std::pair<const char*, const char*> sources[] = {
+        {"Base.jasm",
+         ".super java/lang/Object\n"
+         ".class public super pysdk/hier/Base {\n"
+         "}\n"},
+        {"Mid.jasm",
+         ".super pysdk/hier/Base\n"
+         ".class public super pysdk/hier/Mid {\n"
+         "}\n"},
+        {"Leaf.jasm",
+         ".super pysdk/hier/Mid\n"
+         ".class public super pysdk/hier/Leaf {\n"
+         "}\n"},
+        {"Other.jasm",
+         ".super pysdk/hier/Base\n"
+         ".class public super pysdk/hier/Other {\n"
+         "}\n"},
+        {"IFoo.jasm",
+         ".super java/lang/Object\n"
+         ".class public interface abstract pysdk/hier/IFoo {\n"
+         "}\n"},
+        {"IBar.jasm",
+         ".super java/lang/Object\n"
+         ".implements pysdk/hier/IFoo\n"
+         ".class public interface abstract pysdk/hier/IBar {\n"
+         "}\n"},
+        {"Impl.jasm",
+         ".super java/lang/Object\n"
+         ".implements pysdk/hier/IFoo\n"
+         ".class public super pysdk/hier/Impl {\n"
+         "}\n"},
+        {"SubImpl.jasm",
+         ".super pysdk/hier/Impl\n"
+         ".implements pysdk/hier/IBar\n"
+         ".class public super pysdk/hier/SubImpl {\n"
+         "}\n"},
+    };
+
+    mjbase::model::ResourceContainer container;
+    constexpr std::string_view kSourceSuffix = ".jasm";
+    for (const auto& [sourceName, source] : sources) {
+        const std::string stem(sourceName,
+                               std::strlen(sourceName) - kSourceSuffix.size());
+        const std::string entry = "pysdk/hier/" + stem + ".class";
+        container.addResource(entry,
+                              std::make_unique<mjbase::model::ClassResource>(
+                                  entry, assemble(sourceName, source)));
+    }
+    const auto path = tmpPath(name);
+    const auto exported = mjbase::model::ResourceHelper::exportToJar(container, path);
+    if (exported.is_err()) throw std::runtime_error("hierarchy fixture export failed");
+    return path;
+}
+
+/// 开层次夹具会话（句柄随注册表；用例自行 close）。
+FacadeSession& openHierarchySession(const char* jarName)
+{
+    auto& s = FacadeRegistry::instance().create();
+    facadeImportJar(s, makeHierarchyJar(jarName));
+    return s;
+}
+
+HierarchyRequest makeHierarchyRequest(const char* kind, const char* query)
+{
+    HierarchyRequest request;
+    request.kind  = kind;
+    request.query = query;
+    return request;
+}
+
+/// 行类名列表（命中集合断言辅助）。
+std::vector<std::string> hierarchyNames(const std::vector<HierarchyRow>& rows)
+{
+    std::vector<std::string> names;
+    names.reserve(rows.size());
+    for (const auto& row : rows) names.push_back(row.className);
+    return names;
+}
+
+}   // namespace
+
+TEST(FacadeHierarchy, ChainSubclassesAndImplementors)
+{
+    auto& reg = FacadeRegistry::instance();
+    auto& s   = openHierarchySession("mjt_facade_hierarchy.jar");
+
+    // super_chain：含自身、最近在前；未登记父类名（java/lang/Object）计入链尾
+    // 后停止——链行 uri 逐行回填，链尾名不在库 → uri 空串。
+    const auto chain = facadeHierarchy(s, makeHierarchyRequest("super_chain", "pysdk/hier/Leaf"));
+    ASSERT_EQ(chain.size(), std::size_t{4});
+    EXPECT_EQ(hierarchyNames(chain),
+              (std::vector<std::string>{"pysdk/hier/Leaf", "pysdk/hier/Mid", "pysdk/hier/Base",
+                                        "java/lang/Object"}));
+    for (std::size_t i = 0; i < 3; ++i)
+        EXPECT_EQ(chain[i].resourceUri, chain[i].className + ".class");
+    EXPECT_EQ(chain.back().resourceUri, "");
+
+    // 短链对照：registered 起点恒有自身行（链首）。
+    const auto shortChain =
+        facadeHierarchy(s, makeHierarchyRequest("super_chain", "pysdk/hier/Base"));
+    ASSERT_EQ(shortChain.size(), std::size_t{2});
+    EXPECT_EQ(shortChain.front().className, "pysdk/hier/Base");
+    EXPECT_EQ(shortChain.back().className, "java/lang/Object");
+
+    // direct_subclasses：仅 extends 边 + internal_name 升序（Mid < Other）。
+    const auto direct =
+        facadeHierarchy(s, makeHierarchyRequest("direct_subclasses", "pysdk/hier/Base"));
+    EXPECT_EQ(hierarchyNames(direct),
+              (std::vector<std::string>{"pysdk/hier/Mid", "pysdk/hier/Other"}));
+    for (const auto& row : direct) EXPECT_EQ(row.resourceUri, row.className + ".class");
+    // 叶子无子类 → 空集非错。
+    EXPECT_TRUE(facadeHierarchy(s, makeHierarchyRequest("direct_subclasses", "pysdk/hier/Leaf"))
+                    .empty());
+
+    // all_subclasses：传递闭包（不含自身）升序。
+    EXPECT_EQ(hierarchyNames(facadeHierarchy(s, makeHierarchyRequest("all_subclasses",
+                                                                     "pysdk/hier/Base"))),
+              (std::vector<std::string>{"pysdk/hier/Leaf", "pysdk/hier/Mid", "pysdk/hier/Other"}));
+    EXPECT_TRUE(facadeHierarchy(s, makeHierarchyRequest("all_subclasses", "pysdk/hier/Leaf"))
+                    .empty());
+
+    // implementors：接口自身闭包（含子接口 IBar 经 implements 边入列）+ 实现
+    // 者全部后代（SubImpl extends Impl）。
+    EXPECT_EQ(hierarchyNames(facadeHierarchy(s, makeHierarchyRequest("implementors",
+                                                                     "pysdk/hier/IFoo"))),
+              (std::vector<std::string>{"pysdk/hier/IBar", "pysdk/hier/Impl",
+                                        "pysdk/hier/SubImpl"}));
+    // 子接口视角：只收声明 IBar 的实现者 + 后代。
+    EXPECT_EQ(hierarchyNames(facadeHierarchy(s, makeHierarchyRequest("implementors",
+                                                                     "pysdk/hier/IBar"))),
+              (std::vector<std::string>{"pysdk/hier/SubImpl"}));
+
+    reg.close(s.handle);
+}
+
+TEST(FacadeHierarchy, PagedWindowsConcatenateToFull)
+{
+    auto& reg = FacadeRegistry::instance();
+    auto& s   = openHierarchySession("mjt_facade_hierarchy_paged.jar");
+
+    const auto full = facadeHierarchy(s, makeHierarchyRequest("all_subclasses", "pysdk/hier/Base"));
+    ASSERT_EQ(full.size(), std::size_t{3});
+
+    // 各页按 offset 升序拼接 = 全量结果（跨页不重不漏）。
+    std::vector<std::string> concatenated;
+    for (ca::i64 offset = 0; offset < 3; ++offset) {
+        auto request  = makeHierarchyRequest("all_subclasses", "pysdk/hier/Base");
+        request.limit = 1;
+        request.offset = offset;
+        auto page     = facadeHierarchy(s, request);
+        ASSERT_EQ(page.size(), std::size_t{1});
+        EXPECT_EQ(page.front().resourceUri, page.front().className + ".class");
+        concatenated.push_back(page.front().className);
+    }
+    EXPECT_EQ(concatenated, hierarchyNames(full));
+
+    // 多行页 + 尾页取剩余；offset 超闭包 → 空页；limit=0 → 空页。
+    auto tail        = makeHierarchyRequest("all_subclasses", "pysdk/hier/Base");
+    tail.limit       = 2;
+    tail.offset      = 1;
+    EXPECT_EQ(hierarchyNames(facadeHierarchy(s, tail)),
+              (std::vector<std::string>{"pysdk/hier/Mid", "pysdk/hier/Other"}));
+    auto beyond = tail;
+    beyond.offset = 7;
+    EXPECT_TRUE(facadeHierarchy(s, beyond).empty());
+    auto zero = tail;
+    zero.limit = 0;
+    EXPECT_TRUE(facadeHierarchy(s, zero).empty());
+
+    // implementors 同一窗口契约（3 行闭包逐页拼回）。
+    std::vector<std::string> implPages;
+    for (ca::i64 offset = 0; offset < 3; ++offset) {
+        auto request   = makeHierarchyRequest("implementors", "pysdk/hier/IFoo");
+        request.limit  = 1;
+        request.offset = offset;
+        auto page      = facadeHierarchy(s, request);
+        ASSERT_EQ(page.size(), std::size_t{1});
+        implPages.push_back(page.front().className);
+    }
+    EXPECT_EQ(implPages, hierarchyNames(facadeHierarchy(s, makeHierarchyRequest(
+                                                   "implementors", "pysdk/hier/IFoo"))));
+
+    // 负值窗口走库面 Invalid（不重复口径）→ RuntimeError。
+    auto negative = makeHierarchyRequest("all_subclasses", "pysdk/hier/Base");
+    negative.limit = -1;
+    negative.offset = 0;
+    EXPECT_THROW(facadeHierarchy(s, negative), std::runtime_error);
+    auto negativeOffset = negative;
+    negativeOffset.limit  = 1;
+    negativeOffset.offset = -2;
+    EXPECT_THROW(facadeHierarchy(s, negativeOffset), std::runtime_error);
+
+    reg.close(s.handle);
+}
+
+TEST(FacadeHierarchy, ParamGuardsFailClosed)
+{
+    auto& reg = FacadeRegistry::instance();
+    auto& s   = openHierarchySession("mjt_facade_hierarchy_guards.jar");
+
+    // kind 词表外 / 空 query。
+    EXPECT_THROW(facadeHierarchy(s, makeHierarchyRequest("ancestors", "pysdk/hier/Base")),
+                 std::invalid_argument);
+    EXPECT_THROW(facadeHierarchy(s, makeHierarchyRequest("super_chain", "")),
+                 std::invalid_argument);
+    // 起点未登记 → 明确寻址错误（mjbase 面未登记起点返回空表，pysdk 升格）。
+    try {
+        facadeHierarchy(s, makeHierarchyRequest("super_chain", "pysdk/hier/Nope"));
+        FAIL() << "unregistered start class must fail closed";
+    }
+    catch (const std::invalid_argument& error) {
+        EXPECT_NE(std::string(error.what()).find("not registered"), std::string::npos);
+        EXPECT_NE(std::string(error.what()).find("pysdk/hier/Nope"), std::string::npos);
+    }
+    // 分页位错位：limit/offset 缺一不成对；super_chain/direct_subclasses 不吃分页。
+    auto halfWindow           = makeHierarchyRequest("all_subclasses", "pysdk/hier/Base");
+    halfWindow.limit          = 1;
+    EXPECT_THROW(facadeHierarchy(s, halfWindow), std::invalid_argument);
+    auto chainPaged           = makeHierarchyRequest("super_chain", "pysdk/hier/Leaf");
+    chainPaged.limit          = 1;
+    chainPaged.offset         = 0;
+    EXPECT_THROW(facadeHierarchy(s, chainPaged), std::invalid_argument);
+    auto directPaged          = makeHierarchyRequest("direct_subclasses", "pysdk/hier/Base");
+    directPaged.limit         = 1;
+    directPaged.offset        = 0;
+    EXPECT_THROW(facadeHierarchy(s, directPaged), std::invalid_argument);
+
+    reg.close(s.handle);
+}
