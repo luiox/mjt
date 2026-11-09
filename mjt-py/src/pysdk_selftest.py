@@ -1129,9 +1129,10 @@ def run_all():
         check("census missing jar throws", "jar not found" in str(e), str(e))
 
     # ── 28. search/xref 查询面（analysis.db DB-first，语义随 mjt #94） ──
-    # 每命令临时库整库导入后即弃（census 同款生命周期），恒查容器落账字节；
-    # add_entry 的新增资源下一命令即时可见（新鲜 ingest，无陈旧库可失真）。
-    # contains/prefix/exact 直查库；regex 无 SQL 等价面，回落引擎活扫描。
+    # 会话级分析库（阶段 30 改造）：首查触发整库导入，编辑边界增量同步保
+    # 新鲜，结构变更下次查询全量重建——add_entry 的新增资源下一命令即时
+    # 可见（重建换血，无陈旧库可失真）。contains/prefix/exact 直查库；
+    # regex 无 SQL 等价面，回落引擎活扫描（一次性临时工作区）。
     p28, h28 = fresh("query")
     names28 = mjt.search(h28, "classes", "me/demo", match_mode="prefix")
     check("search classes prefix",
@@ -1245,8 +1246,8 @@ def run_all():
     # 四档（super_chain/direct_subclasses/all_subclasses/implementors）+ 分页
     # 窗口 + 错误面 fail-closed。闭包只吃类头事实（super/interfaces）——demo
     # jar 原生层次只有 Api 接口 + Color implements Api，树面改写 super/
-    # interfaces 造 extends 链，flush 落账后即时可见（新鲜 ingest）；脏树
-    # 不参与（未 flush 的类头改写查询不见）。
+    # interfaces 造 extends 链，flush 落账（会话库类事实增量同步）后即时可
+    # 见；脏树不参与（未 flush 的类头改写查询不见）。
     p29, h29 = fresh("hier")
     mjt.class_set_super((h29, "me/demo/App"), "me/demo/Crypto")
     mjt.class_set_interfaces((h29, "me/demo/Crypto"), ["me/demo/Api"])
@@ -1321,6 +1322,107 @@ def run_all():
         check("hierarchy negative window", False, "no exception")
     except RuntimeError as e:
         check("hierarchy negative window", "page limit" in str(e), str(e))
+
+    # ── 30. 会话级分析库（编辑边界增量同步 + 结构变更重建；绑定层端到端） ──
+    # 查询底座从「每命令临时库全量 ingest」换成「会话持库 + 编辑边界增量同
+    # 步」：首查触发整库导入；内容编辑落账边界（write_back / jasm apply /
+    # set_class_bytes）按脏类追平；结构变更（add/remove/rename/import）标
+    # stale 下次查询全量重建。本阶段钉死新鲜度契约：边界同步后查询必须看到
+    # 编辑后状态；脏树不参与口径保持。语义为准（不加 wall-clock 断言）。
+    p30, h30 = fresh("sessiondb")
+
+    # 数值新鲜：Crypto.decode 在 ireturn 前插 `sipush 42; pop`（emit 是 raw
+    # 形态，无整型装载糖——立即数恒落指令行；pop 保持栈形中性，探针不牵连
+    # compute_frames=False 的写回纪律）→ write_back → numbers 即见；摘掉再
+    # write_back → 即消（成员键不变，走增量路径，无重建）。
+    dec30 = (h30, "me/demo/Crypto", "decode", "(II)Ljava/lang/String;")
+    check("sessiondb baseline 42 empty", mjt.search(h30, "numbers", "42") == [],
+          str(mjt.search(h30, "numbers", "42")))
+    rets30 = [uid for uid, op, kind in mjt.insns(dec30)
+              if kind == "insn" and op == mjt.opcodes["ARETURN"]]
+    check("sessiondb areturn found", len(rets30) == 1, str(rets30))
+    sip30 = mjt.emit_insn(dec30, mjt.opcodes["SIPUSH"], pos=rets30[0])
+    mjt.insn_set_operand(dec30, sip30, 42)
+    mjt.emit_insn(dec30, mjt.opcodes["POP"], pos=rets30[0])
+    mjt.write_back((h30, "me/demo/Crypto"), compute_frames=False)
+    hits42 = mjt.search(h30, "numbers", "42")
+    check("sessiondb numbers fresh after edit",
+          any(r["owner"] == "me/demo/Crypto" and r["name"] == "decode"
+              and r["value"] == "42" and r["kind"] == "instruction_number"
+              and r["instruction_index"] >= 0 for r in hits42), str(hits42))
+    mjt.remove_insn(dec30, sip30)
+    mjt.write_back((h30, "me/demo/Crypto"), compute_frames=False)
+    check("sessiondb numbers fresh after remove",
+          mjt.search(h30, "numbers", "42") == [], str(mjt.search(h30, "numbers", "42")))
+
+    # xref 新鲜：App.main 的 invokestatic decode 改靶 dec（同描述符，栈形不
+    # 变）→ 引用切片换新：旧靶清空、新靶入列（from 面同步跟随）。
+    to30 = mjt.xref(h30, "method", "me/demo/Crypto", "decode",
+                    "(II)Ljava/lang/String;")
+    check("sessiondb xref baseline",
+          len(to30) == 1 and to30[0]["source"]["class"] == "me/demo/App", str(to30))
+    main30 = (h30, "me/demo/App", "main", "([Ljava/lang/String;)V")
+    inv30 = [uid for uid, op, kind in mjt.insns(main30)
+             if kind == "insn" and op == mjt.opcodes["INVOKESTATIC"]]
+    check("sessiondb invokestatic found", len(inv30) == 1, str(inv30))
+    mjt.insn_set_method_ref(main30, inv30[0], "me/demo/Crypto", "dec",
+                            "(II)Ljava/lang/String;", False)
+    mjt.write_back((h30, "me/demo/App"), compute_frames=False)
+    check("sessiondb xref old target cleared",
+          mjt.xref(h30, "method", "me/demo/Crypto", "decode",
+                   "(II)Ljava/lang/String;") == [], "old target still visible")
+    retarget30 = mjt.xref(h30, "method", "me/demo/Crypto", "dec",
+                          "(II)Ljava/lang/String;")
+    check("sessiondb xref new target fresh",
+          len(retarget30) == 2
+          and any(r["source"]["class"] == "me/demo/App"
+                  and r["source"]["method"] == "main" for r in retarget30),
+          str(retarget30))
+
+    # 成员改名：mjbase 成员身份只增不删，旧键行是幽灵——同步的幽灵检查标
+    # stale，下次查询全量重建（新键可见、旧键无幽灵）。
+    check("sessiondb members baseline",
+          any(r["owner"] == "me/demo/Util" and r["name"] == "add"
+              for r in mjt.search(h30, "members", "add")),
+          str(mjt.search(h30, "members", "add")))
+    mjt.rename_method((h30, "me/demo/Util"), "add", "(II)I", "add2")
+    mjt.write_back((h30, "me/demo/Util"), compute_frames=False)
+    adds30 = mjt.search(h30, "members", "add")
+    check("sessiondb member rename fresh",
+          any(r["owner"] == "me/demo/Util" and r["name"] == "add2"
+              for r in adds30)
+          and not any(r["owner"] == "me/demo/Util" and r["name"] == "add"
+                      for r in adds30), str(adds30))
+
+    # 类改名：条目 URI 迁移 + mjbase 类身份只增不删的旧名幽灵行 → 重建后
+    # 新名可见、旧名无幽灵。
+    mjt.rename_class((h30, "me/demo/Crypto"), "me/demo/Crypto2")
+    mjt.write_back((h30, "me/demo/Crypto2"), compute_frames=False)
+    classes30 = mjt.search(h30, "classes", "me/demo/", match_mode="prefix")
+    check("sessiondb class rename fresh",
+          len(classes30) == 5
+          and any(r["class"] == "me/demo/Crypto2"
+                  and r["resource_uri"] == "me/demo/Crypto2.class" for r in classes30)
+          and not any(r["class"] == "me/demo/Crypto" for r in classes30),
+          str(classes30))
+
+    # 条目结构变更：add_entry 新类即时可见；remove_entry 即消（可见域随
+    # 条目集合变 → 重建）。
+    p30x, h30x = fresh("sessiondb_src")
+    mjt.rename_class((h30x, "me/demo/Util"), "me/demo/Extra")
+    mjt.write_back((h30x, "me/demo/Extra"), compute_frames=False)
+    extra30 = mjt.class_bytes(h30x, "me/demo/Extra")
+    mjt.close_container(h30x)
+    mjt.add_entry(h30, "me/demo/Extra.class", extra30)
+    added30 = mjt.search(h30, "classes", "me/demo/Extra")
+    check("sessiondb add entry fresh",
+          [r["class"] for r in added30] == ["me/demo/Extra"]
+          and added30[0]["resource_uri"] == "me/demo/Extra.class", str(added30))
+    mjt.remove_entry(h30, "me/demo/Extra.class")
+    check("sessiondb remove entry fresh",
+          mjt.search(h30, "classes", "me/demo/Extra") == [],
+          str(mjt.search(h30, "classes", "me/demo/Extra")))
+    mjt.close_container(h30)
 
     if fallback_tmp is not None:
         import shutil

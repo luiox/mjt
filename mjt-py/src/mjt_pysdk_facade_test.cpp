@@ -2559,3 +2559,319 @@ TEST(FacadeHierarchy, ParamGuardsFailClosed)
 
     reg.close(s.handle);
 }
+
+// ── 会话级分析库（编辑边界增量同步 + 结构变更重建；新鲜度契约钉死面） ──────
+//
+// 查询面底座从「每命令临时库全量 ingest」换成「会话持库 + 编辑边界增量同
+// 步」：内容编辑（write_back / jasm apply / set_class_bytes）按脏类追平库，
+// 结构变更（add/remove/import/rename/token 提交）标 stale 下次查询全量重
+// 建。本组钉死新鲜度契约：边界同步后查询必须看到编辑后状态；脏树不参与
+// 口径保持（未 write_back 的树面编辑不可见）。
+
+/// 末条指令 uid（单插入点探针；kInsn kind 过滤）。
+static std::optional<ca::u32> lastInsnUid(FacadeSession& s, const std::string& cls,
+                                          const std::string& name, const std::string& desc)
+{
+    const auto briefs = facadeInsns(s, cls, name, desc);
+    for (auto it = briefs.rbegin(); it != briefs.rend(); ++it) {
+        if (it->kind == insn_kind::kInsn) return it->uid;
+    }
+    return std::nullopt;
+}
+
+TEST(FacadeSessionDb, NumbersFreshAfterInsnInsertAndRemove)
+{
+    auto& reg = FacadeRegistry::instance();
+    auto& s   = openQueryFacesSession("mjt_facade_session_numbers.jar");
+
+    // 基线：42 无命中（夹具常量为 1/2/100000）。
+    auto numbers = [&](const char* query) {
+        return facadeSearch(s, makeSearchRequest("numbers", query));
+    };
+    ASSERT_TRUE(numbers("42").empty());
+
+    // 内容编辑：Subject.value 末尾 ireturn 前插 `sipush 42; pop`（emit 是
+    // raw 形态，无整型装载糖——立即数恒落指令行，探针确定；pop 保持栈形
+    // 中性，compute_frames=false 的写回纪律不被探针牵连）。写回落账 → 会话
+    // 库增量同步（成员键不变，无幽灵 → 走增量路径）→ 查询即见。
+    const auto ret = lastInsnUid(s, "pysdk/Subject", "value", "()I");
+    ASSERT_TRUE(ret.has_value());
+    const auto sipush = facadeEmitInsn(s, "pysdk/Subject", "value", "()I", 17 /*SIPUSH*/, *ret);
+    facadeInsnSetOperand(s, "pysdk/Subject", "value", "()I", sipush, 42);
+    facadeEmitInsn(s, "pysdk/Subject", "value", "()I", 87 /*POP*/, *ret);
+    facadeWriteBack(s, "pysdk/Subject", false);
+
+    const auto rows = numbers("42");
+    ASSERT_EQ(rows.size(), std::size_t{1});
+    EXPECT_EQ(rows.front().kind, "instruction_number");
+    EXPECT_EQ(rows.front().owner, "pysdk/Subject");
+    EXPECT_EQ(rows.front().name, "value");
+    EXPECT_EQ(rows.front().value, "42");
+    EXPECT_GE(rows.front().instructionIndex, 0);
+
+    // 反向：摘掉 sipush 再写回 → 数值切片随编辑消失（空切片替换清旧行）。
+    facadeRemoveInsn(s, "pysdk/Subject", "value", "()I", sipush);
+    facadeWriteBack(s, "pysdk/Subject", false);
+    EXPECT_TRUE(numbers("42").empty());
+
+    reg.close(s.handle);
+}
+
+TEST(FacadeSessionDb, XrefFreshAfterCallRetarget)
+{
+    auto& reg = FacadeRegistry::instance();
+    auto& s   = openQueryFacesSession("mjt_facade_session_xref.jar");
+
+    const auto xrefTo = [&](const char* name, const char* desc) {
+        XrefRequest request;
+        request.target     = "method";
+        request.direction  = "to";
+        request.owner      = "pysdk/Subject";
+        request.name       = name;
+        request.descriptor = desc;
+        return facadeXref(s, request);
+    };
+
+    // 基线：Caller.call 直调 Subject.value；read 无调用方。
+    ASSERT_EQ(xrefTo("value", "()I").size(), std::size_t{1});
+    ASSERT_TRUE(xrefTo("read", "()I").empty());
+
+    // 内容编辑：call 体的 invokestatic 改靶 value → read（栈形不变）。写回
+    // 落账 → 引用切片换新（旧靶行清、新靶行入）→ 双向查询即见。
+    const auto briefs = facadeInsns(s, "pysdk/Caller", "call", "()I");
+    ca::u32 invokeUid = 0;
+    for (const auto& brief : briefs) {
+        if (brief.kind == insn_kind::kInsn && brief.opcode == 184 /*INVOKESTATIC*/) {
+            invokeUid = brief.uid;
+        }
+    }
+    ASSERT_NE(invokeUid, ca::u32{0});
+    facadeInsnSetMethodRef(s, "pysdk/Caller", "call", "()I", invokeUid, "pysdk/Subject",
+                           "read", "()I", false);
+    facadeWriteBack(s, "pysdk/Caller", false);
+
+    EXPECT_TRUE(xrefTo("value", "()I").empty());
+    const auto retargeted = xrefTo("read", "()I");
+    ASSERT_EQ(retargeted.size(), std::size_t{1});
+    EXPECT_EQ(retargeted.front().sourceClass, "pysdk/Caller");
+    EXPECT_EQ(retargeted.front().sourceMethod, "call");
+    EXPECT_EQ(retargeted.front().target, "pysdk/Subject.read()I");
+
+    // from 面（callees 切片）同步跟随：call 现在只发 read 一条。
+    XrefRequest from;
+    from.target    = "method";
+    from.direction = "from";
+    from.owner     = "pysdk/Caller";
+    from.name      = "call";
+    from.descriptor = "()I";
+    const auto callees = facadeXref(s, from);
+    ASSERT_EQ(callees.size(), std::size_t{1});
+    EXPECT_EQ(callees.front().target, "pysdk/Subject.read()I");
+
+    reg.close(s.handle);
+}
+
+TEST(FacadeSessionDb, MemberRenameLeavesNoGhost)
+{
+    auto& reg = FacadeRegistry::instance();
+    auto& s   = openQueryFacesSession("mjt_facade_session_member_rename.jar");
+
+    // 基线：value 三行（Subject.value + Second.value 两个重载）。
+    const auto baseline = facadeSearch(s, makeSearchRequest("members", "value"));
+    ASSERT_EQ(baseline.size(), std::size_t{3});
+
+    // 成员改名 = 内容编辑 + 成员键漂移：mjbase 成员身份只增不删，旧键行是
+    // 幽灵——同步的幽灵检查标 stale，下次查询全量重建（无遮蔽层的唯一出口）。
+    facadeRenameMethod(s, "pysdk/Second", "value", "()I", "value2");
+    facadeWriteBack(s, "pysdk/Second", false);
+
+    const auto after = facadeSearch(s, makeSearchRequest("members", "value"));
+    ASSERT_EQ(after.size(), std::size_t{2});   // 旧键行不还魂
+    for (const auto& row : after) {
+        EXPECT_FALSE(row.owner == "pysdk/Second" && row.descriptor == "()I" &&
+                     row.name == "value");
+    }
+    const auto renamed = facadeSearch(s, makeSearchRequest("members", "value2"));
+    ASSERT_EQ(renamed.size(), std::size_t{1});
+    EXPECT_EQ(renamed.front().owner, "pysdk/Second");
+    EXPECT_EQ(renamed.front().descriptor, "()I");
+    EXPECT_EQ(renamed.front().value, "value2()I");
+
+    reg.close(s.handle);
+}
+
+TEST(FacadeSessionDb, ClassRenameLeavesNoGhost)
+{
+    auto& reg = FacadeRegistry::instance();
+    auto& s   = openQueryFacesSession("mjt_facade_session_class_rename.jar");
+
+    auto exact = [&](const char* query) {
+        auto request = makeSearchRequest("classes", query);
+        request.matchMode = "exact";
+        return facadeSearch(s, request);
+    };
+    ASSERT_EQ(exact("pysdk/Second").size(), std::size_t{1});
+
+    // 类改名 = 结构变更面（条目 URI 迁移 + mjbase 类身份只增不删的旧名幽灵
+    // 行）→ 库标 stale，下次查询全量重建后新名可见、旧名无幽灵。
+    EXPECT_EQ(facadeRenameClass(s, "pysdk/Second", "pysdk/Second2"), "pysdk/Second2");
+    facadeWriteBack(s, "pysdk/Second2", false);   // 字节落账 + 条目搬移（sync_entries）
+
+    EXPECT_TRUE(exact("pysdk/Second").empty());
+    const auto renamed = exact("pysdk/Second2");
+    ASSERT_EQ(renamed.size(), std::size_t{1});
+    EXPECT_EQ(renamed.front().resourceUri, "pysdk/Second2.class");
+    EXPECT_EQ(renamed.front().owner, "pysdk/Second2");
+    // 成员随类改名整体重建后仍在（宿主名跟到新名）。
+    const auto values = facadeSearch(s, makeSearchRequest("members", "value"));
+    ASSERT_EQ(values.size(), std::size_t{3});
+    bool second2Value = false, subjectValue = false;
+    for (const auto& row : values) {
+        if (row.owner == "pysdk/Second2") second2Value = true;
+        if (row.owner == "pysdk/Subject") subjectValue = true;
+    }
+    EXPECT_TRUE(second2Value);
+    EXPECT_TRUE(subjectValue);
+
+    reg.close(s.handle);
+}
+
+TEST(FacadeSessionDb, AddRemoveEntrySeesNewClass)
+{
+    auto& reg = FacadeRegistry::instance();
+
+    // 源会话：树面造一个新名类（Util → Extra），写回落账后取字节。
+    auto& src = reg.create();
+    facadeImportJar(src, makeDemoJar("mjt_facade_session_entry_src.jar"));
+    ASSERT_EQ(facadeRenameClass(src, "me/demo/Util", "me/demo/Extra"), "me/demo/Extra");
+    facadeWriteBack(src, "me/demo/Extra", false);
+    const auto extraBytes = facadeClassBytes(src, "me/demo/Extra");
+    reg.close(src.handle);
+
+    auto& s = reg.create();
+    facadeImportJar(s, makeDemoJar("mjt_facade_session_entry.jar"));
+
+    auto exact = [&](const char* query) {
+        auto request = makeSearchRequest("classes", query);
+        request.matchMode = "exact";
+        return facadeSearch(s, request);
+    };
+    // 先建库（查询一次），再走结构变更面。
+    ASSERT_TRUE(exact("me/demo/Extra").empty());
+
+    // add_entry：新条目 = 可见域变更 → 重建 → 新类即时可见。
+    facadeAddEntry(s, "me/demo/Extra.class", extraBytes);
+    const auto added = exact("me/demo/Extra");
+    ASSERT_EQ(added.size(), std::size_t{1});
+    EXPECT_EQ(added.front().resourceUri, "me/demo/Extra.class");
+
+    // remove_entry：条目消失 → 重建 → 查询不可见。
+    facadeRemoveEntry(s, "me/demo/Extra.class");
+    EXPECT_TRUE(exact("me/demo/Extra").empty());
+
+    reg.close(s.handle);
+}
+
+TEST(FacadeSessionDb, HierarchyFreshAfterSuperEditAndDirtyTreeExcluded)
+{
+    auto& reg = FacadeRegistry::instance();
+    auto& s   = reg.create();
+    facadeImportJar(s, makeDemoJar("mjt_facade_session_hier.jar"));
+
+    const auto chain = [&] {
+        std::vector<std::string> names;
+        for (const auto& row :
+             facadeHierarchy(s, makeHierarchyRequest("super_chain", "me/demo/App"))) {
+            names.push_back(row.className);
+        }
+        return names;
+    };
+
+    // 基线链：App →（未登记）java/lang/Object。
+    ASSERT_EQ(chain(), (std::vector<std::string>{"me/demo/App", "java/lang/Object"}));
+
+    // 类头编辑（super 改写）→ flush 落账 → 会话库类事实 upsert + 类头引用
+    // 切片换新 → 层次闭包即见新链。
+    facadeClassSetSuper(s, "me/demo/App", "me/demo/Crypto");
+    facadeFlush(s, false);
+    EXPECT_EQ(chain(),
+              (std::vector<std::string>{"me/demo/App", "me/demo/Crypto", "java/lang/Object"}));
+
+    // 脏树不参与口径保持：未 flush 的 super 改写不进查询口径。
+    facadeClassSetSuper(s, "me/demo/App", "me/demo/Util");
+    EXPECT_EQ(chain(),
+              (std::vector<std::string>{"me/demo/App", "me/demo/Crypto", "java/lang/Object"}));
+
+    // flush 后再查：新 super 即见。
+    facadeFlush(s, false);
+    EXPECT_EQ(chain(),
+              (std::vector<std::string>{"me/demo/App", "me/demo/Util", "java/lang/Object"}));
+
+    reg.close(s.handle);
+}
+
+TEST(FacadeSessionDb, SetClassBytesFreshNumbers)
+{
+    auto& reg = FacadeRegistry::instance();
+
+    // 源会话：树面造 sipush 42 探针字节（Subject.value），写回落账后取字节。
+    auto& src = reg.create();
+    facadeImportJar(src, makeQueryFacesJar("mjt_facade_session_setbytes_src.jar"));
+    const auto ret = lastInsnUid(src, "pysdk/Subject", "value", "()I");
+    ASSERT_TRUE(ret.has_value());
+    const auto sipush = facadeEmitInsn(src, "pysdk/Subject", "value", "()I", 17, *ret);
+    facadeInsnSetOperand(src, "pysdk/Subject", "value", "()I", sipush, 42);
+    facadeEmitInsn(src, "pysdk/Subject", "value", "()I", 87, *ret);
+    facadeWriteBack(src, "pysdk/Subject", false);
+    const auto editedBytes = facadeClassBytes(src, "pysdk/Subject");
+    reg.close(src.handle);
+
+    // 被测会话：先建库（基线无 42），再走 set_class_bytes 内容编辑边界
+    //（与 jasm apply 同一同步入口）→ numbers 即见探针。
+    auto& s = reg.create();
+    facadeImportJar(s, makeQueryFacesJar("mjt_facade_session_setbytes.jar"));
+    ASSERT_TRUE(facadeSearch(s, makeSearchRequest("numbers", "42")).empty());
+    facadeSetClassBytes(s, "pysdk/Subject", editedBytes);
+    const auto rows = facadeSearch(s, makeSearchRequest("numbers", "42"));
+    ASSERT_EQ(rows.size(), std::size_t{1});
+    EXPECT_EQ(rows.front().owner, "pysdk/Subject");
+    EXPECT_EQ(rows.front().value, "42");
+
+    reg.close(s.handle);
+}
+
+TEST(FacadeSessionDb, SyncUnknownClassIsSilentAndInvalidateRebuildsClean)
+{
+    auto& reg = FacadeRegistry::instance();
+    auto& s   = openQueryFacesSession("mjt_facade_session_syncedge.jar");
+
+    // 同步入口对未知名静默（fail-open 纪律：同步永远不炸调用方）。
+    EXPECT_NO_THROW(facadeSyncAnalysisDbAfterEdit(s, "pysdk/Nope"));
+
+    auto prefix = makeSearchRequest("classes", "pysdk/");
+    prefix.matchMode = "prefix";
+    ASSERT_EQ(facadeSearch(s, prefix).size(), std::size_t{3});
+
+    // 显式失效（结构变更面共用入口）→ 下次查询全量重建，口径不变。
+    facadeInvalidateAnalysisDb(s);
+    EXPECT_EQ(facadeSearch(s, prefix).size(), std::size_t{3});
+
+    reg.close(s.handle);
+}
+
+TEST(FacadeSessionDb, SessionTempDirCleanedOnClose)
+{
+    auto& reg = FacadeRegistry::instance();
+    auto& s   = openQueryFacesSession("mjt_facade_session_tmpdir.jar");
+
+    // 首查触发建库：临时目录按句柄命名落位。
+    ASSERT_FALSE(facadeSearch(s, makeSearchRequest("classes", "pysdk")).empty());
+    const auto root = fs::temp_directory_path() /
+                      ("mjt_pysdk_session_" + std::to_string(s.handle));
+    EXPECT_TRUE(fs::exists(root));
+
+    // 会话关闭：先关库连接再删目录（Windows 句柄纪律），目录即清。
+    reg.close(s.handle);
+    EXPECT_FALSE(fs::exists(root));
+}
+
