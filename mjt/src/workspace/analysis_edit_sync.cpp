@@ -247,6 +247,7 @@ AnalysisEditSyncStats syncAnalysisDbAfterEdit(
             member.kind       = mjbase::project::DbMemberKind::Field;
             member.name       = field.name.clone();
             member.descriptor = field.descriptor.clone();
+            member.signature  = field.signature.clone();
             member.access     = field.access;
             input.members.push_back(std::move(member));
         }
@@ -257,6 +258,7 @@ AnalysisEditSyncStats syncAnalysisDbAfterEdit(
             member.kind       = mjbase::project::DbMemberKind::Method;
             member.name       = method.name.clone();
             member.descriptor = method.descriptor.clone();
+            member.signature  = method.signature.clone();
             member.access     = method.access;
             input.members.push_back(std::move(member));
             plan.methods.emplace_back(method.name.to_std_string(),

@@ -863,5 +863,66 @@ TEST(McpServerTest, SearchClassesStaysFreshAfterEditsViaIncrementalSync)
     EXPECT_EQ(0U, payload(afterOld).at("total").get<unsigned>());
 }
 
+///search kind=members signature 面端到端 + 编辑增量同步保签名：needle 只在
+///方法 Signature 属性出现——DB-first 路径（非 regex）经 ingest 落
+///members.signature 才能命中；真改名后增量同步重落类事实，签名列随行
+///覆写不丢（丢则 DB 行 signature 回空、查询落空）。
+TEST(McpServerTest, SearchMembersSignatureFaceStaysFreshAfterEditsViaIncrementalSync)
+{
+    McpSessionHarness server;
+    const auto fixture = writeSignaturedMemberFixture();
+    const auto opened  = call(server, "project_open", {{"path", fixture.string()}});
+    ASSERT_FALSE(opened.at("result").at("isError"));
+    const auto projectId = payload(opened).at("project_id").get<std::string>();
+
+    //干净会话：泛型签名原文命中（owner/name/descriptor 面都不含该 needle，
+    //只有 signature 面答得上）。
+    const auto before = call(server,
+                             "search",
+                             {{"project_id", projectId},
+                              {"kind", "members"},
+                              {"query", "List<Ljava/lang/String;>"}});
+    ASSERT_FALSE(before.at("result").at("isError")) << before.dump();
+    ASSERT_EQ(1U, payload(before).at("total").get<unsigned>());
+    const auto& beforeItem = payload(before).at("items").at(0);
+    EXPECT_EQ("method", beforeItem.at("kind"));
+    EXPECT_EQ("mcp/Subject", beforeItem.at("owner"));
+    EXPECT_EQ("value", beforeItem.at("name"));
+    EXPECT_EQ("()I", beforeItem.at("descriptor"));
+    EXPECT_EQ("value()I", beforeItem.at("value"));
+    EXPECT_EQ("mcp/Subject.class", beforeItem.at("resource_uri"));
+
+    //真改名（mapping）：commit 增量同步重落类事实——成员行换 owner 锚的
+    //同时 signature 列随 DbMemberInput 覆写。
+    const std::string mapping = "tiny\t2\t0\tintermediary\tnamed\n"
+                                "c\tmcp/Subject\tmcp/RenamedSubject\n";
+    const auto edited = call(server,
+                             "edit_apply",
+                             {{"project_id", projectId},
+                              {"kind", "mapping"},
+                              {"format", "Tiny-V2"},
+                              {"mapping_text", mapping},
+                              {"policy", "all"},
+                              {"expected_revision", 0}});
+    ASSERT_FALSE(edited.at("result").at("isError")) << edited.dump();
+    EXPECT_TRUE(payload(edited).at("committed"));
+    EXPECT_FALSE(payload(edited).at("analysis_sync").at("failed").get<bool>());
+
+    //DB 路径答新态：同一签名 needle 仍一命中，owner/resource_uri 搬家。
+    const auto after = call(server,
+                            "search",
+                            {{"project_id", projectId},
+                             {"kind", "members"},
+                             {"query", "List<Ljava/lang/String;>"}});
+    ASSERT_FALSE(after.at("result").at("isError")) << after.dump();
+    ASSERT_EQ(1U, payload(after).at("total").get<unsigned>());
+    const auto& afterItem = payload(after).at("items").at(0);
+    EXPECT_EQ("method", afterItem.at("kind"));
+    EXPECT_EQ("mcp/RenamedSubject", afterItem.at("owner"));
+    EXPECT_EQ("value", afterItem.at("name"));
+    EXPECT_EQ("()I", afterItem.at("descriptor"));
+    EXPECT_EQ("mcp/RenamedSubject.class", afterItem.at("resource_uri"));
+}
+
 }   //namespace
 }   //namespace mjt::mcp

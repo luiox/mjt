@@ -30,6 +30,11 @@ std::vector<ca::u8> withClassNameAndSignature(const std::vector<ca::u8>& bytes,
                                                const std::string&         internalName,
                                                const std::string&         signature);
 std::filesystem::path writeLargeClassListFixture(const std::string& signature);
+std::vector<ca::u8> withMethodSignature(const std::vector<ca::u8>& bytes,
+                                        const std::string&         methodName,
+                                        const std::string&         methodDesc,
+                                        const std::string&         signature);
+std::filesystem::path writeSignaturedMemberFixture();
 std::filesystem::path writeFixture();
 std::filesystem::path writeQuerySupportingFixture();
 std::vector<ca::u8> assembleFixtureClass(const std::string& sourceName,

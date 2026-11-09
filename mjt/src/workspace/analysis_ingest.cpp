@@ -205,6 +205,7 @@ ca::Result<AnalysisIngestStats, AnalysisIngestError> ingestIntoAnalysisDb(
             member.kind       = mjbase::project::DbMemberKind::Field;
             member.name       = utf8(field.name.ref());
             member.descriptor = utf8(field.descriptor.ref());
+            member.signature  = utf8(field.signature.ref());
             member.access     = field.access;
             input.members.push_back(std::move(member));
         }
@@ -213,6 +214,7 @@ ca::Result<AnalysisIngestStats, AnalysisIngestError> ingestIntoAnalysisDb(
             member.kind       = mjbase::project::DbMemberKind::Method;
             member.name       = utf8(method.name.ref());
             member.descriptor = utf8(method.descriptor.ref());
+            member.signature  = utf8(method.signature.ref());
             member.access     = method.access;
             input.members.push_back(std::move(member));
         }

@@ -125,6 +125,62 @@ std::filesystem::path writeLargeClassListFixture(const std::string& signature)
     return path;
 }
 
+/// 给指定方法挂 Signature 属性（tree attachAttr 面；其余字节 copy-through
+/// 保真）——members.signature 面（search kind=members 的 signature 命中）
+/// 端到端 fixture 用。
+std::vector<ca::u8> withMethodSignature(const std::vector<ca::u8>& bytes,
+                                        const std::string&         methodName,
+                                        const std::string&         methodDesc,
+                                        const std::string&         signature)
+{
+    auto opened = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(bytes));
+    if (!opened.is_ok()) throw std::runtime_error("fixture session failed");
+    auto session = std::move(opened).unwrap();
+
+    const auto methodId = session->unit().findMethodId(methodName, methodDesc);
+    if (methodId == jbc::ir::kNoMethodId)
+        throw std::runtime_error("fixture method not found: " + methodName);
+    auto body         = std::make_unique<jbc::core::SignatureAttr>();
+    body->signatureCp = session->internUtf8(signature);
+    if (!session->attachAttr(methodId, "Signature", std::move(body)).is_ok())
+        throw std::runtime_error("fixture method signature mount failed");
+
+    auto written = jbc::core::writeClass(session->backing());
+    if (!written.is_ok()) throw std::runtime_error("fixture write failed");
+    return std::move(written).unwrap();
+}
+
+/// Subject.value 方法带泛型 Signature 的 fixture——search kind=members
+/// signature 面端到端（Second 无签名对照，二类其余成员同 writeFixture）。
+std::filesystem::path writeSignaturedMemberFixture()
+{
+    mjbase::jasm::JvmJasmService assembler;
+    auto                       sourceName = utf16("Subject.jasm");
+    auto                       source     = utf16(classSource("1"));
+    const auto                 assembled  = assembler.assemble(sourceName.ref(), source.ref());
+    if (!assembled.isOk()) throw std::runtime_error("signatured member fixture did not assemble");
+
+    mjbase::model::ResourceContainer container;
+    container.addResource(
+        "mcp/Subject.class",
+        std::make_unique<mjbase::model::ClassResource>(
+            "mcp/Subject.class",
+            withMethodSignature(assembled.value->bytes, "value", "()I",
+                                "(Ljava/util/List<Ljava/lang/String;>;)I")));
+    auto secondName   = utf16("Second.jasm");
+    auto secondSource = utf16(classSourceFor("mcp/Second", "2"));
+    const auto secondAssembled =
+        assembler.assemble(secondName.ref(), secondSource.ref());
+    if (!secondAssembled.isOk())
+        throw std::runtime_error("signatured member second fixture did not assemble");
+    container.addResource("mcp/Second.class",
+                          std::make_unique<mjbase::model::ClassResource>(
+                              "mcp/Second.class", secondAssembled.value->bytes));
+    const auto path = test::getTempOutPath("mjt_mcp_signatured_member_fixture.jar");
+    mjbase::model::ResourceHelper::exportToJar(container, path.string());
+    return path;
+}
+
 std::filesystem::path writeFixture()
 {
     mjbase::jasm::JvmJasmService assembler;

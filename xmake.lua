@@ -207,7 +207,7 @@ includes("xmake/libca_rules.lua")
 -- ingestClasses 同 (2, class_id)。消费方 = 编辑增量同步 analysis_edit_sync
 -- 的逐类引用切片写入（commit/undo/redo 后类事实/条目锚/引用切片追平工作
 -- 副本，search kind=classes DB-first 解除干净会话守卫）。
-add_requires("mjbase 0.0.25")
+add_requires("mjbase 0.0.26")
 
 includes("test_helper")
 includes("mjt")

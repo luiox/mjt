@@ -624,16 +624,19 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         SearchOptions options;
         std::string parseError;
         if (!parseSearchOptions(arguments, options, parseError)) return toolError(parseError);
-        //kind=classes DB-first（#121 查询面换轨）：SQL 可表达档（contains/
-        //prefix/exact）直接查 analysis_db——免工作副本全容器逐类解字节；库
-        //行序 (path, internal_name) BINARY 即引擎命中行全序，不经客户端重排。
-        //编辑会话不再回落：commit/undo/redo 挂 analysis_edit_sync 增量同步，
-        //受影响类的条目锚/类事实/引用切片随编辑追平工作副本（早期版本以
-        //revision==0 收窄到干净会话，增量同步批解除）。回落引擎扫描的两种
-        //情形：regex（SQLite 无原生等价）、query 边界态（空/超长走引擎同款
-        //校验报错，不在此重复口径）。
+        //kind=classes / kind=members DB-first（#121 查询面换轨）：SQL 可表达
+        //档（contains/prefix/exact）直接查 analysis_db——免工作副本全容器逐
+        //类解字节；库行序 (path, internal_name[, name, descriptor, kind])
+        //BINARY 即引擎命中行全序，不经客户端重排。编辑会话不再回落：commit/
+        //undo/redo 挂 analysis_edit_sync 增量同步，受影响类的条目锚/类事实/
+        //引用切片随编辑追平工作副本（早期版本以 revision==0 收窄到干净会
+        //话，增量同步批解除）。回落引擎扫描的两种情形：regex（SQLite 无原生
+        //等价）、query 边界态（空/超长走引擎同款校验报错，不在此重复口径）。
         const bool classSearchFromDb =
             op == "search_classes" && matchMode != "regex" && !query.empty() &&
+            query.size() <= 1024 && session.analysisDb != nullptr;
+        const bool memberSearchFromDb =
+            op == "search_members" && matchMode != "regex" && !query.empty() &&
             query.size() <= 1024 && session.analysisDb != nullptr;
         std::vector<mjt::workspace::SearchHit> hitList;
         if (classSearchFromDb) {
@@ -666,6 +669,57 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
                                    ca::str::Utf8String::from_cstr("class"),
                                    row.internalName.clone(), {}, {}, -1,
                                    std::move(row.internalName)});
+            }
+        }
+        else if (memberSearchFromDb) {
+            //member_kind：schema enum 已拦非法值，此处兜底引擎面同款校验，
+            //防绕过 schema 的调用方静默丢过滤。
+            if (!options.memberKind.is_empty() && options.memberKind != "field" &&
+                options.memberKind != "method") {
+                return toolError("member kind must be field or method");
+            }
+            mjbase::project::DbMemberSearchQuery dbQuery;
+            dbQuery.needle       = ca::str::Utf8String::from_data_unchecked(
+                reinterpret_cast<const ca::u8*>(query.data()), query.size());
+            dbQuery.match        = matchMode == "exact" ? mjbase::project::DbTextMatchKind::Exact
+                             : matchMode == "prefix" ? mjbase::project::DbTextMatchKind::Prefix
+                                                     : mjbase::project::DbTextMatchKind::Contains;
+            dbQuery.caseSensitive = options.caseSensitive;
+            dbQuery.owner         = options.owner.clone();
+            dbQuery.packagePrefix = options.packagePrefix.clone();
+            if (options.memberKind == "field") {
+                dbQuery.memberKind = mjbase::project::DbMemberKind::Field;
+            }
+            else if (options.memberKind == "method") {
+                dbQuery.memberKind = mjbase::project::DbMemberKind::Method;
+            }
+            //全量行（分页归 page() 统一口径）；LIMIT 上限取 i64 极值即「取尽」。
+            auto searched = session.analysisDb->searchMembersPaged(
+                dbQuery, std::numeric_limits<ca::i64>::max(), 0);
+            if (searched.is_err()) {
+                const auto failure = std::move(searched).unwrap_err();
+                const auto code    = failure.kind == mjbase::project::AnalysisDbErrorKind::Schema
+                                        ? ca::StatusCode::FAILED_PRECONDITION
+                                        : ca::StatusCode::INTERNAL;
+                const auto status  = ca::ErrStatus(
+                    code, "analysis db search failed: " + failure.message.to_std_string());
+                return toolError("analysis db search failed", &status);
+            }
+            auto page = std::move(searched).unwrap();
+            hitList.reserve(page.rows.size());
+            for (auto& row : page.rows) {
+                //value = name + descriptor 无空格拼接（引擎命中行同款）。
+                const std::string value =
+                    row.name.to_std_string() + row.descriptor.to_std_string();
+                hitList.push_back({std::move(row.entryPath),
+                                   row.kind == mjbase::project::DbMemberKind::Field
+                                       ? ca::str::Utf8String::from_cstr("field")
+                                       : ca::str::Utf8String::from_cstr("method"),
+                                   std::move(row.internalName), std::move(row.name),
+                                   std::move(row.descriptor), -1,
+                                   ca::str::Utf8String::from_data_unchecked(
+                                       reinterpret_cast<const ca::u8*>(value.data()),
+                                       value.size())});
             }
         }
         else {
