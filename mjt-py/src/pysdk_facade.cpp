@@ -3796,4 +3796,97 @@ std::vector<XrefRow> facadeXref(FacadeSession& s, const XrefRequest& request)
     return out;
 }
 
+namespace {
+
+/// 层次分面参数守卫（错位 fail-closed → invalid_argument = Python ValueError）。
+/// kind 词表外 / 空起点 / 分页位错位三道：limit 与 offset 必须成对给出；仅
+/// 闭包两方向有 *Paged 变体（all_subclasses/implementors），super_chain 与
+/// direct_subclasses 不吃分页。负值窗口不在此重复口径——留给库面
+/// validatePageWindow 的 Invalid（dbQueryError 通道，与前作 query 边界态同形）。
+void validateHierarchyRequest(const HierarchyRequest& request)
+{
+    const bool isSuperChain = request.kind == "super_chain";
+    const bool isDirect     = request.kind == "direct_subclasses";
+    const bool isAll        = request.kind == "all_subclasses";
+    const bool isImpl       = request.kind == "implementors";
+    if (!(isSuperChain || isDirect || isAll || isImpl))
+        throw std::invalid_argument("hierarchy kind must be super_chain, direct_subclasses,"
+                                    " all_subclasses or implementors; got " + request.kind);
+    if (request.query.empty())
+        throw std::invalid_argument("hierarchy query (start class internal name) is required");
+    if (request.limit.has_value() != request.offset.has_value())
+        throw std::invalid_argument("hierarchy limit and offset must be given together");
+    if (request.limit.has_value() && !(isAll || isImpl))
+        throw std::invalid_argument(request.kind + " hierarchy does not take limit/offset"
+                                    " (no paged variant in analysis db)");
+}
+
+}   // namespace
+
+std::vector<HierarchyRow> facadeHierarchy(FacadeSession& s, const HierarchyRequest& request)
+{
+    deadlineCheck();
+    validateHierarchyRequest(request);
+
+    AnalysisQueryContext context(s);
+    context.openDatabase();
+    mjbase::project::AnalysisDb& db = context.db();
+
+    // 起点登记核（fail-closed 寻址）：mjbase 四面未登记起点均返回空表，pysdk
+    // 面升格为明确寻址错误——文本对齐库面 Invalid 口径（"... is not registered: 名"）。
+    auto registered = db.findClass(utf8RefOf(request.query));
+    if (registered.is_err())
+        throw dbQueryError("hierarchy start class lookup", std::move(registered).unwrap_err());
+    if (!std::move(registered).unwrap().has_value())
+        throw std::invalid_argument("hierarchy " + request.kind +
+                                    " start class is not registered: " + request.query);
+
+    // 行投影底座：internal_name → 关联活跃条目 path，全类一扫（needle 空 =
+    // 无文本过滤全量行，searchClassesPaged 同一可见域）——闭包行只携内部名，
+    // uri 由本表回填；未登记的 super 链尾名不在表内 → uri 留空。
+    mjbase::project::DbClassSearchQuery all;
+    auto scanned = db.searchClassesPaged(all, std::numeric_limits<ca::i64>::max(), 0);
+    if (scanned.is_err())
+        throw dbQueryError("hierarchy class uri projection", std::move(scanned).unwrap_err());
+    std::unordered_map<std::string, std::string> uriByName;
+    {
+        // unwrap()&& 按值返回：先落命名局部再取行引用（悬垂防线，前作同款）。
+        auto page = std::move(scanned).unwrap();
+        uriByName.reserve(page.rows.size());
+        for (auto& row : page.rows)
+            uriByName.emplace(row.internalName.to_std_string(), row.entryPath.to_std_string());
+    }
+
+    // 查询分发：全量走非 Paged 直查；分页（闭包两方向）透传 *Paged 变体——
+    // 窗口语义全在库面（升序拼接契约），门面零重排。起点视图借用 request.query
+    //（调用期存活，utf8RefOf 同前作借用前提）。
+    const bool paged = request.limit.has_value();
+    auto names = [&]() -> ca::Result<std::vector<ca::str::Utf8String>,
+                                     mjbase::project::AnalysisDbError> {
+        const ca::str::Utf8StringRef start = utf8RefOf(request.query);
+        if (request.kind == "super_chain") return db.superChain(start);
+        if (request.kind == "direct_subclasses") return db.directSubclasses(start);
+        if (request.kind == "all_subclasses")
+            return paged ? db.allSubclassesPaged(start, *request.limit, *request.offset)
+                         : db.allSubclasses(start);
+        return paged ? db.implementorsPaged(start, *request.limit, *request.offset)
+                     : db.implementors(start);
+    }();
+    const std::string operation = "hierarchy " + request.kind;
+    if (names.is_err()) throw dbQueryError(operation.c_str(), std::move(names).unwrap_err());
+
+    // unwrap()&& 按值返回：先落命名局部再取行引用（悬垂防线，前作同款）。
+    auto chain = std::move(names).unwrap();
+    std::vector<HierarchyRow> rows;
+    rows.reserve(chain.size());
+    for (auto& name : chain) {
+        HierarchyRow row;
+        row.className = name.to_std_string();
+        const auto found = uriByName.find(row.className);
+        if (found != uriByName.end()) row.resourceUri = found->second;
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
 }   // namespace mjt::pysdk

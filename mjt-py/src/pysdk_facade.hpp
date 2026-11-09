@@ -809,4 +809,41 @@ struct XrefRow
 /// finalizeReferenceRows 收口（引擎 sortReferences 全序）。
 std::vector<XrefRow> facadeXref(FacadeSession& s, const XrefRequest& request);
 
+/// 层次闭包分面请求（bind 层 kwargs 收集；词表外/错位 fail-closed 抛
+/// std::invalid_argument → Python ValueError）。
+struct HierarchyRequest
+{
+    std::string kind;              ///< super_chain / direct_subclasses /
+                                   ///< all_subclasses / implementors
+    std::string query;             ///< 起点类内部名（库行 internal_name 精确等值）
+    std::optional<ca::i64> limit;  ///< 缺省 nullopt = 全量（非 Paged 直查）；与
+                                   ///< offset 成对给出（缺一 → invalid_argument）
+    std::optional<ca::i64> offset; ///< 页起始行偏移（*Paged 变体透传）
+};
+
+/// 层次闭包命中行（命中类内部名 + 关联活跃条目 URI，扁平两键）。
+struct HierarchyRow
+{
+    std::string resourceUri; ///< 命中类关联的活跃条目 path；未登记的 super 链尾
+                             ///< 名（如 java/lang/Object）不在库 → 空串
+    std::string className;   ///< 命中类内部名
+};
+
+/// 层次闭包查询（analysis.db DB-only，无引擎回落——闭包在 workspace 引擎侧
+/// 没有等价面；DB 打不开/Schema 失配走 dbQueryError 明确文本）。四档随 mjbase
+/// AnalysisDb（0.0.28）：
+/// - super_chain：向上全链，含自身、最近在前；未登记父类名计入链尾后停止，
+///   成环在首次重复处截断（链序 = 库面原序，不重排）；
+/// - direct_subclasses：直接子类（仅 extends 边），internal_name 升序；
+/// - all_subclasses：传递闭包后代（不含自身），internal_name 升序；
+/// - implementors：接口实现者 = 接口自身闭包（含子接口）+ 实现者全部后代，
+///   internal_name 升序。
+/// 分页：limit/offset 仅闭包两方向有 *Paged 变体（allSubclassesPaged /
+/// implementorsPaged）——透传窗口，契约 = 全量结果 = 各页按 offset 升序拼接
+///（limit=0 空页、offset 超闭包空页、负值库面 Invalid → RuntimeError）；
+/// super_chain/direct_subclasses 错位传分页 fail-closed。起点类未登记 →
+/// invalid_argument（mjbase 各面未登记起点返回空表，pysdk 面升格为明确寻址
+/// 错误）。可达闭包（storeClosureBatch 家族，需先跑闭包批次）不在本面。
+std::vector<HierarchyRow> facadeHierarchy(FacadeSession& s, const HierarchyRequest& request);
+
 }   // namespace mjt::pysdk

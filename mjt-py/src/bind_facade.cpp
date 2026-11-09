@@ -2208,6 +2208,55 @@ void bindFacade(py::module_& m)
         "    ValueError: target/direction 非法、selector 缺失、成员解析失败。\n"
         "    StaleRefError: 句柄失效或宿主类未索引。\n"
         "    RuntimeError: 容器导出/库导入/库查询失败。");
+
+    m.def(
+        "hierarchy",
+        [](ca::u64 h, const std::string& kind, const std::string& query,
+           std::optional<ca::i64> limit, std::optional<ca::i64> offset) {
+            HierarchyRequest request;
+            request.kind   = kind;
+            request.query  = query;
+            request.limit  = limit;
+            request.offset = offset;
+            py::list out;
+            for (auto& row : facadeHierarchy(FacadeRegistry::instance().get(h), request)) {
+                py::dict item;
+                item["resource_uri"] = row.resourceUri;
+                item["class"]        = row.className;
+                out.append(item);
+            }
+            return out;
+        },
+        py::arg("h"), py::arg("kind"), py::arg("query"), py::arg("limit") = std::nullopt,
+        py::arg("offset") = std::nullopt,
+        "hierarchy：层次闭包查询（analysis.db DB-only，无引擎回落——闭包在\n"
+        "workspace 引擎侧没有等价面）。每命令临时库整库导入后即弃（search/xref\n"
+        "同款生命周期），恒查容器落账字节——脏树不参与，写回后再查；可达闭包\n"
+        "（storeClosureBatch 家族）不在本面。\n\n"
+        "四档：kind=super_chain 向上全链（含自身、最近在前，未登记父类名计入\n"
+        "链尾后停止，行序 = 链序）；kind=direct_subclasses 直接子类（仅 extends\n"
+        "边）；kind=all_subclasses 传递闭包后代（不含自身）；kind=implementors\n"
+        "接口实现者（接口自身闭包含子接口 + 实现者全部后代）。除 super_chain\n"
+        "外行按类内部名升序。\n\n"
+        "Args:\n"
+        "    h: 容器句柄。\n"
+        "    kind: super_chain / direct_subclasses / all_subclasses / implementors。\n"
+        "    query: 起点类内部名（未登记报 ValueError）。\n"
+        "    limit: 页行数；None = 全量（非分页直查）。仅 all_subclasses /\n"
+        "        implementors 接受（其余 kind 传分页报 ValueError）。limit=0 空\n"
+        "        页；负值报 RuntimeError（库面 Invalid）。\n"
+        "    offset: 页起始行偏移；与 limit 成对给出（缺一报 ValueError），超\n"
+        "        闭包大小返回空页。窗口契约 = 全量结果 = 各页按 offset 升序拼接。\n"
+        "Returns:\n"
+        "    命中行 list[dict]：{resource_uri, class}——class = 命中类内部名，\n"
+        "    resource_uri = 该类关联的活跃条目 path（未登记的 super 链尾名如\n"
+        "    java/lang/Object 不在库，uri 为空串）。\n"
+        "Raises:\n"
+        "    ValueError: kind 词表外、query 为空、起点类未登记、limit/offset\n"
+        "        缺一不成对或错位（super_chain/direct_subclasses 不吃分页）。\n"
+        "    RuntimeError: 容器导出/库导入/库查询失败（负值 limit/offset 走库\n"
+        "        Invalid；schema 失配给明确指引文本）。\n"
+        "    StaleRefError: 句柄失效。");
 }
 
 }   // namespace mjt::pysdk
