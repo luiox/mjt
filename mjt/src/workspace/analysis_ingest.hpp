@@ -11,6 +11,10 @@
 /// - 主容器全部 class 的头事实与成员清单写入 `ingestClasses`；class 条目
 ///   通过 `DbClassInput::entryId` 与 `classes.entry_id` 关联。
 /// - 主容器 class 发出的直接引用（方法/字段/类型）写入 `replaceReferences`；
+/// - 常量事实切片（mjbase schema v12）：逐类常量池字符串行
+///   `replaceCpStringsFromClass`、常量池数值行 `replaceCpNumbersFromClass`、
+///   逐方法数值字面量行 `replaceNumbersFromMember`（抽取层 constant_scan 与
+///   引擎搜索同一事实源）；
 /// - supporting JAR 只作为引用目标出现，其自身 class 与条目均不登记（支持
 ///   库可能包含整个 JDK，不属于工程身份面）。
 ///
@@ -64,6 +68,10 @@ struct AnalysisIngestStats
     ca::usize createdEntries    = 0;
     /// @brief 本次标记消失（墓碑）的既有条目数。
     ca::usize tombstonedEntries = 0;
+    /// @brief 写入的常量池字符串切片行数（cp_strings，schema v12 常量事实面）。
+    ca::usize constantStrings = 0;
+    /// @brief 写入的数值字面量切片行数（number_literals：常量池 + 方法体）。
+    ca::usize constantNumbers = 0;
 };
 
 /// @brief 把工作区主容器的类/成员/直接引用整库写入分析数据库。
