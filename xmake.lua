@@ -221,7 +221,10 @@ includes("xmake/libca_rules.lua")
 -- #215）：一次事务整库替换 cp_strings + number_literals，锚纪律同逐切片入口
 -- 合批落。消费方 = ingest 整库导入单调用切换（windows 每事务 fsync 的 4.4 万
 -- 逐切片事务悬崖修复；edit_sync 增量编辑仍走逐切片入口）。
-add_requires("mjbase 0.0.29")
+-- 0.0.30 = analysis_db edit 侧常量面批量切片 replaceConstantFaceSlices（mjbase
+-- #216）：三个逐切片入口的单事务合批。消费方 = edit_sync 常量面切片合批
+-- （编辑提交常量面事务数 N→1）。
+add_requires("mjbase 0.0.30")
 
 includes("test_helper")
 includes("mjt")
