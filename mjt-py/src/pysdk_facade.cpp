@@ -2684,11 +2684,11 @@ ShadowGenReport facadeShadowGenerate(FacadeSession& s)
 {
     s.shadowTable = std::make_shared<mjbase::renamer::ShadowAliasTable>();
     // mjbase：随机源失败走 Result 值语义（不抛异常）；错误文本 0.0.28 起
-    // 为 Utf8String。
-    const auto generated =
-        mjbase::renamer::generateMechanicalShadowNames(*s.container, *s.shadowTable);
+    // 为 Utf8String（move-only）——result 不能 const，unwrap_err 走移动重载。
+    auto generated = mjbase::renamer::generateMechanicalShadowNames(*s.container, *s.shadowTable);
     if (generated.is_err()) {
-        throw std::runtime_error("shadow generate: " + generated.unwrap_err().to_std_string());
+        throw std::runtime_error("shadow generate: " +
+                                 std::move(generated).unwrap_err().to_std_string());
     }
     const auto& stats = generated.unwrap();
     return {stats.assignedClasses, stats.assignedMethods, stats.assignedFields,
