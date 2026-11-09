@@ -285,6 +285,12 @@ AnalysisEditSyncStats syncAnalysisDbAfterEdit(
         }
     }
 
+    // 常量面攒批容器（循环内逐类构造组，循环后单次合批落库——见循环内段）。
+    std::vector<mjbase::project::DbClassConstantFaces> faceBatches;
+    ca::usize pendingStrings = 0;
+    ca::usize pendingNumbers = 0;
+    ca::usize pendingCleared = 0;
+
     // 引用切片：逐类换新（类头 + 逐方法——现存方法即使零引用也写空切片，
     // 清掉编辑前的旧行），库内有而 DOM 现方法集没有的方法清切片。
     for (const ClassPlan& plan : plans) {
@@ -349,10 +355,15 @@ AnalysisEditSyncStats syncAnalysisDbAfterEdit(
             ++stats.slicesCleared;
         }
 
-        // 常量事实切片（cp_strings / number_literals，schema v12）：类常量池
-        // 字符串/数值整类换新（0 锚，refs 类级切片同纪律），逐方法数值行与
-        // refs 同款纪律——现存方法即使零数值也写空切片（清旧行），编辑后消失
-        // 的方法清空切片。抽取层 constant_scan 与引擎搜索/整库导入同一事实源。
+        // 常量事实切片（cp_strings / number_literals，schema v12）：抽取层
+        // 不变（constant_scan 与引擎搜索/整库导入同一事实源），落库改攒
+        // DbClassConstantFaces 组循环后单次 replaceConstantFaceSlices 合批
+        // ——此前三组逐切片调用各自开事务，一次编辑提交 3-10 切片在 windows
+        // 上每事务 WAL fsync ~100ms 的可感知延迟由此收口为一次。切片纪律
+        // 逐款同旧三入口：类级两切片整类换新（refs 类级切片同纪律），逐方法
+        // 数值行现存方法即使零数值也写空切片（清旧行），编辑后消失的方法
+        // 清空切片；批次口径沿用本桥纪律（batchId=0 裸事务，归属锚仍是
+        // open 期整库导入批）。
         auto content = workspace.readResource(plan.uri.ref());
         if (content.is_err()) {
             // 活跃 class 条目读不出字节属工作副本态异常：与条目重锚段同款
@@ -360,70 +371,68 @@ AnalysisEditSyncStats syncAnalysisDbAfterEdit(
             stats.failed = true;
             return stats;
         }
-        auto bytes = std::move(content).unwrap().bytes;
+        auto bytes  = std::move(content).unwrap().bytes;
         auto opened = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(bytes));
-        if (opened.is_ok()) {
-            auto held = std::move(opened).unwrap();
+        if (!opened.is_ok()) continue;   // 旧同款：解码失败该类常量面不追平（旧切片留存，开期导入兜底）
+        auto held = std::move(opened).unwrap();
 
-            auto strings = cpStringRecords(held->backing());
-            auto replacedStrings =
-                db.replaceCpStringsFromClass(0, classId, std::move(strings));
-            if (replacedStrings.is_err()) {
-                stats.failed = true;
-                return stats;
-            }
-            stats.constantStrings += replacedStrings.unwrap();
+        mjbase::project::DbClassConstantFaces faces;
+        faces.classId   = classId;
+        faces.cpStrings = cpStringRecords(held->backing());
+        pendingStrings += faces.cpStrings.size();
+        faces.cpNumbers = cpNumberRecords(held->backing());
+        pendingNumbers += faces.cpNumbers.size();
 
-            auto cpNumbers = cpNumberRecords(held->backing());
-            auto replacedCpNumbers =
-                db.replaceCpNumbersFromClass(0, classId, std::move(cpNumbers));
-            if (replacedCpNumbers.is_err()) {
-                stats.failed = true;
-                return stats;
+        auto numberSlices = methodNumberSlices(*held);
+        const auto sliceOf = [&](const MethodKey& key)
+            -> std::optional<std::vector<mjbase::project::DbNumberRecord>> {
+            for (auto& slice : numberSlices) {
+                if (slice.name == key.first && slice.descriptor == key.second)
+                    return std::move(slice.records);
             }
-            stats.constantNumbers += replacedCpNumbers.unwrap();
-
-            auto numberSlices = methodNumberSlices(*held);
-            const auto sliceOf = [&](const MethodKey& key)
-                -> std::optional<std::vector<mjbase::project::DbNumberRecord>> {
-                for (auto& slice : numberSlices) {
-                    if (slice.name == key.first && slice.descriptor == key.second)
-                        return std::move(slice.records);
-                }
-                return std::nullopt;
-            };
-            std::vector<MethodKey> seenMethods;
-            for (const MethodKey& key : plan.methods) {
-                // 畸形重复方法键（同名同描述符）去重：sliceOf 首调已移走切片，
-                // 二次调用会以空切片覆写首次写入。
-                if (std::find(seenMethods.begin(), seenMethods.end(), key) != seenMethods.end())
-                    continue;
-                seenMethods.push_back(key);
-                const auto id = methodIds.find(key);
-                if (id == methodIds.end()) continue;   // 引用切片段同款：成员行缺席按跳过披露
-                std::vector<mjbase::project::DbNumberRecord> records;
-                // slice 必须是非 const：DbNumberRecord 仅可移动，const optional
-                // 解引用退化为拷贝赋值。
-                auto slice = sliceOf(key);
-                if (slice.has_value()) records = std::move(*slice);
-                auto replaced = db.replaceNumbersFromMember(0, id->second, std::move(records));
-                if (replaced.is_err()) {
-                    stats.failed = true;
-                    return stats;
-                }
-                stats.constantNumbers += replaced.unwrap();
-            }
-            for (const auto& [key, memberId] : methodIds) {
-                const auto present = std::find(plan.methods.begin(), plan.methods.end(), key);
-                if (present != plan.methods.end()) continue;
-                auto cleared = db.replaceNumbersFromMember(0, memberId, {});
-                if (cleared.is_err()) {
-                    stats.failed = true;
-                    return stats;
-                }
-                ++stats.numberSlicesCleared;
-            }
+            return std::nullopt;
+        };
+        std::vector<MethodKey> seenMethods;
+        for (const MethodKey& key : plan.methods) {
+            // 畸形重复方法键（同名同描述符）去重：sliceOf 首调已移走切片，
+            // 二次调用会以空切片覆写首次写入。
+            if (std::find(seenMethods.begin(), seenMethods.end(), key) != seenMethods.end())
+                continue;
+            seenMethods.push_back(key);
+            const auto id = methodIds.find(key);
+            if (id == methodIds.end()) continue;   // 引用切片段同款：成员行缺席按跳过披露
+            mjbase::project::DbMemberNumberSlices memberSlice;
+            memberSlice.memberId = id->second;
+            // slice 必须是非 const：DbNumberRecord 仅可移动，const optional
+            // 解引用退化为拷贝赋值。
+            auto slice = sliceOf(key);
+            if (slice.has_value()) memberSlice.records = std::move(*slice);
+            pendingNumbers += memberSlice.records.size();
+            faces.memberNumbers.push_back(std::move(memberSlice));
         }
+        for (const auto& [key, memberId] : methodIds) {
+            const auto present = std::find(plan.methods.begin(), plan.methods.end(), key);
+            if (present != plan.methods.end()) continue;
+            mjbase::project::DbMemberNumberSlices cleared;
+            cleared.memberId = memberId;   // 空切片 = 清空该成员数值切片（消失方法）
+            ++pendingCleared;
+            faces.memberNumbers.push_back(std::move(cleared));
+        }
+        faceBatches.push_back(std::move(faces));
+    }
+
+    // 常量面合批落库（mjbase 0.0.30 单事务，任一切片失败整批回滚）。披露
+    // 计数在成功后折叠——失败时 DB 常量面零写入与计数零增量一致（旧实现
+    // 逐切片事务失败会留部分写入，披露口径差异随本批写进提交正文）。
+    if (!faceBatches.empty()) {
+        auto replaced = db.replaceConstantFaceSlices(0, faceBatches);
+        if (replaced.is_err()) {
+            stats.failed = true;
+            return stats;
+        }
+        stats.constantStrings += pendingStrings;
+        stats.constantNumbers += pendingNumbers;
+        stats.numberSlicesCleared += pendingCleared;
     }
     return stats;
 }

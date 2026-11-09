@@ -15,10 +15,11 @@
 ///   类头走 replaceReferencesFromClass、逐方法走 replaceReferencesFromMember，
 ///   编辑后消失的方法清空切片（成员身份行按库纪律只增不删，仅清引用）。
 /// - 常量事实切片（mjbase schema v12，查询面 strings/numbers DB-first 配套）：
-///   类常量池字符串/数值走 replaceCpStringsFromClass /
-///   replaceCpNumbersFromClass，逐方法数值字面量走 replaceNumbersFromMember
-///   （抽取层 constant_scan 与引擎搜索/整库导入同一事实源；消失方法同款清
-///   空切片纪律）。
+///   逐类抽取（constant_scan 与引擎搜索/整库导入同一事实源）攒
+///   DbClassConstantFaces 组，单次 replaceConstantFaceSlices 合批落库
+///   （mjbase 0.0.30）——类级两切片与逐方法数值切片一次事务写完，编辑提交
+///   的常量面事务数从逐切片 N 次收口为 1 次（windows 每事务 fsync 的可感知
+///   延迟）；消失方法同款清空切片纪律（空切片入批）。
 ///
 /// 写入口径：与方法指纹记账（analysis_edit）同一纪律——batchId=0 裸事务、
 /// 不开批次（编辑节奏的溯源归台账；归属锚仍是 open 期整库导入批）；库写
