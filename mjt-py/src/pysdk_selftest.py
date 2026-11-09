@@ -1182,12 +1182,22 @@ def run_all():
           "scoped half")
     to28 = mjt.xref(h28, "method", "me/demo/Crypto", "decode",
                     "(II)Ljava/lang/String;")
+    # decode 唯一调用方 = App.main——decode 本体 invokestatic 的是解密器 dec
+    # （不自调，CI 实证钉死；勿再凭体感写双行）。
     check("xref to method",
-          len(to28) == 2 and {r["source"]["class"] for r in to28}
-          == {"me/demo/App", "me/demo/Crypto"}
-          and all(r["target"] == "me/demo/Crypto.decode(II)Ljava/lang/String;"
-                  and r["kind"] == "direct" and r["source"]["instruction_index"] >= 0
-                  for r in to28), str(to28))
+          len(to28) == 1 and to28[0]["source"]["class"] == "me/demo/App"
+          and to28[0]["source"]["method"] == "main"
+          and to28[0]["target"] == "me/demo/Crypto.decode(II)Ljava/lang/String;"
+          and to28[0]["kind"] == "direct"
+          and to28[0]["source"]["instruction_index"] >= 0, str(to28))
+    # 反向覆盖：解密器 dec 的调用方 = Crypto.decode 本体（同 jar 第二样本）。
+    dec28 = mjt.xref(h28, "method", "me/demo/Crypto", "dec",
+                     "(II)Ljava/lang/String;")
+    check("xref to method decryptor",
+          len(dec28) == 1 and dec28[0]["source"]["class"] == "me/demo/Crypto"
+          and dec28[0]["source"]["method"] == "decode"
+          and dec28[0]["target"] == "me/demo/Crypto.dec(II)Ljava/lang/String;",
+          str(dec28))
     from28 = mjt.xref(h28, "method", "me/demo/App", "main",
                       "([Ljava/lang/String;)V", direction="from")
     targets28 = {r["target"] for r in from28}
@@ -1196,14 +1206,16 @@ def run_all():
           and "me/demo/Crypto.decode(II)Ljava/lang/String;" in targets28
           and "java/io/PrintStream.println(Ljava/lang/String;)V" in targets28, str(from28))
     toc28 = mjt.xref(h28, "class", "me/demo/Crypto")
-    # Type 行三处：App.main 的 decode 直调、Crypto.decode 自调、Crypto.guarded
-    # 的 wrap 直调（恒等 handler 形态自带一条对 Crypto 的类引用）。
+    # Type 行三处：App.main 的 decode 直调、Crypto.decode 的 dec 直调（owner
+    # 同类，非自调）、Crypto.guarded 的 wrap 直调——三条 invoke 家族边各落一条
+    # owner 类引用。
     check("xref to class",
           len(toc28) == 3 and all(r["kind"] == "type" and r["target"] == "me/demo/Crypto"
                                   for r in toc28), str(toc28))
     backfill28 = mjt.xref(h28, "method", "me/demo/Crypto", "decode")
     check("xref descriptor backfill",
-          len(backfill28) == 2
+          len(backfill28) == 1
+          and backfill28[0]["source"]["class"] == "me/demo/App"
           and all(r["target"] == "me/demo/Crypto.decode(II)Ljava/lang/String;"
                   for r in backfill28), str(backfill28))
     try:
@@ -1253,9 +1265,13 @@ def run_all():
     check("hierarchy all subclasses",
           [r["class"] for r in all29] == ["me/demo/App"], str(all29))
     impl29 = mjt.hierarchy(h29, "implementors", "me/demo/Api")
+    # 声明方 Color/Crypto 之外，App 也在列：本阶段 class_set_super 造的
+    # App→Crypto 链让 App 成为实现者后代——mjbase implementors 闭包含
+    # 实现者全部后代（CI 实证钉死）。
     check("hierarchy implementors",
           [(r["class"], r["resource_uri"]) for r in impl29]
-          == [("me/demo/Color", "me/demo/Color.class"),
+          == [("me/demo/App", "me/demo/App.class"),
+              ("me/demo/Color", "me/demo/Color.class"),
               ("me/demo/Crypto", "me/demo/Crypto.class")],
           str(impl29))
     # 脏树不参与：未 flush 的类头改写（App super → Util）不进查询口径。
@@ -1266,8 +1282,8 @@ def run_all():
           "stale super visible")
     # 分页窗口（仅闭包两方向）：各页 offset 升序拼接 = 全量；超闭包空页；
     # limit=0 空页。
-    paged29 = (mjt.hierarchy(h29, "implementors", "me/demo/Api", limit=1, offset=0)
-               + mjt.hierarchy(h29, "implementors", "me/demo/Api", limit=1, offset=1))
+    paged29 = (mjt.hierarchy(h29, "implementors", "me/demo/Api", limit=2, offset=0)
+               + mjt.hierarchy(h29, "implementors", "me/demo/Api", limit=2, offset=2))
     check("hierarchy paged concat",
           [r["class"] for r in paged29] == [r["class"] for r in impl29]
           and mjt.hierarchy(h29, "implementors", "me/demo/Api", limit=1, offset=5) == []
