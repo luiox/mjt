@@ -413,11 +413,17 @@ TEST(McpToolTimeout, DecompileTimeoutCarriesChannelHints)
 //kind=class_bytes + validation=off 走同一尾部，同门覆盖（issue 点名的
 //未测面）。relaxed 坏 diff 的 gate=rebuild 错误同时是功能锚点：证明两
 //次调用确实走了「门禁早退 vs 全管线」两条路。
+//timeout_ms=300000：常量事实切片（cp_strings/number_literals 随 refs 段
+//落库）后 2000 类夹具的 project_open 在 windows CI 慢机上超出缺省 180s，
+//顶格到 schema 上限——超时面提示语点名认可该路径（"raise timeout_ms
+//(max 300000) if this corpus legitimately needs longer"）；edit_apply 侧
+//的比例门（off ≤ 3×relaxed + 1.5s）按原缺省预算不受影响。
 TEST(McpToolTimeout, EditApplyValidationOffLatencyTracksRelaxed)
 {
     McpSessionHarness server;
     const auto fixture = writeFatBulkFixture("mjt_mcp_timeout_off_latency.jar", 2000, 20, 100);
-    const auto opened  = call(server, "project_open", {{"path", fixture.string()}});
+    const auto opened  = call(server, "project_open",
+                             {{"path", fixture.string()}, {"timeout_ms", 300000}});
     ASSERT_FALSE(isError(opened)) << payload(opened).dump();
     const auto projectId = payload(opened).at("project_id").get<std::string>();
 
