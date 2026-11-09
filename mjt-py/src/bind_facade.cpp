@@ -2082,6 +2082,132 @@ void bindFacade(py::module_& m)
         "    members = member_census 行数 = Σ 类行 method_count + field_count。\n"
         "Raises:\n"
         "    RuntimeError: jar 缺失、导入或导出失败。");
+
+    // ── 查询面（analysis.db DB-first，语义随 mjt #94；MCP search/xref 等位物）──
+
+    m.def(
+        "search",
+        [](ca::u64 h, const std::string& kind, const std::string& query,
+           const std::string& match_mode, bool case_sensitive, const std::string& owner,
+           const std::string& package_prefix, const std::string& member_kind,
+           const std::string& string_kind, ca::i32 opcode) {
+            SearchRequest request;
+            request.kind          = kind;
+            request.query         = query;
+            request.matchMode     = match_mode;
+            request.caseSensitive = case_sensitive;
+            request.owner         = owner;
+            request.packagePrefix = package_prefix;
+            request.memberKind    = member_kind;
+            request.stringKind    = string_kind;
+            request.opcode        = opcode;
+            py::list out;
+            for (auto& row : facadeSearch(FacadeRegistry::instance().get(h), request)) {
+                py::dict item;
+                item["resource_uri"]      = row.resourceUri;
+                item["kind"]              = row.kind;
+                // 键统一（MCP searchHitJson 同形）：类行类名键 = class，成员
+                // 级行宿主类键 = owner。
+                if (row.kind == "class") item["class"] = row.owner;
+                else item["owner"] = row.owner;
+                item["name"]              = row.name;
+                item["descriptor"]        = row.descriptor;
+                item["instruction_index"] = row.instructionIndex;
+                item["value"]             = row.value;
+                if (row.kind == "constant_pool_string" || row.kind == "constant_pool_utf8" ||
+                    row.kind == "resource_string")
+                    item["string_kind"] = row.stringKind;
+                out.append(item);
+            }
+            return out;
+        },
+        py::arg("h"), py::arg("kind"), py::arg("query"), py::arg("match_mode") = "contains",
+        py::arg("case_sensitive") = false, py::arg("owner") = "",
+        py::arg("package_prefix") = "", py::arg("member_kind") = "",
+        py::arg("string_kind") = "", py::arg("opcode") = -1,
+        "search：四档查询（analysis.db DB-first，语义随 mjt #94）。\n\n"
+        "kind=classes/members/strings/numbers。contains/prefix/exact 直查\n"
+        "分析库（每命令临时库整库导入后即弃，恒查容器落账字节——脏树不参与，\n"
+        "与 class_bytes 同口径；写回后再查）；regex 与 query 边界态（空/超\n"
+        "1024 字节）回落引擎活扫描。strings 在 owner 与 package_prefix 均空时\n"
+        "另含非 class 资源可打印串（并集面）；numbers 为值等值语义（\"1.0\" 与\n"
+        "\"1\" 等值，无 match_mode 面）。\n\n"
+        "Args:\n"
+        "    h: 容器句柄。\n"
+        "    kind: classes / members / strings / numbers。\n"
+        "    query: 匹配串（numbers 为数值文本）。\n"
+        "    match_mode: contains（缺省）/ prefix / exact / regex；numbers 不\n"
+        "        接受本参。\n"
+        "    case_sensitive: 字节敏感匹配；缺省不敏感（ASCII 折叠）。\n"
+        "    owner: 类内部名字节精确作用域（members/strings/numbers）。\n"
+        "    package_prefix: 类内部名字节前缀作用域（全部 kind）。\n"
+        "    member_kind: members 面 field / method 过滤。\n"
+        "    string_kind: strings 面过滤——string_literal / utf8_name /\n"
+        "        utf8_descriptor / utf8_classref。\n"
+        "    opcode: numbers 面 >= 0 只取该 opcode 的方法体行。\n"
+        "Returns:\n"
+        "    命中行 list[dict]（MCP search 行形）：{resource_uri, kind, class|\n"
+        "    owner, name, descriptor, instruction_index, value[, string_kind]}；\n"
+        "    类行类名键 = class，其余行宿主类键 = owner。\n"
+        "Raises:\n"
+        "    ValueError: kind/match_mode 非法、过滤参数错位（错 kind 传了该面\n"
+        "        不吃的参数）、member_kind/string_kind 词表外、opcode 越界。\n"
+        "    RuntimeError: 容器导出/库导入/库查询失败（库 schema 失配给明确\n"
+        "        指引文本）。\n"
+        "    StaleRefError: 句柄失效。");
+
+    m.def(
+        "xref",
+        [](ca::u64 h, const std::string& target, const std::string& owner,
+           const std::string& name, const std::string& descriptor,
+           const std::string& direction) {
+            XrefRequest request;
+            request.target     = target;
+            request.direction  = direction;
+            request.owner      = owner;
+            request.name       = name;
+            request.descriptor = descriptor;
+            py::list out;
+            for (auto& row : facadeXref(FacadeRegistry::instance().get(h), request)) {
+                py::dict source;
+                source["class"]             = row.sourceClass;
+                source["method"]            = row.sourceMethod;
+                source["descriptor"]        = row.sourceDescriptor;
+                source["instruction_index"] = row.instructionIndex;
+                source["supporting"]        = row.supporting;
+                source["support_id"]        = row.supportId;
+                py::dict item;
+                item["source"] = source;
+                item["target"] = row.target;
+                item["kind"]   = row.kind;
+                out.append(item);
+            }
+            return out;
+        },
+        py::arg("h"), py::arg("target"), py::arg("owner"), py::arg("name") = "",
+        py::arg("descriptor") = "", py::arg("direction") = "to",
+        "xref：精确引用查询（analysis.db DB-first，references to/from）。\n\n"
+        "target=class → 编码目标为该类的全部类型引用（kind=type）；\n"
+        "target=method/field + direction=to → 编码目标为该三元组的全部方法/\n"
+        "字段引用（kind=direct）；target=method + direction=from → 该方法体\n"
+        "发出的全部方法引用（callees 切片面，kind=direct）。descriptor 省略\n"
+        "时按宿主类名称唯一解析回填（重载歧义/名字不存在报错）；表外目标\n"
+        "（如 JDK 成员）须显式给 descriptor。行经引擎全序收口。\n\n"
+        "Args:\n"
+        "    h: 容器句柄。\n"
+        "    target: class / method / field。\n"
+        "    owner: class = 目标类内部名；method/field = 宿主类内部名。\n"
+        "    name: 成员名（target=class 不接）。\n"
+        "    descriptor: 成员描述符；空 = 按宿主类唯一解析回填。\n"
+        "    direction: to（缺省）/ from（仅 method）。\n"
+        "Returns:\n"
+        "    引用行 list[dict]（MCP reference 行形）：{source: {class, method,\n"
+        "    descriptor, instruction_index, supporting, support_id}, target,\n"
+        "    kind}；pysdk 无支撑容器挂载，supporting 恒 False。\n"
+        "Raises:\n"
+        "    ValueError: target/direction 非法、selector 缺失、成员解析失败。\n"
+        "    StaleRefError: 句柄失效或宿主类未索引。\n"
+        "    RuntimeError: 容器导出/库导入/库查询失败。");
 }
 
 }   // namespace mjt::pysdk

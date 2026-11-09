@@ -16,18 +16,23 @@
 #include "shared/decompiler.hpp"
 #include "workspace/analysis_census.hpp"
 #include "workspace/analysis_ingest.hpp"
+#include "workspace/constant_scan.hpp"
 #include "workspace/workspace.hpp"
 
 #include <jbc/analysis/domain.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <limits>
 #include <map>
 #include <set>
 #include <stdexcept>
+#include <string_view>
 
 namespace mjt::pysdk {
 
@@ -3232,6 +3237,563 @@ ClassCensusFileReport facadeClassCensusFile(const std::string& jarPath,
     report.entriesActive    = static_cast<ca::usize>(census.entriesActive);
     report.entriesIrregular = static_cast<ca::usize>(census.entriesIrregular);
     return report;
+}
+
+// ── 查询面（analysis.db DB-first，语义随 mjt #94） ────────────────────────
+
+namespace {
+
+namespace fs = std::filesystem;
+
+/// std::string → 拥有态 Utf8String（pybind 层来的 str 已是合法 UTF-8，字节
+/// 收编；与 MCP query.cpp 的 needle 构造同口径）。
+ca::str::Utf8String utf8Owned(std::string_view value)
+{
+    return ca::str::Utf8String::from_data_unchecked(
+        reinterpret_cast<const ca::u8*>(value.data()), value.size());
+}
+
+/// std::string → 借用视图（调用期内存活前提下的 API 形参适配；MCP utf8Ref
+/// 同款，空串显式空视图防 data() 悬垂）。
+ca::str::Utf8StringRef utf8RefOf(const std::string& value)
+{
+    return ca::str::Utf8StringRef::from_data(
+        value.empty() ? nullptr : reinterpret_cast<const ca::u8*>(value.data()), value.size());
+}
+
+/// ASCII 折叠（引擎 matchesText 的 lowercase 同款）。
+std::string lowercasedText(const std::string& value)
+{
+    std::string lowered = value;
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                   [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
+    return lowered;
+}
+
+/// match_mode 文本 → mjbase 文本匹配档（contains/prefix/exact；regex 由调用
+/// 方守卫挡在 DB 面之外）。
+mjbase::project::DbTextMatchKind matchKindOf(const std::string& mode)
+{
+    if (mode == "exact") return mjbase::project::DbTextMatchKind::Exact;
+    if (mode == "prefix") return mjbase::project::DbTextMatchKind::Prefix;
+    return mjbase::project::DbTextMatchKind::Contains;
+}
+
+/// 分析库查询错误 → runtime_error：Schema 类给 mjbase 版本失配的明确指引
+///（MCP 面 Schema → FAILED_PRECONDITION 的 pysdk 等位文本），其余走常规通道。
+std::runtime_error dbQueryError(const char* operation, mjbase::project::AnalysisDbError error)
+{
+    const auto message = error.message.to_std_string();
+    if (error.kind == mjbase::project::AnalysisDbErrorKind::Schema) {
+        return std::runtime_error(std::string(operation) +
+                                  " failed: analysis db schema mismatch"
+                                  " (mjbase schema upgrade; rebuild the analysis db): " +
+                                  message);
+    }
+    return std::runtime_error(std::string(operation) + " failed: analysis db error: " + message);
+}
+
+/// 查询面一次性分析库上下文（census 同款生命周期）：容器深拷贝落盘临时 jar →
+/// workspace 打开 → openDatabase() 后整库导入（analysis_ingest 同一事实源）→
+/// 析构即弃临时目录。pysdk 编辑不经 workspace 提交链（无 analysis_edit_sync
+/// 增量同步挂点），会话持有库会随编辑静默失真——每命令新鲜 ingest = 恒查
+/// 当前落账字节（与 class_bytes/census 同一口径；脏树不参与）。
+/// 深拷贝后导出：exportToJar 的 Multi-Release manifest 守护可能改容器，
+/// 只读查询面零会话副作用。析构序：先 reset 库（checkpoint + 关连接）再
+/// remove_all——Windows 下开着 sqlite 句柄删不掉 .mjdb 文件。
+class AnalysisQueryContext
+{
+public:
+    explicit AnalysisQueryContext(FacadeSession& session)
+    {
+        std::error_code fsError;
+        const auto root = fs::path(fs::temp_directory_path()) /
+                          ("mjt_pysdk_query_" +
+                           std::to_string(std::chrono::steady_clock::now()
+                                              .time_since_epoch()
+                                              .count()));
+        fs::create_directories(root, fsError);
+        if (fsError)
+            throw std::runtime_error("create query temp dir failed: " + fsError.message());
+        root_ = root;
+
+        auto cloned = facadeCloneContainer(session);
+        const auto jarPath = (root / "container.jar").u8string();
+        auto exported = ResourceHelper::exportToJar(*cloned, jarPath);
+        if (exported.is_err()) {
+            throw std::runtime_error(std::string("export container for query failed: ") +
+                                     mjbase::model::to_string(std::move(exported).unwrap_err()));
+        }
+        if (auto opened = workspace_.openJar(pathRefOf(jarPath)); opened.is_err())
+            throw std::runtime_error("open query workspace failed: " +
+                                     std::move(opened).unwrap_err().message);
+    }
+
+    AnalysisQueryContext(const AnalysisQueryContext&)            = delete;
+    AnalysisQueryContext& operator=(const AnalysisQueryContext&) = delete;
+
+    /// 临时库整库导入（DB-first 路径专用；regex/边界态引擎回落不付这份成本）。
+    void openDatabase()
+    {
+        const auto dbPath = (root_ / "analysis.mjdb").string();
+        auto opened = mjbase::project::AnalysisDb::open(
+            pathRefOf(dbPath), mjbase::project::AnalysisDbOpenMode::ReadWrite);
+        if (opened.is_err()) {
+            throw std::runtime_error("open query analysis db failed: " +
+                                     std::move(opened).unwrap_err().message.to_std_string());
+        }
+        db_.emplace(std::move(opened).unwrap());
+        if (auto ingested = mjt::workspace::ingestIntoAnalysisDb(workspace_, *db_);
+            ingested.is_err()) {
+            throw std::runtime_error("query ingest failed: " +
+                                     std::move(ingested).unwrap_err().message);
+        }
+        deadlineCheck();
+    }
+
+    mjbase::project::AnalysisDb&   db()       { return *db_; }
+    mjt::workspace::WorkspaceBase& workspace() { return workspace_; }
+
+    ~AnalysisQueryContext()
+    {
+        db_.reset();
+        std::error_code ec;
+        fs::remove_all(root_, ec);
+    }
+
+private:
+    fs::path                      root_;
+    mjt::workspace::WorkspaceBase workspace_;
+    std::optional<mjbase::project::AnalysisDb> db_;
+};
+
+/// 分面参数守卫（错位 fail-closed → invalid_argument = Python ValueError）。
+/// kind 决定合法过滤位（MCP 分支键白名单的 pysdk 等位）：classes 不吃 owner/
+/// member_kind/string_kind/opcode；members 不吃 string_kind/opcode；strings
+/// 不吃 member_kind/opcode；numbers 无 match_mode（值等值语义）。
+void validateSearchRequest(const SearchRequest& request)
+{
+    const bool isClasses = request.kind == "classes";
+    const bool isMembers = request.kind == "members";
+    const bool isStrings = request.kind == "strings";
+    const bool isNumbers = request.kind == "numbers";
+    if (!(isClasses || isMembers || isStrings || isNumbers))
+        throw std::invalid_argument("search kind must be classes, members, strings or numbers"
+                                    "; got " + request.kind);
+    if (request.matchMode != "contains" && request.matchMode != "prefix" &&
+        request.matchMode != "exact" && request.matchMode != "regex")
+        throw std::invalid_argument("match_mode must be contains, exact, prefix or regex; got " +
+                                    request.matchMode);
+    if (isNumbers && request.matchMode != "contains")
+        throw std::invalid_argument("numbers search matches by numeric value equality;"
+                                    " match_mode is not supported");
+    if (!isMembers && !request.memberKind.empty())
+        throw std::invalid_argument(request.kind + " search does not take member_kind");
+    if (isMembers && !request.memberKind.empty() && request.memberKind != "field" &&
+        request.memberKind != "method")
+        throw std::invalid_argument("member kind must be field or method");
+    if (!isStrings && !request.stringKind.empty())
+        throw std::invalid_argument(request.kind + " search does not take string_kind");
+    if (!isNumbers && request.opcode != -1)
+        throw std::invalid_argument(request.kind + " search does not take opcode");
+    if (isNumbers && (request.opcode < -1 || request.opcode >= 200))
+        throw std::invalid_argument("opcode must be between 0 and 199");
+    if (isClasses && !request.owner.empty())
+        throw std::invalid_argument("classes search does not take owner; use package_prefix");
+    if (isStrings && !request.stringKind.empty() && request.stringKind != "string_literal" &&
+        request.stringKind != "utf8_name" && request.stringKind != "utf8_descriptor" &&
+        request.stringKind != "utf8_classref")
+        throw std::invalid_argument("string_kind must be string_literal, utf8_name,"
+                                    " utf8_descriptor or utf8_classref; got " + request.stringKind);
+}
+
+/// 裸 UTF8 行的分面 → string_kind 文本（constant_scan 分类器单源，MCP
+/// utf8StringKind 的 pysdk 同款投影）。
+std::string utf8KindText(const std::string& value)
+{
+    switch (mjt::workspace::constantUtf8Facet(value)) {
+    case mjt::workspace::ConstantUtf8Facet::Descriptor: return "utf8_descriptor";
+    case mjt::workspace::ConstantUtf8Facet::ClassRef: return "utf8_classref";
+    case mjt::workspace::ConstantUtf8Facet::Name: break;
+    }
+    return "utf8_name";
+}
+
+/// 前缀档收紧（engine prefix = contains 超集，DB Prefix 档真前缀幂等）：
+/// 判别文本面按行种类——类行 = 内部名/URI，成员行 = owner/name/descriptor/
+/// value，其余 = value（MCP filterPrefixHits 同口径）。
+void filterPrefixHits(std::vector<mjt::workspace::SearchHit>& hits, const std::string& query,
+                      bool caseSensitive)
+{
+    const auto hasPrefix = [&](const std::string& text) {
+        return (caseSensitive ? text : lowercasedText(text)).rfind(
+                   caseSensitive ? query : lowercasedText(query), 0) == 0;
+    };
+    hits.erase(std::remove_if(hits.begin(), hits.end(),
+                              [&](const mjt::workspace::SearchHit& hit) {
+                                  if (hit.kind == "class")
+                                      return !hasPrefix(hit.owner.to_std_string()) &&
+                                             !hasPrefix(hit.resourceUri.to_std_string());
+                                  if (hit.kind == "field" || hit.kind == "method")
+                                      return !hasPrefix(hit.owner.to_std_string()) &&
+                                             !hasPrefix(hit.name.to_std_string()) &&
+                                             !hasPrefix(hit.descriptor.to_std_string()) &&
+                                             !hasPrefix(hit.value.to_std_string());
+                                  return !hasPrefix(hit.value.to_std_string());
+                              }),
+              hits.end());
+}
+
+/// strings 分面过滤（引擎出口收口后）：string_literal 放行串常量（常量池
+/// String 行 + 非 class 资源可打印串）；裸 UTF8 行按内容形态细分
+///（utf8KindText，与响应 string_kind 同一判定）。
+void filterStringKind(std::vector<mjt::workspace::SearchHit>& hits, const std::string& wanted)
+{
+    const bool wantLiteral = wanted == "string_literal";
+    hits.erase(std::remove_if(hits.begin(), hits.end(),
+                              [&](const mjt::workspace::SearchHit& hit) {
+                                  if (wantLiteral)
+                                      return hit.kind != "constant_pool_string" &&
+                                             hit.kind != "resource_string";
+                                  if (hit.kind != "constant_pool_utf8") return true;
+                                  return utf8KindText(hit.value.to_std_string()) != wanted;
+                              }),
+              hits.end());
+}
+
+/// 引擎 SearchHit → 输出行投影（string_kind 随行种类落位；MCP searchHitJson
+/// 的 pysdk 行形）。
+SearchRow searchRowOf(mjt::workspace::SearchHit&& hit)
+{
+    SearchRow row;
+    row.resourceUri      = hit.resourceUri.to_std_string();
+    row.kind             = hit.kind.to_std_string();
+    row.owner            = hit.owner.to_std_string();
+    row.name             = hit.name.to_std_string();
+    row.descriptor       = hit.descriptor.to_std_string();
+    row.instructionIndex = hit.instructionIndex;
+    row.value            = hit.value.to_std_string();
+    if (row.kind == "constant_pool_string" || row.kind == "resource_string")
+        row.stringKind = "string_literal";
+    else if (row.kind == "constant_pool_utf8") row.stringKind = utf8KindText(row.value);
+    return row;
+}
+
+}   // namespace
+
+std::vector<SearchRow> facadeSearch(FacadeSession& s, const SearchRequest& request)
+{
+    deadlineCheck();
+    validateSearchRequest(request);
+
+    // 引擎回落与 strings 资源串并集共用的引擎过滤选项；prefix 档引擎无原生
+    // 面——按 contains 取超集，出口 filterPrefixHits 收紧（MCP 同口径）。
+    mjt::workspace::SearchOptions options;
+    if (request.matchMode == "exact")
+        options.matchMode = mjt::workspace::SearchMatchMode::Exact;
+    else if (request.matchMode == "regex")
+        options.matchMode = mjt::workspace::SearchMatchMode::Regex;
+    options.caseSensitive = request.caseSensitive;
+    options.owner         = utf8Owned(request.owner);
+    options.packagePrefix = utf8Owned(request.packagePrefix);
+    options.memberKind    = utf8Owned(request.memberKind);
+    options.opcode        = request.opcode;
+
+    // DB-first 守卫与 MCP 同形：SQL 可表达档（contains/prefix/exact）且 query
+    // 非空 ≤1024 字节直查库；regex（SQLite 无原生等价）与 query 边界态（空/
+    // 超长的引擎校验报错）回落引擎活扫描。numbers 无 match_mode，守卫只看
+    // query 非空。
+    const bool fromDb = request.matchMode != "regex" && !request.query.empty() &&
+                        request.query.size() <= 1024;
+    AnalysisQueryContext context(s);
+    std::vector<mjt::workspace::SearchHit> hitList;
+
+    if (request.kind == "classes" && fromDb) {
+        context.openDatabase();
+        mjbase::project::DbClassSearchQuery dbQuery;
+        dbQuery.needle        = utf8Owned(request.query);
+        dbQuery.match         = matchKindOf(request.matchMode);
+        dbQuery.caseSensitive = request.caseSensitive;
+        dbQuery.packagePrefix = utf8Owned(request.packagePrefix);
+        // 全量行（pysdk 面不分页，LIMIT 上限取 i64 极值即「取尽」）；库行序
+        // = 引擎命中行全序，不经客户端重排。
+        auto searched = context.db().searchClassesPaged(dbQuery,
+                                                        std::numeric_limits<ca::i64>::max(), 0);
+        if (searched.is_err())
+            throw dbQueryError("search classes", std::move(searched).unwrap_err());
+        // unwrap()&& 按值返回：先落命名局部再取行引用（悬垂防线，census 同款）。
+        auto  page = std::move(searched).unwrap();
+        auto& rows = page.rows;
+        hitList.reserve(rows.size());
+        for (auto& row : rows) {
+            hitList.push_back({std::move(row.entryPath), ca::str::Utf8String::from_cstr("class"),
+                               row.internalName.clone(), {}, {}, -1,
+                               std::move(row.internalName)});
+        }
+    }
+    else if (request.kind == "members" && fromDb) {
+        context.openDatabase();
+        mjbase::project::DbMemberSearchQuery dbQuery;
+        dbQuery.needle        = utf8Owned(request.query);
+        dbQuery.match         = matchKindOf(request.matchMode);
+        dbQuery.caseSensitive = request.caseSensitive;
+        dbQuery.owner         = utf8Owned(request.owner);
+        dbQuery.packagePrefix = utf8Owned(request.packagePrefix);
+        if (request.memberKind == "field")
+            dbQuery.memberKind = mjbase::project::DbMemberKind::Field;
+        else if (request.memberKind == "method")
+            dbQuery.memberKind = mjbase::project::DbMemberKind::Method;
+        auto searched = context.db().searchMembersPaged(dbQuery,
+                                                        std::numeric_limits<ca::i64>::max(), 0);
+        if (searched.is_err())
+            throw dbQueryError("search members", std::move(searched).unwrap_err());
+        auto  page = std::move(searched).unwrap();
+        auto& rows = page.rows;
+        hitList.reserve(rows.size());
+        for (auto& row : rows) {
+            // value = name + descriptor 无空格拼接（引擎命中行同款）。
+            const std::string value = row.name.to_std_string() + row.descriptor.to_std_string();
+            hitList.push_back({std::move(row.entryPath),
+                               row.kind == mjbase::project::DbMemberKind::Field
+                                   ? ca::str::Utf8String::from_cstr("field")
+                                   : ca::str::Utf8String::from_cstr("method"),
+                               std::move(row.internalName), std::move(row.name),
+                               std::move(row.descriptor), -1, utf8Owned(value)});
+        }
+    }
+    else if (request.kind == "strings" && fromDb) {
+        context.openDatabase();
+        mjbase::project::DbStringSearchQuery dbQuery;
+        dbQuery.needle        = utf8Owned(request.query);
+        dbQuery.match         = matchKindOf(request.matchMode);
+        dbQuery.caseSensitive = request.caseSensitive;
+        dbQuery.owner         = utf8Owned(request.owner);
+        dbQuery.packagePrefix = utf8Owned(request.packagePrefix);
+        // string_kind 不下推 SQL：与 MCP 同款 post-filter（filterStringKind），
+        // 少一个枚举映射面。全量行；行序 = 消费方命中行全序。
+        auto searched = context.db().searchStringsPaged(dbQuery,
+                                                        std::numeric_limits<ca::i64>::max(), 0);
+        if (searched.is_err())
+            throw dbQueryError("search strings", std::move(searched).unwrap_err());
+        auto  page = std::move(searched).unwrap();
+        auto& rows = page.rows;
+        hitList.reserve(rows.size());
+        for (auto& row : rows) {
+            hitList.push_back({std::move(row.entryPath),
+                               row.kind == mjbase::project::DbStringKind::String
+                                   ? ca::str::Utf8String::from_cstr("constant_pool_string")
+                                   : ca::str::Utf8String::from_cstr("constant_pool_utf8"),
+                               std::move(row.internalName), {}, {}, -1, std::move(row.value)});
+        }
+        // 资源串并集（owner 与 packagePrefix 均空时）：DB 只收类常量池事实，
+        // notice.txt 这类非 class 资源的可打印串由引擎活扫描回答
+        //（searchResourceStrings 与引擎内联分支同一实现）；作用域非空时
+        // DB-only（引擎该场景本就不出资源串，域零漂移）。
+        if (options.owner.is_empty() && options.packagePrefix.is_empty()) {
+            auto resources =
+                context.workspace().searchResourceStrings(utf8RefOf(request.query), options);
+            if (resources.is_err())
+                throw std::runtime_error("search strings failed: " +
+                                         std::move(resources).unwrap_err().message);
+            auto resourceHits = std::move(resources).unwrap();
+            hitList.insert(hitList.end(), std::make_move_iterator(resourceHits.begin()),
+                           std::make_move_iterator(resourceHits.end()));
+        }
+        mjt::workspace::sortAndDeduplicateSearchHits(hitList);
+    }
+    else if (request.kind == "numbers" && !request.query.empty()) {
+        context.openDatabase();
+        mjbase::project::DbNumberQuery dbQuery;
+        dbQuery.needle        = utf8Owned(request.query);
+        // 收窄键（超集安全）：stold 完整解析成功时整值且 |v|<2^63 → valueInt，
+        // static_cast<double> 的 IEEE 位型 → valueBits（与抽取层入库键同键
+        // 合流）；解析失败不收窄，只剩 needle 字节等值守卫。
+        const auto narrow = mjt::workspace::numberNarrowKeys(request.query);
+        dbQuery.valueInt      = narrow.valueInt;
+        dbQuery.valueBits     = narrow.valueBits;
+        dbQuery.owner         = utf8Owned(request.owner);
+        dbQuery.packagePrefix = utf8Owned(request.packagePrefix);
+        // opcode 门透传 SQL：>= 0 时常量池行（opcode 列 NULL）自动出局，与
+        // 引擎「opcode 门排除常量池来源」同口径。
+        dbQuery.opcode        = request.opcode;
+        auto searched = context.db().searchNumbers(dbQuery);
+        if (searched.is_err())
+            throw dbQueryError("search numbers", std::move(searched).unwrap_err());
+        // 客户端终审（共享层数值等值函数，引擎 matchesNumber 同语义）：候选
+        // 超集 → 精确命中，再按引擎七元组全序收口（DB 行序是库序，含常量池/
+        // 方法体两源并集）。
+        auto rows = std::move(searched).unwrap();
+        hitList.reserve(rows.size());
+        for (auto& row : rows) {
+            if (!mjt::workspace::numbersEqual(row.valueText.to_std_string(), request.query))
+                continue;
+            hitList.push_back({std::move(row.entryPath),
+                               row.memberName.is_empty()
+                                   ? ca::str::Utf8String::from_cstr("constant_pool_number")
+                                   : ca::str::Utf8String::from_cstr("instruction_number"),
+                               std::move(row.internalName), std::move(row.memberName),
+                               std::move(row.memberDescriptor), static_cast<ca::i32>(row.insnIndex),
+                               std::move(row.valueText)});
+        }
+        mjt::workspace::sortAndDeduplicateSearchHits(hitList);
+    }
+    else {
+        // 引擎回落（regex / query 边界态；校验报错由引擎面给出，不重复口径）。
+        auto hits =
+            request.kind == "classes"
+                ? context.workspace().searchClasses(utf8RefOf(request.query), options)
+                : request.kind == "members"
+                      ? context.workspace().searchMembers(utf8RefOf(request.query), options)
+                      : request.kind == "strings"
+                            ? context.workspace().searchStrings(utf8RefOf(request.query), options)
+                            : context.workspace().searchNumbers(utf8RefOf(request.query), options);
+        if (hits.is_err())
+            throw std::runtime_error("search " + request.kind + " failed: " +
+                                     std::move(hits).unwrap_err().message);
+        hitList = std::move(hits).unwrap();
+    }
+
+    if (request.matchMode == "prefix") filterPrefixHits(hitList, request.query, request.caseSensitive);
+    if (request.kind == "strings" && !request.stringKind.empty())
+        filterStringKind(hitList, request.stringKind);
+
+    std::vector<SearchRow> rows;
+    rows.reserve(hitList.size());
+    for (auto& hit : hitList) rows.push_back(searchRowOf(std::move(hit)));
+    return rows;
+}
+
+namespace {
+
+/// 成员描述符回填（bind 层 resolveMemberDesc 同款语义搬进 facade：宿主类内
+/// 名称唯一命中即用；名字不存在报缺失、真重载报歧义并列候选——MCP
+/// backfillMemberDescriptor 同形）。宿主类不在索引 → StaleRefError（键失效
+/// 语义先行）；表外目标（如 JDK 成员）须显式给 descriptor。
+std::string resolveMemberDescriptor(FacadeSession& s, const std::string& cls,
+                                    const std::string& name, bool fields)
+{
+    std::vector<std::string> hits;
+    for (const auto& [memberName, memberDesc, memberAccess] : facadeMembers(s, cls, fields)) {
+        (void)memberAccess;
+        if (memberName != name) continue;
+        if (std::find(hits.begin(), hits.end(), memberDesc) == hits.end()) hits.push_back(memberDesc);
+    }
+    if (hits.size() == 1) return hits.front();
+    facadeClassUri(s, cls);   // 未索引类 → StaleRefError（fail-closed 键失效）
+    if (hits.empty())
+        throw std::invalid_argument("member not found: " + cls + "." + name);
+    std::string message = "ambiguous member " + cls + "." + name + "; candidates:";
+    for (const auto& candidate : hits) message += " " + candidate;
+    throw std::invalid_argument(message);
+}
+
+}   // namespace
+
+std::vector<XrefRow> facadeXref(FacadeSession& s, const XrefRequest& request)
+{
+    deadlineCheck();
+    const bool isClass  = request.target == "class";
+    const bool isMethod = request.target == "method";
+    const bool isField  = request.target == "field";
+    if (!(isClass || isMethod || isField))
+        throw std::invalid_argument("xref target must be class, method or field; got " +
+                                    request.target);
+    if (request.direction != "to" && request.direction != "from")
+        throw std::invalid_argument("xref direction must be to or from; got " + request.direction);
+    if (request.direction == "from" && !isMethod)
+        throw std::invalid_argument("xref direction=from requires target=method; got " +
+                                    request.target);
+
+    std::string owner      = request.owner;
+    std::string name       = request.name;
+    std::string descriptor = request.descriptor;
+    if (isClass) {
+        if (owner.empty())
+            throw std::invalid_argument("xref target=class requires owner (internal name)");
+        if (!name.empty() || !descriptor.empty())
+            throw std::invalid_argument("xref target=class does not take name/descriptor");
+    }
+    else {
+        if (owner.empty() || name.empty())
+            throw std::invalid_argument("xref target=" + request.target +
+                                        " requires owner and name");
+        // descriptor 省略时按宿主类名称唯一解析回填；显式 descriptor 原样
+        // 直通（表外合法目标如 JDK 成员的引用查询零漂移，MCP raw 直通同口径）。
+        if (descriptor.empty())
+            descriptor = resolveMemberDescriptor(s, owner, name, isField);
+    }
+
+    AnalysisQueryContext context(s);
+    context.openDatabase();
+    mjbase::project::AnalysisDb& db = context.db();
+    const bool toFace = request.direction == "to";
+    auto rows = [&]() -> ca::Result<std::vector<mjbase::project::DbReferenceRecord>,
+                                    mjbase::project::AnalysisDbError> {
+        if (!toFace)
+            return db.referencesFromMember(utf8RefOf(owner), utf8RefOf(name), utf8RefOf(descriptor));
+        if (isMethod)
+            return db.referencesToMethod(utf8RefOf(owner), utf8RefOf(name), utf8RefOf(descriptor));
+        if (isField)
+            return db.referencesToField(utf8RefOf(owner), utf8RefOf(name), utf8RefOf(descriptor));
+        return db.referencesToClass(utf8RefOf(owner));
+    }();
+    if (rows.is_err())
+        throw dbQueryError("xref reference query", std::move(rows).unwrap_err());
+
+    // 行映射（MCP xref 分支逐字对齐）：
+    // - insnIndex 静态收窄 i64→i32（扫描面本就是 i32 序号）；
+    // - kind 文本按分支恒定：to-method/to-field/from-method → "direct"，
+    //   to-class → "type"（引擎 referenceInfo 的字面量）；
+    // - target 文本：成员分支 = owner+"."+name+descriptor 拼接、类分支 =
+    //   内部名本身；
+    // - to-class 只取 Type 行、from-method 只取 Method 行（callees 切片面），
+    //   to-method/to-field 全行——与引擎 typeReferencesTo/methodReferencesFrom
+    //   的切片面一致；
+    // - supporting 恒 false：pysdk 会话无支撑容器挂载，标注本就是无操作。
+    std::vector<mjt::workspace::ReferenceInfo> items;
+    auto records = std::move(rows).unwrap();
+    items.reserve(records.size());
+    for (auto& row : records) {
+        const bool kindRowWanted = isClass ? row.kind == mjbase::project::DbReferenceKind::Type
+                                 : toFace  ? true
+                                           : row.kind == mjbase::project::DbReferenceKind::Method;
+        if (!kindRowWanted) continue;
+        mjt::workspace::ReferenceInfo info;
+        info.sourceClass      = std::move(row.sourceClass);
+        info.sourceMethod     = std::move(row.sourceMethod);
+        info.sourceDescriptor = std::move(row.sourceDescriptor);
+        info.instructionIndex = static_cast<ca::i32>(row.insnIndex);
+        if (isClass) {
+            info.target = std::move(row.targetClass);
+            info.kind   = ca::str::Utf8String::from_cstr("type");
+        }
+        else {
+            const std::string target = row.targetClass.to_std_string() + "." +
+                                       row.targetName.to_std_string() +
+                                       row.targetDescriptor.to_std_string();
+            info.target = utf8Owned(target);
+            info.kind   = ca::str::Utf8String::from_cstr("direct");
+        }
+        items.push_back(std::move(info));
+    }
+    // 引用行收口：sortReferences 全序（无支撑容器挂载，标注无操作）。
+    context.workspace().finalizeReferenceRows(items);
+
+    std::vector<XrefRow> out;
+    out.reserve(items.size());
+    for (auto& item : items) {
+        XrefRow row;
+        row.sourceClass      = item.sourceClass.to_std_string();
+        row.sourceMethod     = item.sourceMethod.to_std_string();
+        row.sourceDescriptor = item.sourceDescriptor.to_std_string();
+        row.instructionIndex = item.instructionIndex;
+        row.supporting       = item.supporting;
+        row.supportId        = item.supportId.to_std_string();
+        row.target           = item.target.to_std_string();
+        row.kind             = item.kind.to_std_string();
+        out.push_back(std::move(row));
+    }
+    return out;
 }
 
 }   // namespace mjt::pysdk

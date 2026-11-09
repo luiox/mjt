@@ -727,4 +727,86 @@ struct ClassCensusFileReport
 ClassCensusFileReport facadeClassCensusFile(const std::string& jarPath,
                                             const std::string& outDir);
 
+// ── 查询面（analysis.db DB-first，语义随 mjt #94；MCP search/xref 的 SDK 等位物）──
+// 数据源 = 一次性临时分析库：容器落账字节落盘临时 jar → workspace 打开 → 整库
+// 导入（analysis_ingest 同一事实源）→ SQL 可表达档直查库 → 即弃。pysdk 编辑不
+// 经 workspace 提交链（无 analysis_edit_sync 增量同步挂点），会话持有库会随编辑
+// 静默失真——每命令新鲜 ingest = 恒查当前落账字节（与 class_bytes/census 同一
+// 口径；脏树不参与，写回后再查）。SQL 不可表达面回落引擎活扫描（与 MCP 守卫
+// 同形）：regex（SQLite 无原生等价）与 query 边界态（空/超 1024 字节，校验报
+// 错由引擎面给出，不重复口径）。
+
+/// search 分面请求（bind 层 kwargs 收集；kind 决定哪些过滤位合法，错位
+/// fail-closed 抛 std::invalid_argument → Python ValueError）。
+struct SearchRequest
+{
+    std::string kind;          ///< classes / members / strings / numbers
+    std::string query;
+    std::string matchMode;     ///< contains（缺省）/ prefix / exact / regex；numbers 无此面
+    bool        caseSensitive = false;
+    std::string owner;         ///< members/strings/numbers：类内部名字节精确作用域
+    std::string packagePrefix; ///< 类内部名字节前缀作用域（classes 亦可用）
+    std::string memberKind;    ///< members 面：空 / field / method
+    std::string stringKind;    ///< strings 面：空 / string_literal / utf8_name /
+                               ///< utf8_descriptor / utf8_classref
+    ca::i32     opcode = -1;   ///< numbers 面：>= 0 只取该 opcode 的方法体行
+};
+
+/// search 命中行（MCP searchHitJson 同形：类行类名键 = class，成员级行宿主类
+/// 键 = owner——bind 层按 kind 投影；strings 行带 stringKind，其余行空）。
+struct SearchRow
+{
+    std::string resourceUri;
+    std::string kind;       ///< class/field/method/constant_pool_string/
+                            ///< constant_pool_utf8/resource_string/
+                            ///< constant_pool_number/instruction_number
+    std::string owner;      ///< 类行 = 内部名；其余 = 宿主类（资源串行为空）
+    std::string name;
+    std::string descriptor;
+    ca::i32     instructionIndex = -1;
+    std::string value;
+    std::string stringKind; ///< strings 行：string_literal / utf8_name /
+                            ///< utf8_descriptor / utf8_classref
+};
+
+/// search 四档（classes/members/strings/numbers）。DB-first 语义与 MCP 同形：
+/// contains/prefix/exact 直查临时分析库；regex 与 query 边界态回落引擎活扫描；
+/// strings 的资源串半边（owner 与 packagePrefix 均空时）与 numbers 的两段式
+/// （SQL 收窄键超集 → constant_scan::numbersEqual 终审）在客户端收口。行序：
+/// 类/成员库行序 = 引擎命中行全序，strings/numbers 经引擎出口收口
+/// （sortAndDeduplicateSearchHits 七元组全序 + 去重）。
+std::vector<SearchRow> facadeSearch(FacadeSession& s, const SearchRequest& request);
+
+/// xref 分面请求。target ∈ class/method/field；direction ∈ to/from
+/// （from 仅 method = 来源方法发出的引用，引擎 callees 切片面同口径）。
+struct XrefRequest
+{
+    std::string target;     ///< class / method / field
+    std::string direction;  ///< to（缺省）/ from
+    std::string owner;      ///< class = 目标类内部名；method/field = 宿主类
+    std::string name;       ///< method/field 目标成员名
+    std::string descriptor; ///< method/field 目标描述符；空 = 按宿主类名称唯一
+                            ///< 解析回填（重载歧义/名字不存在 → invalid_argument）
+};
+
+/// xref 命中行（MCP referenceJson 同形；pysdk 会话无支撑容器挂载，supporting
+/// 恒 false、supportId 恒空——键位保留对齐 MCP 行形）。
+struct XrefRow
+{
+    std::string sourceClass;
+    std::string sourceMethod;
+    std::string sourceDescriptor;
+    ca::i32     instructionIndex = -1;
+    bool        supporting       = false;
+    std::string supportId;
+    std::string target;      ///< 成员目标 = owner.name+desc 拼接；类目标 = 内部名
+    std::string kind;        ///< direct（to-method/to-field/from-method）/
+                             ///< type（to-class）
+};
+
+/// xref 引用查询（references to/from）。目标三元组/类名必须显式给出（descriptor
+/// 空时按宿主类名称唯一解析回填，随 pysdk 成员寻址惯例）；库行按
+/// finalizeReferenceRows 收口（引擎 sortReferences 全序）。
+std::vector<XrefRow> facadeXref(FacadeSession& s, const XrefRequest& request);
+
 }   // namespace mjt::pysdk
