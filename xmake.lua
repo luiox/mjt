@@ -216,7 +216,12 @@ includes("xmake/libca_rules.lua")
 -- searchNumbers，切片替换面 replaceCpStringsFromClass / replaceNumbersFromMember /
 -- replaceCpNumbersFromClass。消费方 = search kind=strings / kind=numbers
 -- DB-first 接线（ingest/edit_sync 常量切片入库）。
-add_requires("mjbase 0.0.28")
+-- 0.0.28 = number_literals 成员切片 DELETE 部分索引性能修复（mjbase #214）。
+-- 0.0.29 = analysis_db 常量事实面整库单事务入口 replaceConstantFaces（mjbase
+-- #215）：一次事务整库替换 cp_strings + number_literals，锚纪律同逐切片入口
+-- 合批落。消费方 = ingest 整库导入单调用切换（windows 每事务 fsync 的 4.4 万
+-- 逐切片事务悬崖修复；edit_sync 增量编辑仍走逐切片入口）。
+add_requires("mjbase 0.0.29")
 
 includes("test_helper")
 includes("mjt")
