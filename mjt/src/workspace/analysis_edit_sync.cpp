@@ -2,14 +2,17 @@
 
 #include <algorithm>
 #include <map>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
 #include "libca/crypto/sha256.hpp"
+#include "jbc/ir/units.hpp"
 #include "mjbase/project/analysis_db.hpp"
 #include "mjbase/project/entry_shape.hpp"
+#include "constant_scan.hpp"
 #include "reference_scan.hpp"
 #include "workspace.hpp"
 
@@ -215,6 +218,7 @@ AnalysisEditSyncStats syncAnalysisDbAfterEdit(
     // 单批 upsert（新类/新成员随批登记，为引用切片提供稳定 id）。
     struct ClassPlan
     {
+        ca::str::Utf8String           uri;
         ca::str::Utf8String           internalName;
         std::vector<MethodKey> methods;   ///< 现方法集（name, descriptor）
         ca::usize                     members = 0;
@@ -252,6 +256,7 @@ AnalysisEditSyncStats syncAnalysisDbAfterEdit(
             input.members.push_back(std::move(member));
         }
         ClassPlan plan;
+        plan.uri          = uri.clone();
         plan.internalName = clazz.internalName.clone();
         for (const MethodInfo& method : clazz.methods) {
             mjbase::project::DbMemberInput member;
@@ -342,6 +347,82 @@ AnalysisEditSyncStats syncAnalysisDbAfterEdit(
                 return stats;
             }
             ++stats.slicesCleared;
+        }
+
+        // 常量事实切片（cp_strings / number_literals，schema v12）：类常量池
+        // 字符串/数值整类换新（0 锚，refs 类级切片同纪律），逐方法数值行与
+        // refs 同款纪律——现存方法即使零数值也写空切片（清旧行），编辑后消失
+        // 的方法清空切片。抽取层 constant_scan 与引擎搜索/整库导入同一事实源。
+        auto content = workspace.readResource(plan.uri.ref());
+        if (content.is_err()) {
+            // 活跃 class 条目读不出字节属工作副本态异常：与条目重锚段同款
+            // fail-closed（静默跳过会让旧切片冒充新事实）。
+            stats.failed = true;
+            return stats;
+        }
+        auto bytes = std::move(content).unwrap().bytes;
+        auto opened = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(bytes));
+        if (opened.is_ok()) {
+            auto held = std::move(opened).unwrap();
+
+            auto strings = cpStringRecords(held->backing());
+            auto replacedStrings =
+                db.replaceCpStringsFromClass(0, classId, std::move(strings));
+            if (replacedStrings.is_err()) {
+                stats.failed = true;
+                return stats;
+            }
+            stats.constantStrings += replacedStrings.unwrap();
+
+            auto cpNumbers = cpNumberRecords(held->backing());
+            auto replacedCpNumbers =
+                db.replaceCpNumbersFromClass(0, classId, std::move(cpNumbers));
+            if (replacedCpNumbers.is_err()) {
+                stats.failed = true;
+                return stats;
+            }
+            stats.constantNumbers += replacedCpNumbers.unwrap();
+
+            auto numberSlices = methodNumberSlices(*held);
+            const auto sliceOf = [&](const MethodKey& key)
+                -> std::optional<std::vector<mjbase::project::DbNumberRecord>> {
+                for (auto& slice : numberSlices) {
+                    if (slice.name == key.first && slice.descriptor == key.second)
+                        return std::move(slice.records);
+                }
+                return std::nullopt;
+            };
+            std::vector<MethodKey> seenMethods;
+            for (const MethodKey& key : plan.methods) {
+                // 畸形重复方法键（同名同描述符）去重：sliceOf 首调已移走切片，
+                // 二次调用会以空切片覆写首次写入。
+                if (std::find(seenMethods.begin(), seenMethods.end(), key) != seenMethods.end())
+                    continue;
+                seenMethods.push_back(key);
+                const auto id = methodIds.find(key);
+                if (id == methodIds.end()) continue;   // 引用切片段同款：成员行缺席按跳过披露
+                std::vector<mjbase::project::DbNumberRecord> records;
+                // slice 必须是非 const：DbNumberRecord 仅可移动，const optional
+                // 解引用退化为拷贝赋值。
+                auto slice = sliceOf(key);
+                if (slice.has_value()) records = std::move(*slice);
+                auto replaced = db.replaceNumbersFromMember(0, id->second, std::move(records));
+                if (replaced.is_err()) {
+                    stats.failed = true;
+                    return stats;
+                }
+                stats.constantNumbers += replaced.unwrap();
+            }
+            for (const auto& [key, memberId] : methodIds) {
+                const auto present = std::find(plan.methods.begin(), plan.methods.end(), key);
+                if (present != plan.methods.end()) continue;
+                auto cleared = db.replaceNumbersFromMember(0, memberId, {});
+                if (cleared.is_err()) {
+                    stats.failed = true;
+                    return stats;
+                }
+                ++stats.numberSlicesCleared;
+            }
         }
     }
     return stats;

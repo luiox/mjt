@@ -217,6 +217,9 @@ struct AnalysisEditSyncStats final
     ca::usize members       = 0;  ///< 类事实 upsert 随批登记的成员数
     ca::usize references    = 0;  ///< 写入的引用行数（类头 + 方法体切片）
     ca::usize slicesCleared = 0;  ///< 清空的引用切片数（编辑后消失的方法）
+    ca::usize constantStrings = 0; ///< 写入的常量池字符串切片行数（cp_strings）
+    ca::usize constantNumbers = 0; ///< 写入的数值字面量切片行数（常量池 + 方法体）
+    ca::usize numberSlicesCleared = 0; ///< 清空的数值切片数（编辑后消失的方法）
     ca::usize skipped       = 0;  ///< 无输入行/非 class 条目/解码失败等跳过计数
     bool      failed        = false; ///< 分析库写失败（编辑不受影响，开期导入兜底）
 };

@@ -14,6 +14,11 @@
 /// - 引用切片：受影响类逐类重扫（ReferenceScan::buildFor 过滤构建），
 ///   类头走 replaceReferencesFromClass、逐方法走 replaceReferencesFromMember，
 ///   编辑后消失的方法清空切片（成员身份行按库纪律只增不删，仅清引用）。
+/// - 常量事实切片（mjbase schema v12，查询面 strings/numbers DB-first 配套）：
+///   类常量池字符串/数值走 replaceCpStringsFromClass /
+///   replaceCpNumbersFromClass，逐方法数值字面量走 replaceNumbersFromMember
+///   （抽取层 constant_scan 与引擎搜索/整库导入同一事实源；消失方法同款清
+///   空切片纪律）。
 ///
 /// 写入口径：与方法指纹记账（analysis_edit）同一纪律——batchId=0 裸事务、
 /// 不开批次（编辑节奏的溯源归台账；归属锚仍是 open 期整库导入批）；库写

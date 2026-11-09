@@ -524,6 +524,10 @@ Json mutationJson(const MutationResult& mutation)
                          {"members", mutation.analysisSync.members},
                          {"references", mutation.analysisSync.references},
                          {"slices_cleared", mutation.analysisSync.slicesCleared},
+                         {"constant_strings", mutation.analysisSync.constantStrings},
+                         {"constant_numbers", mutation.analysisSync.constantNumbers},
+                         {"number_slices_cleared",
+                          mutation.analysisSync.numberSlicesCleared},
                          {"skipped", mutation.analysisSync.skipped},
                          {"failed", mutation.analysisSync.failed}};
     return {{"status", statusJson(shared::toCaStatus(mutation.status))},
