@@ -31,6 +31,7 @@
 #include "mjbase/project/edit_ledger.hpp"
 #include "mjbase/project/project_store.hpp"
 #include "mjbase/renamer/shadow_alias.hpp"
+#include "workspace/constant_scan.hpp"
 
 namespace mjt::mcp {
 
@@ -624,20 +625,32 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         SearchOptions options;
         std::string parseError;
         if (!parseSearchOptions(arguments, options, parseError)) return toolError(parseError);
-        //kind=classes / kind=members DB-first（#121 查询面换轨）：SQL 可表达
-        //档（contains/prefix/exact）直接查 analysis_db——免工作副本全容器逐
-        //类解字节；库行序 (path, internal_name[, name, descriptor, kind])
-        //BINARY 即引擎命中行全序，不经客户端重排。编辑会话不再回落：commit/
-        //undo/redo 挂 analysis_edit_sync 增量同步，受影响类的条目锚/类事实/
-        //引用切片随编辑追平工作副本（早期版本以 revision==0 收窄到干净会
-        //话，增量同步批解除）。回落引擎扫描的两种情形：regex（SQLite 无原生
-        //等价）、query 边界态（空/超长走引擎同款校验报错，不在此重复口径）。
+        //kind=classes / kind=members / kind=strings / kind=numbers DB-first
+        //（#121 查询面换轨）：SQL 可表达档（contains/prefix/exact；numbers 是
+        //值等值 + 收窄键超集）直接查 analysis_db——免工作副本全容器逐类解
+        //字节；类/成员库行序即引擎命中行全序，不经客户端重排；strings 的
+        //资源串半边与 numbers 的行并集在客户端收口（见分支内注释）。编辑会
+        //话不再回落：commit/undo/redo 挂 analysis_edit_sync 增量同步，受影响
+        //类的条目锚/类事实/引用切片/常量事实切片随编辑追平工作副本（早期
+        //版本以 revision==0 收窄到干净会话，增量同步批解除）。回落引擎扫描
+        //的情形：regex（SQLite 无原生等价）、query 边界态（空/超长走引擎同
+        //款校验报错，不在此重复口径）、instructions（见 else 分支注释——
+        //刻意的引擎保留面）。
         const bool classSearchFromDb =
             op == "search_classes" && matchMode != "regex" && !query.empty() &&
             query.size() <= 1024 && session.analysisDb != nullptr;
         const bool memberSearchFromDb =
             op == "search_members" && matchMode != "regex" && !query.empty() &&
             query.size() <= 1024 && session.analysisDb != nullptr;
+        //strings 守卫与类/成员同形；DB 只答类常量池半边，资源串并集见分支内。
+        const bool stringsSearchFromDb =
+            op == "search_strings" && matchMode != "regex" && !query.empty() &&
+            query.size() <= 1024 && session.analysisDb != nullptr;
+        //numbers 无 match_mode（分支键表无该键），守卫只看库在线与 query 非空；
+        //引擎 validateNumberQuery 的完整字面量校验由引擎路径保留，DB 分支构造
+        //收窄键时自行 stold（解析失败按超集不收窄，终审照常给出空集）。
+        const bool numbersSearchFromDb =
+            op == "search_numbers" && session.analysisDb != nullptr && !query.empty();
         std::vector<mjt::workspace::SearchHit> hitList;
         if (classSearchFromDb) {
             mjbase::project::DbClassSearchQuery dbQuery;
@@ -722,7 +735,109 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
                                        value.size())});
             }
         }
+        else if (stringsSearchFromDb) {
+            mjbase::project::DbStringSearchQuery dbQuery;
+            dbQuery.needle       = ca::str::Utf8String::from_data_unchecked(
+                reinterpret_cast<const ca::u8*>(query.data()), query.size());
+            dbQuery.match        = matchMode == "exact" ? mjbase::project::DbTextMatchKind::Exact
+                             : matchMode == "prefix" ? mjbase::project::DbTextMatchKind::Prefix
+                                                     : mjbase::project::DbTextMatchKind::Contains;
+            dbQuery.caseSensitive = options.caseSensitive;
+            dbQuery.owner         = options.owner.clone();
+            dbQuery.packagePrefix = options.packagePrefix.clone();
+            //string_kind 不下推 SQL：沿用 MCP 层既有 post-filter（下方对 kind
+            //文本过滤；DB 行 kind 文本与引擎一致即零漂移，少一个枚举映射面）。
+            //全量行（分页归 page() 统一口径）；LIMIT 上限取 i64 极值即「取尽」。
+            auto searched = session.analysisDb->searchStringsPaged(
+                dbQuery, std::numeric_limits<ca::i64>::max(), 0);
+            if (searched.is_err()) {
+                const auto failure = std::move(searched).unwrap_err();
+                const auto code    = failure.kind == mjbase::project::AnalysisDbErrorKind::Schema
+                                        ? ca::StatusCode::FAILED_PRECONDITION
+                                        : ca::StatusCode::INTERNAL;
+                const auto status  = ca::ErrStatus(
+                    code, "analysis db search failed: " + failure.message.to_std_string());
+                return toolError("analysis db search failed", &status);
+            }
+            auto page = std::move(searched).unwrap();
+            hitList.reserve(page.rows.size());
+            for (auto& row : page.rows) {
+                hitList.push_back({std::move(row.entryPath),
+                                   row.kind == mjbase::project::DbStringKind::String
+                                       ? ca::str::Utf8String::from_cstr("constant_pool_string")
+                                       : ca::str::Utf8String::from_cstr("constant_pool_utf8"),
+                                   std::move(row.internalName), {}, {}, -1,
+                                   std::move(row.value)});
+            }
+            //并集规则（与引擎 searchStrings 同域）：owner 与 packagePrefix 均
+            //空时另取引擎资源串命中——DB 只收类常量池事实，notice.txt 这类非
+            //class 资源的可打印串仍由引擎活扫描回答（searchResourceStrings 与
+            //引擎内联分支同一实现）；作用域非空时 DB-only（引擎该场景本就不
+            //出资源串，域零漂移）。两路拼接后经引擎出口收口（七元组全序排序
+            //+ 去重），既有 string_kind/prefix post-filter、遮蔽与分页零改动。
+            if (options.owner.is_empty() && options.packagePrefix.is_empty()) {
+                auto resources = session.workspace->searchResourceStrings(utf8Ref(query), options);
+                if (resources.is_err()) {
+                    const auto err = shared::toCaStatus(resources.unwrap_err());
+                    return toolError("workspace search failed", &err);
+                }
+                auto resourceHits = std::move(resources).unwrap();
+                hitList.insert(hitList.end(),
+                               std::make_move_iterator(resourceHits.begin()),
+                               std::make_move_iterator(resourceHits.end()));
+            }
+            mjt::workspace::sortAndDeduplicateSearchHits(hitList);
+        }
+        else if (numbersSearchFromDb) {
+            mjbase::project::DbNumberQuery dbQuery;
+            dbQuery.needle       = ca::str::Utf8String::from_data_unchecked(
+                reinterpret_cast<const ca::u8*>(query.data()), query.size());
+            //收窄键（超集安全）：stold 完整解析成功时整值且 |v|<2^63 →
+            //valueInt，static_cast<double> 的 IEEE 位型 → valueBits（与抽取层
+            //入库键同键合流）；解析失败不收窄，只剩 needle 字节等值守卫。
+            const auto narrow = mjt::workspace::numberNarrowKeys(query);
+            dbQuery.valueInt   = narrow.valueInt;
+            dbQuery.valueBits  = narrow.valueBits;
+            dbQuery.owner      = options.owner.clone();
+            dbQuery.packagePrefix = options.packagePrefix.clone();
+            //opcode 门透传 SQL：>= 0 时常量池行（opcode 列 NULL）自动出局，
+            //与引擎「opcode 门排除常量池来源」同口径。
+            dbQuery.opcode     = options.opcode;
+            auto searched = session.analysisDb->searchNumbers(dbQuery);
+            if (searched.is_err()) {
+                const auto failure = std::move(searched).unwrap_err();
+                const auto code    = failure.kind == mjbase::project::AnalysisDbErrorKind::Schema
+                                        ? ca::StatusCode::FAILED_PRECONDITION
+                                        : ca::StatusCode::INTERNAL;
+                const auto status  = ca::ErrStatus(
+                    code, "analysis db search failed: " + failure.message.to_std_string());
+                return toolError("analysis db search failed", &status);
+            }
+            //客户端终审（共享层数值等值函数，引擎 matchesNumber 同语义）：
+            //候选超集 → 精确命中，再按引擎七元组全序收口（DB 行序是库序，
+            //含常量池/方法体两源并集）。
+            for (auto& row : std::move(searched).unwrap()) {
+                if (!mjt::workspace::numbersEqual(row.valueText.to_std_string(), query))
+                    continue;
+                hitList.push_back({std::move(row.entryPath),
+                                   row.memberName.is_empty()
+                                       ? ca::str::Utf8String::from_cstr("constant_pool_number")
+                                       : ca::str::Utf8String::from_cstr("instruction_number"),
+                                   std::move(row.internalName), std::move(row.memberName),
+                                   std::move(row.memberDescriptor),
+                                   static_cast<ca::i32>(row.insnIndex),
+                                   std::move(row.valueText)});
+            }
+            mjt::workspace::sortAndDeduplicateSearchHits(hitList);
+        }
         else {
+            //instructions 刻意保留引擎路径（不 DB 化）：全量指令入库是千万行
+            //级事实面（rt.jar 估 8-14M 行指令），而本面的主导查询形态是
+            //contains 子串（LIKE '%…%' 无索引可用，全表扫）与 regex/结构化过滤
+            //（mnemonic/operand/cst 互斥面；operand 的 ${} slot 展开依赖 shadow
+            //表解析，均不可 SQL 化）——DB 反而慢于引擎活扫描（命中后即时收
+            //口，无入库/同步开销）。classes/members/strings/numbers 是低行数
+            //或可索引收窄的面，DB 化才有净收益。
             //结构化模式借道全量指令集（mjbase 拒绝空 query，单空格恒命中拼
             //接文本），命中后再按结构化字段收紧。
             auto hits =
@@ -740,7 +855,10 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
             hitList = std::move(hits).unwrap();
         }
         //prefix 档在 mjt 侧收紧（contains 结果集恒为前缀命中的超集；DB 路径
-        //的 Prefix 档已是真前缀，收紧为无操作幂等）。
+        //的 Prefix 档已是真前缀，收紧为无操作幂等）。判别文本面按行种类：
+        //类行 = 内部名/URI，成员行 = owner/name/descriptor/value，strings 的
+        //常量池/资源行与 numbers 行 = value（DB Prefix 档对 value 真前缀，
+        //幂等；numbers 无 match_mode 键，本块对其不可达）。
         if (matchMode == "prefix") {
             const bool caseSensitive = options.caseSensitive;
             const auto hasPrefix = [&](const std::string& text) {
