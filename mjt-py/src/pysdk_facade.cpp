@@ -3308,8 +3308,11 @@ SyncClassFacts classFactsOf(const jbc::core::ClassFile& cf)
             utf8Owned(mjt::workspace::support::signatureText(mutableCf, member.attrs));
         row.access     = member.access;
         facts.input.members.push_back(std::move(row));
-        facts.memberKeys.push_back(
-            {isField, {cf.nameOf(member), cf.descOf(member)}});
+        // 嵌套 braced-init 不进 push_back（MSVC 模板实参推导不吃两层花括号，
+        // CI 实证 C2665）——显式构造逐层落型。
+        facts.memberKeys.emplace_back(
+            isField,
+            MethodKey(std::string(cf.nameOf(member)), std::string(cf.descOf(member))));
     };
     for (auto& field : mutableCf.fields) addMember(true, field);
     for (auto& method : mutableCf.methods) addMember(false, method);
@@ -3422,9 +3425,11 @@ void syncSessionAnalysisDbForClass(SessionAnalysisDb& held, FacadeSession& s,
         auto members = db.listMembers(utf8RefOf(name));
         if (members.is_err()) return syncFailed(held);
         for (const auto& row : std::move(members).unwrap()) {
-            std::pair<bool, MethodKey> key{
+            // 嵌套 braced-init 直初始化同样规避（MSVC 对 pair 的模板构造不吃
+            // 两层花括号，CI 实证同族 C2665）——显式构造逐层落型。
+            const std::pair<bool, MethodKey> key(
                 row.kind == mjbase::project::DbMemberKind::Field,
-                {row.name.to_std_string(), row.descriptor.to_std_string()}};
+                MethodKey(row.name.to_std_string(), row.descriptor.to_std_string()));
             if (!present.count(key)) return syncFailed(held);
         }
     }
