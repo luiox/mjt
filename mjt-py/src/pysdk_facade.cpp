@@ -3669,11 +3669,15 @@ namespace {
 /// 名称唯一命中即用；名字不存在报缺失、真重载报歧义并列候选——MCP
 /// backfillMemberDescriptor 同形）。宿主类不在索引 → StaleRefError（键失效
 /// 语义先行）；表外目标（如 JDK 成员）须显式给 descriptor。
+/// facadeMembers 第三参是 methods 旗标（true=方法/false=字段），本函数形参
+/// 是 fields——回填目标面取反传入（CI 实证：直传会把方法回填查成字段表，
+/// 全部 backfill "member not found"）。
 std::string resolveMemberDescriptor(FacadeSession& s, const std::string& cls,
                                     const std::string& name, bool fields)
 {
     std::vector<std::string> hits;
-    for (const auto& [memberName, memberDesc, memberAccess] : facadeMembers(s, cls, fields)) {
+    for (const auto& [memberName, memberDesc, memberAccess] :
+         facadeMembers(s, cls, !fields)) {
         (void)memberAccess;
         if (memberName != name) continue;
         if (std::find(hits.begin(), hits.end(), memberDesc) == hits.end()) hits.push_back(memberDesc);

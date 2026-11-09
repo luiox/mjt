@@ -2269,17 +2269,26 @@ TEST(FacadeXref, SelectorAndParamGuards)
     XrefRequest noOwner;
     noOwner.target = "class";
     EXPECT_THROW(facadeXref(s, noOwner), std::invalid_argument);
-    // 名字不存在（宿主类在索引）→ invalid_argument；宿主类未索引 → StaleRefError。
+    // 名字不存在（宿主类在索引）→ invalid_argument；宿主类未索引 → StaleRefError
+    //（direction 走结构体缺省 "to"：合法方向 + 表外宿主类必须落到键失效路径，
+    // 而不是被方向守卫拦下——CI 实证回归位）。
     XrefRequest missing;
     missing.target = "method";
     missing.owner  = "pysdk/Subject";
     missing.name   = "missing";
     EXPECT_THROW(facadeXref(s, missing), std::invalid_argument);
     XrefRequest foreign;
-    foreign.target = "method";
-    foreign.owner  = "java/lang/String";
-    foreign.name   = "length";
+    foreign.target    = "method";
+    foreign.direction = "to";
+    foreign.owner     = "java/lang/String";
+    foreign.name      = "length";
     EXPECT_THROW(facadeXref(s, foreign), StaleRefError);
+    // 直构缺省方向 = to：同表外目标不显式给 direction 也走 StaleRefError。
+    XrefRequest foreignDefaultDirection;
+    foreignDefaultDirection.target = "method";
+    foreignDefaultDirection.owner  = "java/lang/String";
+    foreignDefaultDirection.name   = "length";
+    EXPECT_THROW(facadeXref(s, foreignDefaultDirection), StaleRefError);
     // 重载歧义：Second.value × 2 无 descriptor → 列候选报错。
     XrefRequest ambiguous;
     ambiguous.target = "method";
@@ -2442,10 +2451,16 @@ TEST(FacadeHierarchy, ChainSubclassesAndImplementors)
                                                                      "pysdk/hier/IFoo"))),
               (std::vector<std::string>{"pysdk/hier/IBar", "pysdk/hier/Impl",
                                         "pysdk/hier/SubImpl"}));
-    // 子接口视角：只收声明 IBar 的实现者 + 后代。
+    // 子接口视角（mjbase implements-边闭包契约，CI 实证钉死）：ifaces 闭包 =
+    // {IBar} ∪ IBar 声明的接口 = {IBar, IFoo}；impls = 声明任一闭包接口的类
+    // ∪ 其后代——IBar 自己声明 IFoo → IBar 入列，Impl 声明 IFoo → 同样入列，
+    // 加 SubImpl（声明 IBar）→ 三类齐全，与 IFoo 视角同集。这不是引擎
+    // classRelations 的 JVM 子型语义（那边 Impl 不是 IBar 子型，只有
+    // SubImpl）——DB 面原样透出 mjbase kImplementorsSql 闭包，门面零重排。
     EXPECT_EQ(hierarchyNames(facadeHierarchy(s, makeHierarchyRequest("implementors",
                                                                      "pysdk/hier/IBar"))),
-              (std::vector<std::string>{"pysdk/hier/SubImpl"}));
+              (std::vector<std::string>{"pysdk/hier/IBar", "pysdk/hier/Impl",
+                                        "pysdk/hier/SubImpl"}));
 
     reg.close(s.handle);
 }

@@ -782,7 +782,11 @@ std::vector<SearchRow> facadeSearch(FacadeSession& s, const SearchRequest& reque
 struct XrefRequest
 {
     std::string target;     ///< class / method / field
-    std::string direction;  ///< to（缺省）/ from
+    /// to（缺省）/ from；缺省初始化 "to"——C++ 直构（测试/内嵌调用）不填
+    /// direction 即 to 面；门面对空串照旧 fail-closed（词表守卫），默认值
+    /// 只兜直构面（CI 实证：无默认值时直构空串会被方向守卫拦下，遮住
+    /// 后续 StaleRef/回填路径）。
+    std::string direction  = "to";
     std::string owner;      ///< class = 目标类内部名；method/field = 宿主类
     std::string name;       ///< method/field 目标成员名
     std::string descriptor; ///< method/field 目标描述符；空 = 按宿主类名称唯一
