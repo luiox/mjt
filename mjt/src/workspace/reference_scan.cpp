@@ -154,10 +154,11 @@ void ReferenceScan::buildFiltered(const model::ResourceContainer&               
                     }
                     // class-string 元数据事实：形态合法的字符串常量是反射引用候选
                     //（与 remapper 反射改写候选同一语法，remap 改的 xref 必须可见）。
+                    //toInternalReflectionName 0.0.28 起直接产出 Utf8String，原值移交。
                     if (constant.kind == jbc::ir::ClassSession::ConstSem::Kind::String &&
                         asm_remapper::looksLikeClassName(constant.str)) {
                         types_.push_back(
-                            {utf8(asm_remapper::toInternalReflectionName(constant.str)),
+                            {asm_remapper::toInternalReflectionName(constant.str),
                              at.clone()});
                     }
                     continue;

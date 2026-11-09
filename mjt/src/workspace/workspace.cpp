@@ -1773,8 +1773,9 @@ std::vector<PipelineDescription> WorkspaceBase::availablePipelines()
 {
     spi::registerBuiltinPipelines();
     std::vector<PipelineDescription> result;
+    //PassPipelineInfo 0.0.28 起携 Utf8String 成员（禁拷贝）：显式 clone 落 DTO。
     for (const auto& pipeline : spi::PassRegistry::instance().listPipelines())
-        result.push_back({utf8(pipeline.name), utf8(pipeline.description)});
+        result.push_back({pipeline.name.clone(), pipeline.description.clone()});
     return result;
 }
 
