@@ -3443,7 +3443,10 @@ void syncSessionAnalysisDbForClass(SessionAnalysisDb& held, FacadeSession& s,
     // 引用切片：类头 + 逐方法（现存方法即使零引用也写空切片，清掉编辑前
     // 的旧行——与 analysis_edit_sync 同纪律）。
     mjt::workspace::ReferenceScan scan;
-    std::vector<ca::str::Utf8String> changedUris {utf8Owned(uriIt->second)};
+    // 花括号初始化 vector<Utf8String> 会落 initializer_list 构造（元素要拷
+    // 贝，Utf8String move-only → MSVC C2280，CI 实证）——push_back 走移动。
+    std::vector<ca::str::Utf8String> changedUris;
+    changedUris.push_back(utf8Owned(uriIt->second));
     scan.buildFor(*s.container, changedUris);
 
     std::vector<mjbase::project::DbReferenceRecord> header;
