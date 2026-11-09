@@ -1071,5 +1071,258 @@ TEST(McpServerTest, XrefReferencesStayFreshAfterEditsViaIncrementalSync)
     EXPECT_EQ("direct", caller.at("kind"));
 }
 
+///kind=strings DB-first 的常量面端到端：类常量池字符串（String 行 + 裸 utf8
+///行）直查 analysis.db；非 class 资源串由引擎并集补答（并集规则：owner 与
+///package_prefix 均空才参与——DB 不收资源串面，DB-only 会漏答 (a)）；string_kind
+///沿用 MCP 层 post-filter，对 DB 行照常生效；真改名后 commit 挂的常量切片增量
+///同步换新（utf8 行跟随新类名与新条目路径——若同步缺席，(d) 的新名断言翻车）。
+TEST(McpServerTest, SearchStringsConstantFacesFromAnalysisDb)
+{
+    McpSessionHarness server;
+    const auto fixture = writeConstantFacesFixture();
+    const auto opened  = call(server, "project_open", {{"path", fixture.string()}});
+    ASSERT_FALSE(opened.at("result").at("isError"));
+    const auto projectId = payload(opened).at("project_id").get<std::string>();
+
+    // (a) 资源串并集：notice.txt 的 "mcp-fixture" 命中 resource_string 行，
+    // 同时 Subject 的 ldc String 字面量命中 constant_pool_string 行（DB 行）。
+    const auto notice = call(server,
+                             "search",
+                             {{"project_id", projectId},
+                              {"kind", "strings"},
+                              {"query", "mcp-fixture"}});
+    ASSERT_FALSE(notice.at("result").at("isError")) << notice.dump();
+    const auto& noticeItems = payload(notice).at("items");
+    ASSERT_EQ(2U, noticeItems.size());
+    const auto resourceRow = std::find_if(noticeItems.begin(),
+                                          noticeItems.end(),
+                                          [](const Json& item) {
+                                              return item.at("kind") == "resource_string";
+                                          });
+    ASSERT_NE(resourceRow, noticeItems.end());
+    EXPECT_EQ("notice.txt", resourceRow->at("resource_uri"));
+    EXPECT_EQ("mcp-fixture", resourceRow->at("value"));
+    EXPECT_EQ("string_literal", resourceRow->at("string_kind"));
+    const auto literalRow = std::find_if(noticeItems.begin(),
+                                         noticeItems.end(),
+                                         [](const Json& item) {
+                                             return item.at("kind") == "constant_pool_string";
+                                         });
+    ASSERT_NE(literalRow, noticeItems.end());
+    EXPECT_EQ("mcp/Subject", literalRow->at("owner"));
+    EXPECT_EQ("hello mcp-fixture world", literalRow->at("value"));
+    EXPECT_EQ("string_literal", literalRow->at("string_kind"));
+
+    // (b) 裸 utf8 行：字段名 counter 双类命中（constant_pool_utf8 / utf8_name）。
+    const auto counter = call(server,
+                              "search",
+                              {{"project_id", projectId},
+                               {"kind", "strings"},
+                               {"query", "counter"},
+                               {"string_kind", "utf8_name"}});
+    ASSERT_FALSE(counter.at("result").at("isError")) << counter.dump();
+    const auto& counterItems = payload(counter).at("items");
+    ASSERT_EQ(2U, counterItems.size());
+    for (const auto& item : counterItems) {
+        EXPECT_EQ("constant_pool_utf8", item.at("kind"));
+        EXPECT_EQ("counter", item.at("value"));
+        EXPECT_EQ("utf8_name", item.at("string_kind"));
+        const auto& owner = item.at("owner").get_ref<const std::string&>();
+        EXPECT_TRUE(owner == "mcp/Subject" || owner == "mcp/Second");
+    }
+
+    // (c) string_literal 分面：只剩串常量行（utf8 行全部出局）。
+    const auto literals = call(server,
+                               "search",
+                               {{"project_id", projectId},
+                                {"kind", "strings"},
+                                {"query", "hello"},
+                                {"string_kind", "string_literal"}});
+    ASSERT_FALSE(literals.at("result").at("isError")) << literals.dump();
+    const auto& literalItems = payload(literals).at("items");
+    ASSERT_EQ(1U, literalItems.size());
+    EXPECT_EQ("constant_pool_string", literalItems.at(0).at("kind"));
+    EXPECT_EQ("hello mcp-fixture world", literalItems.at(0).at("value"));
+
+    // (d) 编辑新鲜度：mapping 真改名 Subject→RenamedSubject 后，类名 utf8 行
+    // 跟随（owner=新名、resource_uri=搬后的条目路径），analysis_sync 披露常量
+    // 切片计数且非 failed。
+    const std::string mapping = "tiny\t2\t0\tintermediary\tnamed\n"
+                                "c\tmcp/Subject\tmcp/RenamedSubject\n";
+    const auto edited = call(server,
+                             "edit_apply",
+                             {{"project_id", projectId},
+                              {"kind", "mapping"},
+                              {"format", "Tiny-V2"},
+                              {"mapping_text", mapping},
+                              {"policy", "all"},
+                              {"expected_revision", 0}});
+    ASSERT_FALSE(edited.at("result").at("isError")) << edited.dump();
+    EXPECT_TRUE(payload(edited).at("committed").get<bool>());
+    EXPECT_FALSE(payload(edited).at("analysis_sync").at("failed").get<bool>());
+    EXPECT_GE(payload(edited).at("analysis_sync").at("constant_strings").get<unsigned>(), 1U);
+
+    const auto renamed = call(server,
+                              "search",
+                              {{"project_id", projectId},
+                               {"kind", "strings"},
+                               {"query", "RenamedSubject"},
+                               {"string_kind", "utf8_classref"}});
+    ASSERT_FALSE(renamed.at("result").at("isError")) << renamed.dump();
+    const auto& renamedItems = payload(renamed).at("items");
+    ASSERT_FALSE(renamedItems.empty());
+    for (const auto& item : renamedItems) {
+        EXPECT_EQ("constant_pool_utf8", item.at("kind"));
+        EXPECT_EQ("utf8_classref", item.at("string_kind"));
+        EXPECT_EQ("mcp/RenamedSubject", item.at("owner"));
+        EXPECT_EQ("mcp/RenamedSubject.class", item.at("resource_uri"));
+    }
+}
+
+///kind=numbers DB-first 的常量面端到端：常量池数值行 + 方法体立即数行两源
+///并集，收窄键（valueInt/valueBits）取候选、共享层数值等值函数终审——"1.0"
+///与 "1" 命中集逐字节相同（parity）；opcode 门透传 SQL（常量池行出局）；
+///jasm 编辑改方法体立即数后 commit 挂的数值切片换新（"1" 掉出 / "9" 进入）。
+TEST(McpServerTest, SearchNumbersConstantFacesFromAnalysisDb)
+{
+    McpSessionHarness server;
+    const auto fixture = writeConstantFacesFixture();
+    const auto opened  = call(server, "project_open", {{"path", fixture.string()}});
+    ASSERT_FALSE(opened.at("result").at("isError"));
+    const auto projectId = payload(opened).at("project_id").get<std::string>();
+
+    // (a) "1" → Subject.value 方法行（instruction_number，insn=装载指令下标 4）
+    //（汇编器整型装载糖若落 ldc CP 行则另有常量池行并集，两形态断言均成立）。
+    const auto ones = call(server,
+                           "search",
+                           {{"project_id", projectId}, {"kind", "numbers"}, {"query", "1"}});
+    ASSERT_FALSE(ones.at("result").at("isError")) << ones.dump();
+    const auto& oneItems = payload(ones).at("items");
+    const auto  oneInsn  = std::find_if(oneItems.begin(),
+                                       oneItems.end(),
+                                       [](const Json& item) {
+                                           return item.at("kind") == "instruction_number" &&
+                                                  item.at("owner") == "mcp/Subject";
+                                       });
+    ASSERT_NE(oneInsn, oneItems.end());
+    EXPECT_EQ("value", oneInsn->at("name"));
+    EXPECT_EQ("()I", oneInsn->at("descriptor"));
+    EXPECT_EQ(4, oneInsn->at("instruction_index"));
+    EXPECT_EQ("1", oneInsn->at("value"));
+    for (const auto& item : oneItems)
+        EXPECT_NE("mcp/Second", item.at("owner"));
+
+    // (b) "2" → Second 的行（Subject 不参与）。装载形态两可（bipush 真立即数
+    //或汇编器整型装载糖折 ldc CP 行），按行类别分别断言：指令行锚定方法名与
+    //装载下标；常量池行 name 空、insn=-1。
+    const auto twos = call(server,
+                           "search",
+                           {{"project_id", projectId}, {"kind", "numbers"}, {"query", "2"}});
+    ASSERT_FALSE(twos.at("result").at("isError")) << twos.dump();
+    const auto& twoItems = payload(twos).at("items");
+    ASSERT_FALSE(twoItems.empty());
+    const auto twoInsn = std::find_if(twoItems.begin(),
+                                      twoItems.end(),
+                                      [](const Json& item) {
+                                          return item.at("kind") == "instruction_number";
+                                      });
+    ASSERT_NE(twoInsn, twoItems.end());
+    EXPECT_EQ("value", twoInsn->at("name"));
+    EXPECT_EQ("()I", twoInsn->at("descriptor"));
+    EXPECT_EQ(0, twoInsn->at("instruction_index"));
+    for (const auto& item : twoItems) {
+        EXPECT_EQ("mcp/Second", item.at("owner"));
+        EXPECT_EQ("2", item.at("value"));
+        if (item.at("kind") == "constant_pool_number") {
+            EXPECT_EQ("", item.at("name").get<std::string>());
+            EXPECT_EQ(-1, item.at("instruction_index"));
+        } else {
+            EXPECT_EQ("instruction_number", item.at("kind"));
+        }
+    }
+
+    // (c) 数值等值 parity："1.0" 与 "1" 命中集相同（客户端终审，非 needle 等值）。
+    const auto oneDot = call(server,
+                             "search",
+                             {{"project_id", projectId}, {"kind", "numbers"}, {"query", "1.0"}});
+    ASSERT_FALSE(oneDot.at("result").at("isError")) << oneDot.dump();
+    EXPECT_EQ(payload(ones).at("items"), payload(oneDot).at("items"));
+
+    // (d) 常量池源：ldc 100000 的 CP Integer 行（constant_pool_number，name 空、
+    // insn=-1）与 ldc 指令行（instruction_number）并集。
+    const auto bigs = call(server,
+                           "search",
+                           {{"project_id", projectId}, {"kind", "numbers"}, {"query", "100000"}});
+    ASSERT_FALSE(bigs.at("result").at("isError")) << bigs.dump();
+    const auto& bigItems = payload(bigs).at("items");
+    const auto  bigCp    = std::find_if(bigItems.begin(),
+                                   bigItems.end(),
+                                   [](const Json& item) {
+                                       return item.at("kind") == "constant_pool_number";
+                                   });
+    ASSERT_NE(bigCp, bigItems.end());
+    EXPECT_EQ("mcp/Subject", bigCp->at("owner"));
+    EXPECT_EQ("", bigCp->at("name").get<std::string>());
+    EXPECT_EQ(-1, bigCp->at("instruction_index"));
+    EXPECT_EQ("100000", bigCp->at("value"));
+    const auto bigInsn = std::find_if(bigItems.begin(),
+                                      bigItems.end(),
+                                      [](const Json& item) {
+                                          return item.at("kind") == "instruction_number" &&
+                                                 item.at("value") == "100000";
+                                      });
+    ASSERT_NE(bigInsn, bigItems.end());
+    EXPECT_EQ("value", bigInsn->at("name"));
+    EXPECT_EQ(2, bigInsn->at("instruction_index"));
+
+    // (e) opcode 门（ldc=18）透传 SQL：常量池行出局，只剩 ldc 指令行。
+    const auto ldcs = call(server,
+                           "search",
+                           {{"project_id", projectId},
+                            {"kind", "numbers"},
+                            {"query", "100000"},
+                            {"opcode", 18}});
+    ASSERT_FALSE(ldcs.at("result").at("isError")) << ldcs.dump();
+    const auto& ldcItems = payload(ldcs).at("items");
+    ASSERT_EQ(1U, ldcItems.size());
+    EXPECT_EQ("instruction_number", ldcItems.at(0).at("kind"));
+    EXPECT_EQ("mcp/Subject", ldcItems.at(0).at("owner"));
+
+    // (f) 编辑新鲜度：jasm 重汇编 Subject.value（装载 1 → 9），commit 挂数值
+    // 切片换新——"1" 全部掉出、"9" 进入，analysis_sync 披露数值切片计数。
+    const auto edited = call(server,
+                             "edit_apply",
+                             {{"project_id", projectId},
+                              {"kind", "jasm"},
+                              {"uri", "mcp/Subject.class"},
+                              {"source_name", "Subject.jasm"},
+                              {"source", classSource("9")},
+                              {"expected_revision", 0}});
+    ASSERT_FALSE(edited.at("result").at("isError")) << edited.dump();
+    EXPECT_TRUE(payload(edited).at("committed").get<bool>());
+    EXPECT_FALSE(payload(edited).at("analysis_sync").at("failed").get<bool>());
+    EXPECT_GE(payload(edited).at("analysis_sync").at("constant_numbers").get<unsigned>(), 1U);
+
+    const auto afterOne = call(server,
+                               "search",
+                               {{"project_id", projectId}, {"kind", "numbers"}, {"query", "1"}});
+    ASSERT_FALSE(afterOne.at("result").at("isError")) << afterOne.dump();
+    EXPECT_EQ(0U, payload(afterOne).at("items").size());
+
+    const auto afterNine = call(server,
+                                "search",
+                                {{"project_id", projectId},
+                                 {"kind", "numbers"},
+                                 {"query", "9"},
+                                 {"owner", "mcp/Subject"}});
+    ASSERT_FALSE(afterNine.at("result").at("isError")) << afterNine.dump();
+    const auto& nineItems = payload(afterNine).at("items");
+    ASSERT_FALSE(nineItems.empty());
+    for (const auto& item : nineItems) {
+        EXPECT_EQ("mcp/Subject", item.at("owner"));
+        EXPECT_EQ("9", item.at("value"));
+    }
+}
+
 }   //namespace
 }   //namespace mjt::mcp

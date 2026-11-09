@@ -181,11 +181,62 @@ std::filesystem::path writeSignaturedMemberFixture()
     return path;
 }
 
+/// 常量事实面 fixture（search kind=strings / kind=numbers 的 DB-first 端到端）：
+/// Subject.value 方法体 = ldc String 字面量 + ldc Integer 常量（常量池数值行）
+/// + `bipush 1`（汇编器整型装载糖——落到 ldc CP 行或真立即数行均可能，断言
+/// 按两源并集写）+ ireturn；Second 对照（`bipush 2`）；notice.txt 资源串
+///（并集面探针）。jasm 文本 raw string 定版规则同 classSourceFor。
+std::filesystem::path writeConstantFacesFixture()
+{
+    const std::string subjectSource = R"JASM(.super java/lang/Object
+.class public super mcp/Subject {
+  .field public counter I
+  .method public static value ()I {
+    code: {
+      ldc "hello mcp-fixture world"
+      pop
+      ldc 100000
+      pop
+      bipush 1
+      ireturn
+    }
+  }
+}
+)JASM";
+    mjbase::jasm::JvmJasmService assembler;
+    auto           sourceName = utf16("Subject.jasm");
+    auto           source     = utf16(subjectSource);
+    const auto     assembled  = assembler.assemble(sourceName.ref(), source.ref());
+    if (!assembled.isOk()) throw std::runtime_error("constant faces fixture did not assemble");
+
+    mjbase::model::ResourceContainer container;
+    container.addResource("mcp/Subject.class",
+                          std::make_unique<mjbase::model::ClassResource>(
+                              "mcp/Subject.class", assembled.value->bytes));
+    auto           secondName   = utf16("Second.jasm");
+    auto           secondSource = utf16(classSourceFor("mcp/Second", "2"));
+    const auto     secondAssembled =
+        assembler.assemble(secondName.ref(), secondSource.ref());
+    if (!secondAssembled.isOk())
+        throw std::runtime_error("constant faces second fixture did not assemble");
+    container.addResource("mcp/Second.class",
+                          std::make_unique<mjbase::model::ClassResource>(
+                              "mcp/Second.class", secondAssembled.value->bytes));
+    container.addResource("notice.txt",
+                          std::make_unique<mjbase::model::UnknownResource>(
+                              "notice.txt",
+                              std::vector<ca::u8>{'m', 'c', 'p', '-', 'f', 'i', 'x',
+                                                  't', 'u', 'r', 'e'}));
+    const auto path = test::getTempOutPath("mjt_mcp_constant_faces_fixture.jar");
+    mjbase::model::ResourceHelper::exportToJar(container, path.string());
+    return path;
+}
+
 std::filesystem::path writeFixture()
 {
     mjbase::jasm::JvmJasmService assembler;
     auto                       sourceName = utf16("Subject.jasm");
-    auto                       source = utf16(classSource("1"));
+    auto source = utf16(classSource("1"));
     const auto assembled = assembler.assemble(sourceName.ref(), source.ref());
     if (!assembled.isOk()) throw std::runtime_error("MCP fixture did not assemble");
 

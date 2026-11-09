@@ -35,6 +35,7 @@ std::vector<ca::u8> withMethodSignature(const std::vector<ca::u8>& bytes,
                                         const std::string&         methodDesc,
                                         const std::string&         signature);
 std::filesystem::path writeSignaturedMemberFixture();
+std::filesystem::path writeConstantFacesFixture();
 std::filesystem::path writeFixture();
 std::filesystem::path writeQuerySupportingFixture();
 std::vector<ca::u8> assembleFixtureClass(const std::string& sourceName,
