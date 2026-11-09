@@ -60,6 +60,7 @@
 #include "libca/zip/checksum.hpp"
 #include "analysis_edit.hpp"
 #include "analysis_edit_sync.hpp"
+#include "constant_scan.hpp"
 #include "export_manifest.hpp"
 #include "class_mutation_service.hpp"
 #include "classfile_support.hpp"
@@ -459,32 +460,8 @@ bool matchesAnyText(std::initializer_list<ca::str::Utf8StringRef> values,
     });
 }
 
-template <typename T>
-std::string numberText(T value)
-{
-    std::ostringstream output;
-    if constexpr (std::is_floating_point_v<T>) {
-        output << std::setprecision(std::numeric_limits<T>::max_digits10);
-    }
-    output << value;
-    return output.str();
-}
-
-bool matchesNumber(const std::string& value, const std::string& query)
-{
-    if (value == query) return true;
-    try {
-        std::size_t valueOffset = 0;
-        std::size_t queryOffset = 0;
-        const auto  parsedValue = std::stold(value, &valueOffset);
-        const auto  parsedQuery = std::stold(query, &queryOffset);
-        return valueOffset == value.size() && queryOffset == query.size() &&
-               parsedValue == parsedQuery;
-    }
-    catch (const std::exception&) {
-        return false;
-    }
-}
+/// 数值格式化与等值判定收口在抽取层（constant_scan：numberText/numbersEqual，
+/// analysis.db 常量事实面的入库与终审共用同一组纯函数）。
 
 WorkspaceErrorInfo validateNumberQuery(const std::string& query)
 {
@@ -498,34 +475,6 @@ WorkspaceErrorInfo validateNumberQuery(const std::string& query)
     }
     return error(WorkspaceError::InvalidArgument, "search numbers",
                  "query must be a complete numeric value");
-}
-
-void sortAndDeduplicateSearchHits(std::vector<SearchHit>& hits)
-{
-    std::sort(hits.begin(), hits.end(), [](const SearchHit& left, const SearchHit& right) {
-        return std::tie(left.resourceUri,
-                        left.owner,
-                        left.name,
-                        left.descriptor,
-                        left.instructionIndex,
-                        left.kind,
-                        left.value) <
-               std::tie(right.resourceUri,
-                        right.owner,
-                        right.name,
-                        right.descriptor,
-                        right.instructionIndex,
-                        right.kind,
-                        right.value);
-    });
-    hits.erase(
-        std::unique(hits.begin(), hits.end(), [](const SearchHit& left, const SearchHit& right) {
-            return left.resourceUri == right.resourceUri && left.kind == right.kind &&
-                   left.owner == right.owner && left.name == right.name &&
-                   left.descriptor == right.descriptor &&
-                   left.instructionIndex == right.instructionIndex && left.value == right.value;
-        }),
-        hits.end());
 }
 
 // ── 指令渲染（libjbc 形状分派；node_type 按指令语义命名）────────────────
@@ -1324,6 +1273,34 @@ void sortUnique(std::vector<T>& values)
 }
 
 }   // namespace
+
+void sortAndDeduplicateSearchHits(std::vector<SearchHit>& hits)
+{
+    std::sort(hits.begin(), hits.end(), [](const SearchHit& left, const SearchHit& right) {
+        return std::tie(left.resourceUri,
+                        left.owner,
+                        left.name,
+                        left.descriptor,
+                        left.instructionIndex,
+                        left.kind,
+                        left.value) <
+               std::tie(right.resourceUri,
+                        right.owner,
+                        right.name,
+                        right.descriptor,
+                        right.instructionIndex,
+                        right.kind,
+                        right.value);
+    });
+    hits.erase(
+        std::unique(hits.begin(), hits.end(), [](const SearchHit& left, const SearchHit& right) {
+            return left.resourceUri == right.resourceUri && left.kind == right.kind &&
+                   left.owner == right.owner && left.name == right.name &&
+                   left.descriptor == right.descriptor &&
+                   left.instructionIndex == right.instructionIndex && left.value == right.value;
+        }),
+        hits.end());
+}
 
 // ── 错误码短名 ──────────────────────────────────────────────────────────
 
@@ -2503,7 +2480,7 @@ WorkspaceResult<std::vector<SearchHit>> WorkspaceBase::searchMembers(
     return ca::core::Ok(std::move(result));
 }
 
-WorkspaceResult<std::vector<SearchHit>> WorkspaceBase::searchStrings(
+WorkspaceResult<std::vector<SearchHit>> WorkspaceBase::searchResourceStrings(
     ca::str::Utf8StringRef queryRef, const SearchOptions& options) const
 {
     const std::string query = queryRef.to_std_string();
@@ -2515,17 +2492,38 @@ WorkspaceResult<std::vector<SearchHit>> WorkspaceBase::searchStrings(
     const auto* regex         = compiledRegex ? &*compiledRegex : nullptr;
 
     std::vector<SearchHit> result;
-
     // 非 class 资源可打印串（无 owner 语义：owner/packagePrefix 过滤时不参与）。
+    auto resources = resourceStrings(1);
+    if (resources.is_err()) return ca::core::Err(std::move(resources).unwrap_err());
+    // ResourceStringInfo 携 move-only Utf8String：unwrap 走移动重载。
+    for (const auto& item : std::move(resources).unwrap()) {
+        if (!matchesText(item.value.to_std_string(), query, options, regex)) continue;
+        result.push_back({item.uri.clone(), utf8("resource_string"), {}, {}, {}, -1,
+                          item.value.clone()});
+    }
+    return ca::core::Ok(std::move(result));
+}
+
+WorkspaceResult<std::vector<SearchHit>> WorkspaceBase::searchStrings(
+    ca::str::Utf8StringRef queryRef, const SearchOptions& options) const
+{
+    const std::string query = queryRef.to_std_string();
+    WorkspaceErrorInfo status = ensureLoaded("search strings");
+    if (status.is_err()) return ca::core::Err(std::move(status));
+    auto compiled = compileSearchRegex(queryRef.to_std_string(), options, "search strings");
+    if (compiled.is_err()) return ca::core::Err(std::move(compiled).unwrap_err());
+    auto        compiledRegex = std::move(compiled).unwrap();
+    const auto* regex         = compiledRegex ? &*compiledRegex : nullptr;
+
+    std::vector<SearchHit> result;
+
+    // 非 class 资源可打印串半边抽成公开面（searchResourceStrings）：引擎
+    // searchStrings 与 DB strings 路径的并集半边共用同一实现（资源字节不是
+    // 常量池事实，analysis.db 不收该面）。
     if (options.owner.is_empty() && options.packagePrefix.is_empty()) {
-        auto resources = resourceStrings(1);
+        auto resources = searchResourceStrings(queryRef, options);
         if (resources.is_err()) return ca::core::Err(std::move(resources).unwrap_err());
-        // ResourceStringInfo 携 move-only Utf8String：unwrap 走移动重载。
-        for (const auto& item : std::move(resources).unwrap()) {
-            if (!matchesText(item.value.to_std_string(), query, options, regex)) continue;
-            result.push_back({item.uri.clone(), utf8("resource_string"), {}, {}, {}, -1,
-                              item.value.clone()});
-        }
+        for (auto& hit : std::move(resources).unwrap()) result.push_back(std::move(hit));
     }
 
     working_->visitResources([&](std::string_view uriView, const model::IResource& resource) {
@@ -2539,36 +2537,16 @@ WorkspaceResult<std::vector<SearchHit>> WorkspaceBase::searchStrings(
         const jbc::core::ClassFile& cf   = held->backing();
         const auto                  owner = mjbase::jasm::classFileUtf8ToString(cf.thisName());
         if (!matchesSearchScope(owner, options)) return;
-        //String 背书 utf8 去重：被 CONSTANT_String 引用的 utf8 条目由
-        //constant_pool_string 行承载（string_literal 分面），不再以裸 utf8 行
-        //重复出现并冒充类引用（评估反馈实证：字面量背书被标成 utf8_classref，
-        //string_kind 过滤失去意义）。
-        std::set<ca::u32> stringBackedUtf8;
-        for (ca::u32 index = 1; index < cf.cp.size(); ++index) {
-            if (!cf.cp.valid(index)) continue;
-            const auto& candidate = cf.cp.at(index);
-            if (candidate.tag == jbc::core::CpTag::String && cf.cp.valid(candidate.a))
-                stringBackedUtf8.insert(candidate.a);
-        }
-        for (ca::u32 index = 1; index < cf.cp.size(); ++index) {
-            if (!cf.cp.valid(index)) continue;
-            const auto& entry = cf.cp.at(index);
-            std::string value;
-            std::string kind;
-            if (entry.tag == jbc::core::CpTag::Utf8) {
-                if (stringBackedUtf8.count(index) > 0) continue;
-                value = utf8Text(cf, index);
-                kind  = "constant_pool_utf8";
-            }
-            else if (entry.tag == jbc::core::CpTag::String) {
-                value = utf8Text(cf, entry.a);
-                kind  = "constant_pool_string";
-            }
-            else {
-                continue;
-            }
+        // 常量池行走收口在抽取层（constant_scan：入库切片与引擎查询同一
+        // 事实源；String 背书 utf8 去重与 facet 预分规则都在那里）。
+        for (const auto& record : cpStringRecords(cf)) {
+            const std::string value = record.value.to_std_string();
             if (!matchesText(value, query, options, regex)) continue;
-            result.push_back({utf8(uri), utf8(kind), utf8(owner), {}, {}, -1, utf8(value)});
+            result.push_back({utf8(uri),
+                              utf8(record.kind == mjbase::project::DbStringKind::String
+                                       ? "constant_pool_string"
+                                       : "constant_pool_utf8"),
+                              utf8(owner), {}, {}, -1, utf8(value)});
         }
     });
     sortAndDeduplicateSearchHits(result);
@@ -2599,101 +2577,29 @@ WorkspaceResult<std::vector<SearchHit>> WorkspaceBase::searchNumbers(
         const auto            owner = mjbase::jasm::classFileUtf8ToString(cf.thisName());
         if (!matchesSearchScope(owner, options)) return;
 
+        // 常量池数值行：抽取层（constant_scan）产出，opcode 门存在时常量池源
+        // 出局（opcode < 0 才参与——与抽取切片的入库语义同一事实源）。
         if (options.opcode < 0) {
-            for (ca::u32 index = 1; index < cf.cp.size(); ++index) {
-                if (!cf.cp.valid(index)) continue;
-                const auto& entry = cf.cp.at(index);
-                std::string value;
-                switch (entry.tag) {
-                case jbc::core::CpTag::Integer: value = numberText(entry.ival); break;
-                case jbc::core::CpTag::Float:
-                    value = numberText(support::bitsToFloat(static_cast<ca::u32>(entry.ival)));
-                    break;
-                case jbc::core::CpTag::Long: value = numberText(entry.lval); break;
-                case jbc::core::CpTag::Double:
-                    value = numberText(support::bitsToDouble(static_cast<ca::u64>(entry.lval)));
-                    break;
-                default: continue;
-                }
-                if (!matchesNumber(value, query)) continue;
+            for (const auto& record : cpNumberRecords(cf)) {
+                const std::string value = record.valueText.to_std_string();
+                if (!numbersEqual(value, query)) continue;
                 result.push_back(
                     {utf8(uri), utf8("constant_pool_number"), utf8(owner), {}, {}, -1,
-                     utf8(std::move(value))});
+                     utf8(value)});
             }
         }
 
-        // 指令数值字面量：iconst/lconst/fconst/dconst 族 + 立即数/iinc/switch/ldc。
-        for (auto& visit : jbc::ir::collectCodeUnits(*held)) {
-            if (visit.kind != jbc::ir::CodeVisit::Kind::Ok) continue;
-            auto raw = visit.unit->dom.exportRaw();
-            if (raw.is_err()) continue;
-            const auto&       insns = std::move(raw).unwrap();
-            auto&             method = cf.methods[visit.methodIdx];
-            const std::string methodName = utf8Text(cf, method.nameCp);
-            const std::string methodDesc = utf8Text(cf, method.descCp);
-            for (ca::i32 index = 0; index < static_cast<ca::i32>(insns.size()); ++index) {
-                const auto& insn = insns[static_cast<ca::usize>(index)];
-                if (options.opcode >= 0 && static_cast<ca::i32>(insn.op) != options.opcode)
-                    continue;
-                std::vector<std::string> values;
-                switch (insn.op) {
-                case jbc::core::Op::ICONST_M1: values.push_back("-1"); break;
-                case jbc::core::Op::ICONST_0:
-                case jbc::core::Op::LCONST_0:
-                case jbc::core::Op::FCONST_0:
-                case jbc::core::Op::DCONST_0: values.push_back("0"); break;
-                case jbc::core::Op::ICONST_1:
-                case jbc::core::Op::LCONST_1:
-                case jbc::core::Op::FCONST_1:
-                case jbc::core::Op::DCONST_1: values.push_back("1"); break;
-                case jbc::core::Op::ICONST_2:
-                case jbc::core::Op::FCONST_2: values.push_back("2"); break;
-                case jbc::core::Op::ICONST_3: values.push_back("3"); break;
-                case jbc::core::Op::ICONST_4: values.push_back("4"); break;
-                case jbc::core::Op::ICONST_5: values.push_back("5"); break;
-                default: break;
-                }
-                switch (jbc::core::shapeOf(insn.op)) {
-                case jbc::core::Shape::Imm1:
-                case jbc::core::Shape::Imm2:
-                case jbc::core::Shape::Atype1:
-                case jbc::core::Shape::Local1:
-                    values.push_back(numberText(insn.a));
-                    break;
-                case jbc::core::Shape::Iinc1: values.push_back(numberText(insn.b)); break;
-                case jbc::core::Shape::TableSwitch:
-                    values.push_back(numberText(insn.a));
-                    values.push_back(numberText(insn.b));
-                    break;
-                case jbc::core::Shape::LookupSwitch:
-                    for (const auto key : insn.cases) values.push_back(numberText(key.key));
-                    break;
-                case jbc::core::Shape::CP2Dims: values.push_back(numberText(insn.a)); break;
-                case jbc::core::Shape::CP1:
-                case jbc::core::Shape::CP2:
-                {
-                    if (cf.cp.valid(insn.cp)) {
-                        const auto& entry = cf.cp.at(insn.cp);
-                        if (entry.tag == jbc::core::CpTag::Integer)
-                            values.push_back(numberText(entry.ival));
-                        else if (entry.tag == jbc::core::CpTag::Long)
-                            values.push_back(numberText(entry.lval));
-                        else if (entry.tag == jbc::core::CpTag::Float)
-                            values.push_back(numberText(
-                                support::bitsToFloat(static_cast<ca::u32>(entry.ival))));
-                        else if (entry.tag == jbc::core::CpTag::Double)
-                            values.push_back(numberText(
-                                support::bitsToDouble(static_cast<ca::u64>(entry.lval))));
-                    }
-                    break;
-                }
-                default: break;
-                }
-                for (const auto& value : values) {
-                    if (!matchesNumber(value, query)) continue;
-                    result.push_back({utf8(uri), utf8("instruction_number"), utf8(owner),
-                                      utf8(methodName), utf8(methodDesc), index, utf8(value)});
-                }
+        // 指令数值字面量：逐方法切片（iconst/lconst/fconst/dconst 族 + 立即数/
+        // iinc/switch/ldc 数值 CP 目标——行走规则收口在抽取层，opcode 门在
+        // 命中行上后置过滤，行集与旧内联行走逐字节一致）。
+        for (const auto& slice : methodNumberSlices(*held)) {
+            for (const auto& record : slice.records) {
+                if (options.opcode >= 0 && record.opcode != options.opcode) continue;
+                const std::string value = record.valueText.to_std_string();
+                if (!numbersEqual(value, query)) continue;
+                result.push_back({utf8(uri), utf8("instruction_number"), utf8(owner),
+                                  utf8(slice.name), utf8(slice.descriptor),
+                                  static_cast<ca::i32>(record.insnIndex), utf8(value)});
             }
         }
     });

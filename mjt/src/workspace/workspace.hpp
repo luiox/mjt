@@ -182,6 +182,15 @@ public:
     WorkspaceResult<std::vector<SearchHit>> searchStrings(
         ca::str::Utf8StringRef query, const SearchOptions& options = {}) const override;
 
+    /// @brief searchStrings 的资源串半边单独公开（非 class 资源可打印串扫描；
+    ///        owner/packagePrefix 作用域由调用方守卫——本面无作用域语义）。
+    ///
+    /// DB strings 路径（query.cpp）的并集半边：analysis.db 只收类常量池事实，
+    /// 资源串仍由引擎活扫描回答；引擎 searchStrings 内联分支改调本面，两条
+    /// 调用路同一实现零漂移（#93 finalizeReferenceRows 的公开非虚面先例）。
+    WorkspaceResult<std::vector<SearchHit>> searchResourceStrings(
+        ca::str::Utf8StringRef query, const SearchOptions& options) const;
+
     /// @brief 精确查询常量池及即时数值字面量；数值文本支持等价的标准数值写法。
     WorkspaceResult<std::vector<SearchHit>> searchNumbers(
         ca::str::Utf8StringRef query, const SearchOptions& options = {}) const override;
@@ -534,6 +543,12 @@ private:
     mutable ca::u64 lvtPolicyRevision_ = 0;
     mutable bool    lvtJarFallback_    = false;
 };
+
+/// @brief SearchHit 七元组全序排序 + 相邻去重（引擎搜索面的出口收口）。
+///
+/// DB strings 查询路径（query.cpp）的类常量池行 + 资源串行并集在此收口，
+/// 行序与引擎输出零漂移（DB 行序是库序，不是七元组全序）。
+void sortAndDeduplicateSearchHits(std::vector<SearchHit>& hits);
 
 /// @brief 递归扫描 JDK 目录下的 .jar/.zip/.jmod，把层次摘要灌入 @p hierarchy。
 ///

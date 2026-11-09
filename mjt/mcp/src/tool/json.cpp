@@ -8,6 +8,7 @@
 
 #include "limits.hpp"
 #include "shared/status_convert.hpp"
+#include "workspace/constant_scan.hpp"
 
 namespace mjt::mcp::detail {
 
@@ -822,13 +823,15 @@ bool projectFields(const Json& arguments, const std::vector<std::string>& rowKey
 /// 常量池裸 UTF8 行的分面细分：按内容形态区分描述符 / 类型引用 / 其他名。
 /// （"Code"、"decode" 这类属性名/方法名不是类引用，混进 utf8_classref 会让
 /// string_kind 过滤失去意义——评估反馈实证。）
+/// 形态规则的单一事实源在抽取层（workspace/constant_scan：入库 facet 预分
+/// 同一分类器），此处只做分面 → string_kind 文本投影。
 std::string utf8StringKind(const std::string& value)
 {
-    if (value.empty()) return "utf8_name";
-    if (value.front() == '(') return "utf8_descriptor";
-    if (value.front() == '[') return "utf8_classref";
-    if (value.front() == 'L' && value.back() == ';') return "utf8_classref";
-    if (value.find('/') != std::string::npos) return "utf8_classref";
+    switch (mjt::workspace::constantUtf8Facet(value)) {
+    case mjt::workspace::ConstantUtf8Facet::Descriptor: return "utf8_descriptor";
+    case mjt::workspace::ConstantUtf8Facet::ClassRef: return "utf8_classref";
+    case mjt::workspace::ConstantUtf8Facet::Name: break;
+    }
     return "utf8_name";
 }
 
