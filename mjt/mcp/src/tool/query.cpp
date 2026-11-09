@@ -1198,7 +1198,8 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
             matches.push_back(*handleEntry);
         }
         else if (handleResult.error != mjbase::renamer::ShadowSlotError::None) {
-            return toolError(handleResult.message);
+            //mjbase 0.0.28：ShadowSlotResult.message 换型 Utf8String。
+            return toolError(handleResult.message.to_std_string());
         }
         else {
             matches = toRaw ? table.findByShadowName(lookupName)
@@ -1215,7 +1216,7 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
                     mjbase::renamer::resolveShadowHandleEntry(table, ownerFilterRaw, ownerResult);
                 if (!ownerEntry.has_value()) {
                     if (ownerResult.error != mjbase::renamer::ShadowSlotError::None)
-                        return toolError(ownerResult.message);
+                        return toolError(ownerResult.message.to_std_string());
                     return toolError("owner filter must be a raw internal name or a class "
                                      "reference like ${Class_N.token8}");
                 }
@@ -1241,8 +1242,10 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
                           {"name", toStd(entry.rawName)},
                           {"desc", toStd(entry.desc)},
                           {"shadow", toStd(entry.shadowName)}};
+            //shadowRefHandleOf 0.0.28 起返回 Utf8String：判空走 is_empty()，
+            //进 Json 前显式 to_std_string（禁止隐式直通）。
             const auto ref = mjbase::renamer::shadowRefHandleOf(table, entry);
-            if (!ref.empty()) match["ref"] = ref;
+            if (!ref.is_empty()) match["ref"] = ref.to_std_string();
             values.push_back(std::move(match));
         }
         Json body = {{"file", slots.path}, {"count", values.size()}, {"matches", std::move(values)}};

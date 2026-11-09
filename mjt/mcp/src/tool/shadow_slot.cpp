@@ -21,10 +21,10 @@ using mjbase::renamer::ShadowAliasTable;
 using mjbase::renamer::ShadowSlotError;
 
 ///resolver 结果 → 结构化 toolError（message 已含码字前缀与修复动作）。
-///mjbase 侧诊断消息是 std::string，旧栈为 Utf8String。
+///mjbase 0.0.28：ShadowSlotResult.message 换型 Utf8String，出口 to_std_string。
 Json errorOf(const mjbase::renamer::ShadowSlotResult& result)
 {
-    return detail::toolError(result.message);
+    return detail::toolError(result.message.to_std_string());
 }
 
 ///std::string → 借用视图（B3 接口面 Utf8StringRef 参数化适配；克隆前提：
@@ -33,6 +33,14 @@ ca::str::Utf8StringRef utf8Ref(const std::string& value) noexcept
 {
     return ca::str::Utf8StringRef::from_data(
         value.empty() ? nullptr : reinterpret_cast<const ca::u8*>(value.data()), value.size());
+}
+
+///std::string → Utf8String 驻留拷贝（mjbase 0.0.28 查询参数面 owner/descHint
+///换型 Utf8String；内部名/描述符为 ASCII 域，按字节收进不做二次校验）。
+ca::str::Utf8String utf8Str(std::string_view value)
+{
+    return ca::str::Utf8String::from_data_unchecked(
+        reinterpret_cast<const ca::u8*>(value.data()), value.size());
 }
 
 }   //namespace
@@ -103,7 +111,7 @@ bool resolveClassSlot(const WorkspaceShadowTable& slots,
         error = errorOf(result);
         return false;
     }
-    out.raw        = result.raw;
+    out.raw        = result.raw.to_std_string();
     out.fromHandle = result.fromHandle;
     return true;
 }
@@ -141,16 +149,16 @@ bool resolveMemberSlot(const WorkspaceShadowTable& slots,
     mjbase::renamer::ShadowSlotQuery query;
     query.position  = mjbase::renamer::ShadowSlotPosition::Name;
     query.member    = true;
-    query.owner     = ownerRaw;
-    query.descHint  = descHint;
+    query.owner     = utf8Str(ownerRaw);
+    query.descHint  = utf8Str(descHint);
     query.verifyRaw = verifyRaw;
     const auto result = mjbase::renamer::resolveShadowSlot(slots.table, input, query);
     if (result.error != ShadowSlotError::None) {
         error = errorOf(result);
         return false;
     }
-    out.raw        = result.raw;
-    out.descriptor = result.descriptor;
+    out.raw        = result.raw.to_std_string();
+    out.descriptor = result.descriptor.to_std_string();
     out.fromHandle = result.fromHandle;
     //句柄解析成功但调用方另给了不一致的 desc：调用方输入矛盾（句柄本身
     //有效），按普通参数错误报出，不入四分类（四分类只判解析失败）。
@@ -376,7 +384,7 @@ bool resolveDescriptorArgument(const WorkspaceShadowTable& slots,
         error = errorOf(result);
         return false;
     }
-    out = result.raw;
+    out = result.raw.to_std_string();
     return true;
 }
 
@@ -394,7 +402,7 @@ bool resolveJasmBodyArgument(const WorkspaceShadowTable& slots,
         error = errorOf(result);
         return false;
     }
-    out = result.raw;
+    out = result.raw.to_std_string();
     return true;
 }
 
