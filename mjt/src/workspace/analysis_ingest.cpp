@@ -298,14 +298,15 @@ ca::Result<AnalysisIngestStats, AnalysisIngestError> ingestIntoAnalysisDb(
         return ca::core::Err(databaseError(std::move(replaced).unwrap_err()));
     }
 
-    //-- 常量事实切片（cp_strings / number_literals，mjbase schema v12）--------
+    //-- 常量事实面（cp_strings / number_literals，mjbase schema v12）-----------
     // 逐类重读字节建 jbc 会话（引擎 sessionOf 同形输入），抽取层与引擎搜索/
-    // 编辑同步同一事实源。批次锚跟随 refs 现状：类级切片挂导入批（(2,class_id)
-    // 作用域行与 ingestClasses 同锚，INSERT OR IGNORE 幂等不裂行）；方法体数值
-    // 切片走 0 锚裸事务——refs 整库替换的成员切片靠单条 refs_all (0,0) 锚覆盖、
-    // 不落逐成员作用域行，数值面没有聚合锚（schema v12），逐方法挂批会为每个
-    // 方法膨胀一行 batch_scopes（rt.jar 规模不可接受），对齐编辑同步的 0 锚
-    // 纪律（归属审计走开期导入批的类锚与台账，不在这层重复）。
+    // 编辑同步同一事实源。整库走查攒 DbClassConstantFaces，走查收尾后单次
+    // replaceConstantFaces 整库单事务重建（mjbase 0.0.29 整库入口）——
+    // 逐类/逐方法切片调用各自开一事务，windows 上每事务 WAL fsync（fat 夹具
+    // ≈ 4.4 万次调用）实证悬崖由此消除。批次锚与 replaceReferences 同批：
+    // 每类 (2, class_id)、每个出现的方法 (3, member_id)（mjbase 整库入口
+    // 合批落锚，INSERT OR IGNORE 幂等）；增量编辑仍走逐切片入口（edit_sync）。
+    std::vector<mjbase::project::DbClassConstantFaces> classFaces;
     for (const ClassInfo& info : classList) {
         const auto entry = entryIdByPath.find(info.resourceUri.to_std_string());
         if (entry == entryIdByPath.end()) continue;
@@ -324,21 +325,13 @@ ca::Result<AnalysisIngestStats, AnalysisIngestError> ingestIntoAnalysisDb(
         }
         auto classRow = std::move(found).unwrap();
         if (!classRow.has_value()) continue;   // 未登记类（防御）：开期导入幂等重跑兜底
-        const ca::i64 classId = classRow->classId;
 
-        auto strings = cpStringRecords(held->backing());
-        auto replacedStrings = db.replaceCpStringsFromClass(batchId, classId, std::move(strings));
-        if (replacedStrings.is_err()) {
-            return ca::core::Err(databaseError(std::move(replacedStrings).unwrap_err()));
-        }
-        stats.constantStrings += replacedStrings.unwrap();
-
-        auto cpNumbers = cpNumberRecords(held->backing());
-        auto replacedCpNumbers = db.replaceCpNumbersFromClass(batchId, classId, std::move(cpNumbers));
-        if (replacedCpNumbers.is_err()) {
-            return ca::core::Err(databaseError(std::move(replacedCpNumbers).unwrap_err()));
-        }
-        stats.constantNumbers += replacedCpNumbers.unwrap();
+        mjbase::project::DbClassConstantFaces faces;
+        faces.classId    = classRow->classId;
+        faces.cpStrings  = cpStringRecords(held->backing());
+        faces.cpNumbers  = cpNumberRecords(held->backing());
+        stats.constantStrings += faces.cpStrings.size();
+        stats.constantNumbers += faces.cpNumbers.size();
 
         auto members = db.listMembers(utf8Ref(info.internalName.to_std_string()));
         if (members.is_err()) {
@@ -352,13 +345,18 @@ ca::Result<AnalysisIngestStats, AnalysisIngestError> ingestIntoAnalysisDb(
         for (auto& slice : methodNumberSlices(*held)) {
             const auto id = methodIds.find({slice.name, slice.descriptor});
             if (id == methodIds.end()) continue;   // 成员行缺席（防御）：类事实已随批登记，重跑自愈
-            auto replacedNumbers =
-                db.replaceNumbersFromMember(0, id->second, std::move(slice.records));
-            if (replacedNumbers.is_err()) {
-                return ca::core::Err(databaseError(std::move(replacedNumbers).unwrap_err()));
-            }
-            stats.constantNumbers += replacedNumbers.unwrap();
+            mjbase::project::DbMemberNumberSlices memberNumbers;
+            memberNumbers.memberId = id->second;
+            memberNumbers.records  = std::move(slice.records);
+            stats.constantNumbers += memberNumbers.records.size();
+            faces.memberNumbers.push_back(std::move(memberNumbers));
         }
+        classFaces.push_back(std::move(faces));
+    }
+
+    auto replacedFaces = db.replaceConstantFaces(batchId, std::move(classFaces));
+    if (replacedFaces.is_err()) {
+        return ca::core::Err(databaseError(std::move(replacedFaces).unwrap_err()));
     }
 
     //-- 批次收尾：计数从导入统计回填（注册表不核对，对账由消费方负责） ------

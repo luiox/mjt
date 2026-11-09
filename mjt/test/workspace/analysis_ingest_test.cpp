@@ -409,7 +409,10 @@ TEST(MjAnalysisIngestTest, LandsProducerRegistryAndBatchOwnership)
     EXPECT_EQ(static_cast<ca::i64>(first.members), batches[0].memberCount);
     EXPECT_EQ(static_cast<ca::i64>(first.references), batches[0].refCount);
 
-    // 作用域锚：refs_all (0,0) + input (1,input_id) + 逐类 (2,class_id)×3。
+    // 作用域锚：refs_all (0,0) + input (1,input_id) + 逐类 (2,class_id)×3 +
+    // 逐方法数值切片 (3,member_id)×3（Subject.value / Subject.virtualValue /
+    // Child.virtualValue——带数值字面量的方法；常量面整库入口合批落锚，
+    // Caller.call 与 Child.run 无数值行不落）。
     auto inputsListed = db.listInputs();
     ASSERT_TRUE(inputsListed.is_ok());
     auto inputs = std::move(inputsListed).unwrap();
@@ -419,14 +422,19 @@ TEST(MjAnalysisIngestTest, LandsProducerRegistryAndBatchOwnership)
     auto scopesListed = db.batchScopes(batches[0].batchId);
     ASSERT_TRUE(scopesListed.is_ok());
     auto scopes = std::move(scopesListed).unwrap();
-    ASSERT_EQ(5U, scopes.size());
+    ASSERT_EQ(8U, scopes.size());
     EXPECT_EQ(mjbase::project::DbBatchScopeKind::RefsAll, scopes[0].kind);
     EXPECT_EQ(0, scopes[0].scopeId);
     EXPECT_EQ(mjbase::project::DbBatchScopeKind::Input, scopes[1].kind);
     EXPECT_EQ(inputId, scopes[1].scopeId);
-    for (ca::usize index = 2; index < scopes.size(); ++index) {
-        EXPECT_EQ(mjbase::project::DbBatchScopeKind::Class, scopes[index].kind);
-        EXPECT_GT(scopes[index].scopeId, 0);
+    ca::usize scopeIndex = 2;
+    for (; scopeIndex < 5; ++scopeIndex) {
+        EXPECT_EQ(mjbase::project::DbBatchScopeKind::Class, scopes[scopeIndex].kind);
+        EXPECT_GT(scopes[scopeIndex].scopeId, 0);
+    }
+    for (; scopeIndex < scopes.size(); ++scopeIndex) {
+        EXPECT_EQ(mjbase::project::DbBatchScopeKind::Member, scopes[scopeIndex].kind);
+        EXPECT_GT(scopes[scopeIndex].scopeId, 0);
     }
 
     // 类事实归属解析：逐类作用域行让 classOwnership 可答（整库批）。
