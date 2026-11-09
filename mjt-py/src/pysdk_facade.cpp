@@ -2599,7 +2599,7 @@ SanitizeLvtReport facadeSanitizeLvt(FacadeSession& s)
 namespace {
 
 /// 被拒流水 → 脚本可读条目（owner/old/new/撞名对象定位，fail-closed 报错面）。
-/// mjbase：proposal 字段为 string_view 驻留视图，detail 为 std::string。
+/// mjbase 0.0.28：proposal 字段为 string_view 驻留视图，detail 换型 Utf8String。
 std::vector<RejectedSuggestion> rejectedEntriesOf(
     const std::vector<mjbase::renamer::RejectedProposal>& rejected)
 {
@@ -2616,7 +2616,7 @@ std::vector<RejectedSuggestion> rejectedEntriesOf(
         item.source = std::string(entry.proposal.source);
         item.reason = std::string(
             mjbase::renamer::rejectionReasonName(entry.reason));
-        item.detail = entry.detail;
+        item.detail = entry.detail.to_std_string();
         out.push_back(std::move(item));
     }
     return out;
@@ -2629,7 +2629,9 @@ SuggestionRunReport facadeRenameApplySuggestions(FacadeSession& s, const std::st
 {
     auto file = mjbase::renamer::readNameSuggestionFile(path);
     if (file.is_err()) {
-        throw std::runtime_error("suggestions: " + std::move(file).unwrap_err().message);
+        // SuggestionFileError.message 0.0.28 起为 Utf8String。
+        throw std::runtime_error("suggestions: " +
+                                 std::move(file).unwrap_err().message.to_std_string());
     }
     mjbase::asm_remapper::RemapPolicy policy;
     if (policyName == "bytecode-only") {
@@ -2651,13 +2653,14 @@ SuggestionRunReport facadeRenameApplySuggestions(FacadeSession& s, const std::st
 
     mjbase::renamer::RenamerOptions options;
     options.planOnly = false;
-    options.policy   = policy;
+    // RemapPolicy 0.0.28 起 move-only：policy 此后不再读，移交给引擎选项。
+    options.policy = std::move(policy);
     mjbase::renamer::FileSuggestionProvider provider(std::move(file).unwrap());
     mjbase::renamer::RenamerEngine          engine;
     auto result = engine.run(*s.container, {&provider}, options);
-    // mjbase：ca::Status 通道换 ok+error 值对。
+    // mjbase：ca::Status 通道换 ok+error 值对；error 0.0.28 起为 Utf8String。
     if (!result.ok) {
-        throw std::runtime_error("rename apply failed: " + result.error);
+        throw std::runtime_error("rename apply failed: " + result.error.to_std_string());
     }
 
     s.clearTrees();     // 容器字节整体被改写（管线直驱同款语义）
@@ -2680,11 +2683,12 @@ SuggestionRunReport facadeRenameApplySuggestions(FacadeSession& s, const std::st
 ShadowGenReport facadeShadowGenerate(FacadeSession& s)
 {
     s.shadowTable = std::make_shared<mjbase::renamer::ShadowAliasTable>();
-    // mjbase：随机源失败走 Result 值语义（不抛异常）。
+    // mjbase：随机源失败走 Result 值语义（不抛异常）；错误文本 0.0.28 起
+    // 为 Utf8String。
     const auto generated =
         mjbase::renamer::generateMechanicalShadowNames(*s.container, *s.shadowTable);
     if (generated.is_err()) {
-        throw std::runtime_error("shadow generate: " + generated.unwrap_err());
+        throw std::runtime_error("shadow generate: " + generated.unwrap_err().to_std_string());
     }
     const auto& stats = generated.unwrap();
     return {stats.assignedClasses, stats.assignedMethods, stats.assignedFields,
@@ -3100,11 +3104,12 @@ ShadowSidecarReport facadeShadowGenerateFile(const std::string& jarPath,
     std::string sidecarPath;
     auto container = importForSidecar(jarPath, file, sidecarPath);
     auto table     = loadSidecarTable(sidecarPath);
-    // mjbase 补号幂等：已分配条目保留（kept），随机源失败走 Err 值语义。
+    // mjbase 补号幂等：已分配条目保留（kept），随机源失败走 Err 值语义
+    //（错误文本 0.0.28 起为 Utf8String）。
     auto generated = mjbase::renamer::generateMechanicalShadowNames(container, table);
     if (generated.is_err()) {
         throw std::runtime_error("generate shadow names failed: " +
-                                 std::move(generated).unwrap_err());
+                                 std::move(generated).unwrap_err().to_std_string());
     }
     const auto& stats = generated.unwrap();
     writeSidecarTable(sidecarPath, table);

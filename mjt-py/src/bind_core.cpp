@@ -574,10 +574,11 @@ PYBIND11_MODULE(mjt, m)
             out["passes"] = passes;
             mjbase::spi::registerBuiltinPipelines();
             py::list pipelines;
+            //PassPipelineInfo 0.0.28 起携 Utf8String 成员：出口显式 to_std_string。
             for (const auto& pipeline : mjbase::spi::PassRegistry::instance().listPipelines()) {
                 py::dict entry;
-                entry["name"]        = pipeline.name;
-                entry["description"] = pipeline.description;
+                entry["name"]        = pipeline.name.to_std_string();
+                entry["description"] = pipeline.description.to_std_string();
                 pipelines.append(entry);
             }
             out["pipelines"] = pipelines;
@@ -592,9 +593,11 @@ PYBIND11_MODULE(mjt, m)
         [](const std::string& expression, py::object bindings, bool simplify,
            int max_depth) {
             if (expression.empty()) throw py::value_error("expression is required");
-            std::string parseError;
-            auto        parsed = mjbase::expr::parseExpression(expression, &parseError);
-            if (!parsed) throw py::value_error("cannot parse expression: " + parseError);
+            //parseExpression 0.0.28 起错误出口换型 Utf8String（变量名键同）。
+            ca::str::Utf8String parseError;
+            auto                parsed = mjbase::expr::parseExpression(expression, &parseError);
+            if (!parsed)
+                throw py::value_error("cannot parse expression: " + parseError.to_std_string());
             if (simplify) parsed = mjbase::expr::simplify(parsed).simplified;
             mjbase::expr::VarBindings vars;
             if (!bindings.is_none()) {
@@ -602,7 +605,9 @@ PYBIND11_MODULE(mjt, m)
                 for (const auto& item : dict) {
                     const auto name  = item.first.cast<std::string>();
                     const auto value = item.second.cast<long long>();
-                    vars.emplace(name, mjbase::expr::ExprValue(static_cast<ca::i64>(value)));
+                    vars.emplace(ca::str::Utf8String::from_data_unchecked(
+                                     reinterpret_cast<const ca::u8*>(name.data()), name.size()),
+                                 mjbase::expr::ExprValue(static_cast<ca::i64>(value)));
                 }
             }
             if (max_depth <= 0 || max_depth > 4096) {
@@ -612,13 +617,13 @@ PYBIND11_MODULE(mjt, m)
                 mjbase::expr::eval(*parsed, vars, static_cast<ca::u32>(max_depth));
             py::dict out;
             out["expression"] = expression;
-            out["normalized"] = mjbase::expr::toSExpr(*parsed);
+            out["normalized"] = mjbase::expr::toSExpr(*parsed).to_std_string();
             out["simplified"] = simplify;
             out["evaluated"]  = result.ok;
             if (result.ok)
                 out["value"] = result.value.rawValue();
             else
-                out["error"] = result.error;
+                out["error"] = result.error.to_std_string();
             return out;
         },
         py::arg("expression"), py::arg("bindings") = py::none(), py::arg("simplify") = false,
