@@ -2637,11 +2637,13 @@ TEST(FacadeSessionDb, XrefFreshAfterCallRetarget)
     ASSERT_TRUE(xrefTo("read", "()I").empty());
 
     // 内容编辑：call 体的 invokestatic 改靶 value → read（栈形不变）。写回
-    // 落账 → 引用切片换新（旧靶行清、新靶行入）→ 双向查询即见。
+    // 落账 → 引用切片换新（旧靶行清、新靶行入）→ 双向查询即见。invoke 家族
+    // kind 外显是 kMethod（非 kInsn），opcode 定位即可（label/line 节点
+    // opcode 为 -1，不会混入）。
     const auto briefs = facadeInsns(s, "pysdk/Caller", "call", "()I");
     ca::u32 invokeUid = 0;
     for (const auto& brief : briefs) {
-        if (brief.kind == insn_kind::kInsn && brief.opcode == 184 /*INVOKESTATIC*/) {
+        if (brief.opcode == 184 /*INVOKESTATIC*/) {
             invokeUid = brief.uid;
         }
     }
@@ -2686,7 +2688,9 @@ TEST(FacadeSessionDb, MemberRenameLeavesNoGhost)
     facadeWriteBack(s, "pysdk/Second", false);
 
     const auto after = facadeSearch(s, makeSearchRequest("members", "value"));
-    ASSERT_EQ(after.size(), std::size_t{2});   // 旧键行不还魂
+    // contains 语义：needle "value" 同时命中改名后的 value2——行数不降，
+    // 幽灵判定看键：旧键 (Second, value, ()I) 必须消失。
+    ASSERT_EQ(after.size(), std::size_t{3});
     for (const auto& row : after) {
         EXPECT_FALSE(row.owner == "pysdk/Second" && row.descriptor == "()I" &&
                      row.name == "value");

@@ -1339,11 +1339,11 @@ def run_all():
     check("sessiondb baseline 42 empty", mjt.search(h30, "numbers", "42") == [],
           str(mjt.search(h30, "numbers", "42")))
     rets30 = [uid for uid, op, kind in mjt.insns(dec30)
-              if kind == "insn" and op == mjt.opcodes["ARETURN"]]
+              if kind == "insn" and op == mjt.opcodes["areturn"]]
     check("sessiondb areturn found", len(rets30) == 1, str(rets30))
-    sip30 = mjt.emit_insn(dec30, mjt.opcodes["SIPUSH"], pos=rets30[0])
+    sip30 = mjt.emit_insn(dec30, mjt.opcodes["sipush"], pos=rets30[0])
     mjt.insn_set_operand(dec30, sip30, 42)
-    mjt.emit_insn(dec30, mjt.opcodes["POP"], pos=rets30[0])
+    mjt.emit_insn(dec30, mjt.opcodes["pop"], pos=rets30[0])
     mjt.write_back((h30, "me/demo/Crypto"), compute_frames=False)
     hits42 = mjt.search(h30, "numbers", "42")
     check("sessiondb numbers fresh after edit",
@@ -1362,8 +1362,10 @@ def run_all():
     check("sessiondb xref baseline",
           len(to30) == 1 and to30[0]["source"]["class"] == "me/demo/App", str(to30))
     main30 = (h30, "me/demo/App", "main", "([Ljava/lang/String;)V")
+    # invoke 家族 kind 外显是 "method"（非 "insn"），opcode 定位即可
+    #（label/line 节点 opcode 为 -1，不会混入）。
     inv30 = [uid for uid, op, kind in mjt.insns(main30)
-             if kind == "insn" and op == mjt.opcodes["INVOKESTATIC"]]
+             if op == mjt.opcodes["invokestatic"]]
     check("sessiondb invokestatic found", len(inv30) == 1, str(inv30))
     mjt.insn_set_method_ref(main30, inv30[0], "me/demo/Crypto", "dec",
                             "(II)Ljava/lang/String;", False)
