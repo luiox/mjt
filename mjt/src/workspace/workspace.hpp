@@ -214,6 +214,14 @@ public:
                                                                 ca::str::Utf8StringRef descriptor,
                                                                 bool resolved = false) const override;
 
+    /// @brief 引用行查询收口：supporting 标注 + 稳定排序。
+    ///
+    /// 引擎路径（xrefsToMethod/xrefsToField/xrefsToClass/calleesOfMethod）在
+    /// 扫描命中后内部走同一对收口；analysis.db 直查路径把库行映射成
+    /// ReferenceInfo 后经本面收口——行序（sortReferences 全序）与 supporting
+    /// 标注和引擎输出零漂移。无支撑容器挂载时标注是无操作。
+    void finalizeReferenceRows(std::vector<ReferenceInfo>& references) const;
+
     /// @brief 返回目标 class 的超类、接口、直接/全部子类和实现者。
     WorkspaceResult<ClassRelations> classRelations(ca::str::Utf8StringRef internalName) const override;
 

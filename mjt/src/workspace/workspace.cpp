@@ -1910,6 +1910,12 @@ void WorkspaceBase::annotateSupportingSources(std::vector<ReferenceInfo>& refere
     }
 }
 
+void WorkspaceBase::finalizeReferenceRows(std::vector<ReferenceInfo>& references) const
+{
+    annotateSupportingSources(references);
+    sortReferences(references);
+}
+
 WorkspaceResult<WorkspaceBase::AnalysisGraph> WorkspaceBase::analysisGraph() const
 {
     WorkspaceErrorInfo status = ensureLoaded("build analysis classpath");

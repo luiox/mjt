@@ -924,5 +924,152 @@ TEST(McpServerTest, SearchMembersSignatureFaceStaysFreshAfterEditsViaIncremental
     EXPECT_EQ("mcp/RenamedSubject.class", afterItem.at("resource_uri"));
 }
 
+///kind=references DB-first 的干净挂载态命中（#121 查询面换轨的 xref 步）：
+///无支撑容器挂载 + 会话分析库在线时 xref_query 直查 analysis.db——开期整库
+///导入的 refs 表与引擎扫描同源。分歧载具 = target=class java/lang/Object
+///（目标类从未入库登记，钉 referencesToClass 的文本分支兜底）：两类的
+/// .super 头声明是 Type 行（sourceMethod/descriptor 空、insnIndex -1），库行
+///映射 + finalizeReferenceRows 收口后与引擎输出同形（kind "type"、target 内
+///部名、sourceClass 字节序全序）。
+TEST(McpServerTest, XrefReferencesQueryFromAnalysisDbInCleanMountState)
+{
+    McpSessionHarness server;
+    const auto fixture = writeFixture();
+    const auto opened  = call(server, "project_open", {{"path", fixture.string()}});
+    ASSERT_FALSE(opened.at("result").at("isError"));
+    const auto projectId = payload(opened).at("project_id").get<std::string>();
+
+    const auto supers = call(server,
+                             "xref_query",
+                             {{"project_id", projectId},
+                              {"kind", "references"},
+                              {"target", "class"},
+                              {"direction", "to"},
+                              {"class", "java/lang/Object"}});
+    ASSERT_FALSE(supers.at("result").at("isError")) << supers.dump();
+    ASSERT_EQ(2U, payload(supers).at("items").size());
+    //sortReferences 全序（sourceClass 字节序）：mcp/Second 先于 mcp/Subject。
+    EXPECT_EQ("mcp/Second", payload(supers).at("items").at(0).at("source").at("class"));
+    EXPECT_EQ("mcp/Subject", payload(supers).at("items").at(1).at("source").at("class"));
+    for (const auto& item : payload(supers).at("items")) {
+        EXPECT_EQ("java/lang/Object", item.at("target"));
+        EXPECT_EQ("type", item.at("kind"));
+        EXPECT_EQ("", item.at("source").at("method").get<std::string>());
+        EXPECT_EQ("", item.at("source").at("descriptor").get<std::string>());
+        EXPECT_EQ(-1, item.at("source").at("instruction_index"));
+        EXPECT_FALSE(item.at("source").at("supporting").get<bool>());
+        EXPECT_EQ("", item.at("source").at("support_id").get<std::string>());
+    }
+
+    //method 分支干净态空集（fixture 的 value()I 无调用点）：DB 路径照常答
+    //空页，行键/分页形状与引擎一致。
+    const auto noCallers = call(server,
+                                "xref_query",
+                                {{"project_id", projectId},
+                                 {"kind", "references"},
+                                 {"target", "method"},
+                                 {"direction", "to"},
+                                 {"owner", "mcp/Second"},
+                                 {"name", "value"},
+                                 {"descriptor", "()I"}});
+    ASSERT_FALSE(noCallers.at("result").at("isError")) << noCallers.dump();
+    EXPECT_EQ(0U, payload(noCallers).at("items").size());
+}
+
+///kind=references DB-first 的编辑增量新鲜度：jasm 编辑给 mcp/Subject.value
+///注入对 mcp/Second.value 的调用后，commit 挂 analysis_edit_sync 把受影响
+///方法体的引用切片追平工作副本——DB 路径不回落引擎，direction=from
+///（referencesFromMember 的 Method 行切片，type 行不进结果）与
+/// direction=to（编辑前空集 → 编辑后一命中）都答新态；若增量同步缺席，
+///两查仍答旧态空集（此断言即翻车）。挂载态守卫回落引擎的对照面由
+/// ExposesProjectQueriesAndTransactionalEdits 的支撑挂载断言覆盖。
+TEST(McpServerTest, XrefReferencesStayFreshAfterEditsViaIncrementalSync)
+{
+    McpSessionHarness server;
+    const auto fixture = writeFixture();
+    const auto opened  = call(server, "project_open", {{"path", fixture.string()}});
+    ASSERT_FALSE(opened.at("result").at("isError"));
+    const auto projectId = payload(opened).at("project_id").get<std::string>();
+
+    //编辑前基线：mcp/Second.value 无调用方（DB 开期导入态）。
+    const auto before = call(server,
+                             "xref_query",
+                             {{"project_id", projectId},
+                              {"kind", "references"},
+                              {"target", "method"},
+                              {"direction", "to"},
+                              {"owner", "mcp/Second"},
+                              {"name", "value"},
+                              {"descriptor", "()I"}});
+    ASSERT_FALSE(before.at("result").at("isError")) << before.dump();
+    EXPECT_EQ(0U, payload(before).at("items").size());
+
+    //整类 jasm 重汇编：value 方法体换成 invokestatic mcp/Second.value + ireturn
+    //（类名/字段保持不动，满足 jasm 编辑的类名匹配资源门禁）。
+    const std::string source = R"JASM(.super java/lang/Object
+.class public super mcp/Subject {
+  .field public counter I
+  .method public static value ()I {
+    code: {
+      invokestatic mcp/Second.value ()I
+      ireturn
+    }
+  }
+}
+)JASM";
+    const auto edited = call(server,
+                             "edit_apply",
+                             {{"project_id", projectId},
+                              {"kind", "jasm"},
+                              {"uri", "mcp/Subject.class"},
+                              {"source_name", "Subject.jasm"},
+                              {"source", source},
+                              {"expected_revision", 0}});
+    ASSERT_FALSE(edited.at("result").at("isError")) << edited.dump();
+    EXPECT_TRUE(payload(edited).at("committed").get<bool>());
+    EXPECT_FALSE(payload(edited).at("analysis_sync").at("failed").get<bool>());
+
+    //from（method_callees resolved=false → referencesFromMember）：一命中，
+    //kind "direct"、target = owner+"."+name+descriptor 拼接（引擎口径）。
+    const auto callees = call(server,
+                              "xref_query",
+                              {{"project_id", projectId},
+                               {"kind", "references"},
+                               {"target", "method"},
+                               {"direction", "from"},
+                               {"resolved", false},
+                               {"owner", "mcp/Subject"},
+                               {"name", "value"},
+                               {"descriptor", "()I"}});
+    ASSERT_FALSE(callees.at("result").at("isError")) << callees.dump();
+    ASSERT_EQ(1U, payload(callees).at("items").size());
+    const auto& callee = payload(callees).at("items").at(0);
+    EXPECT_EQ("mcp/Subject", callee.at("source").at("class"));
+    EXPECT_EQ("value", callee.at("source").at("method"));
+    EXPECT_EQ("()I", callee.at("source").at("descriptor"));
+    EXPECT_EQ("mcp/Second.value()I", callee.at("target"));
+    EXPECT_EQ("direct", callee.at("kind"));
+    EXPECT_EQ(0, callee.at("source").at("instruction_index"));
+
+    //to（referencesToMethod）：编辑注入的调用点反查一命中，来源是新方法体。
+    const auto callers = call(server,
+                              "xref_query",
+                              {{"project_id", projectId},
+                               {"kind", "references"},
+                               {"target", "method"},
+                               {"direction", "to"},
+                               {"owner", "mcp/Second"},
+                               {"name", "value"},
+                               {"descriptor", "()I"}});
+    ASSERT_FALSE(callers.at("result").at("isError")) << callers.dump();
+    ASSERT_EQ(1U, payload(callers).at("items").size());
+    const auto& caller = payload(callers).at("items").at(0);
+    EXPECT_EQ("mcp/Subject", caller.at("source").at("class"));
+    EXPECT_EQ("value", caller.at("source").at("method"));
+    EXPECT_EQ("()I", caller.at("source").at("descriptor"));
+    EXPECT_EQ("mcp/Second.value()I", caller.at("target"));
+    EXPECT_EQ("direct", caller.at("kind"));
+}
+
 }   //namespace
 }   //namespace mjt::mcp

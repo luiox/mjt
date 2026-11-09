@@ -19,6 +19,7 @@
 #include "mjbase/mapping/intermediate_mapping.hpp"
 #include "mjbase/model/resource_helper.hpp"
 #include "mjbase/model/resource_model.hpp"
+#include "mjbase/project/analysis_db.hpp"
 #include "mjbase/project/edit_ledger.hpp"
 
 namespace mjt::mcp {
@@ -611,28 +612,120 @@ std::optional<Json> McpToolService::callMutationTool(
                     if (field.name == member) addCandidate(field.descriptor.ref());
             }
         }
-        //显式 if-else 分派替代原 3 层嵌套三元，避免重复读取 arguments 与拷贝；
-        //用 lambda 单次构造返回。
-        auto query = [&]() -> mjt::workspace::WorkspaceResult<
-                             std::vector<mjt::workspace::ReferenceInfo>> {
-            if (name == "xref_method") {
-                return current->xrefsToMethod(utf8Ref(owner), utf8Ref(member), utf8Ref(descriptor));
+        //DB-first（#121 查询面换轨的 xref 步）：干净挂载态的 references 四分支
+        //直查 analysis.db——开期整库导入与编辑增量同步（commit/undo/redo 挂
+        //analysis_edit_sync）把 refs 表追平工作副本，库行与引擎扫描同源
+        //（ReferenceScan 同一事实源），免每次查询全容器重扫。守卫三条件，
+        //任一不满足回落原引擎路径：
+        // (1) 会话分析库在线（非工程会话无库可查）；
+        // (2) 无支撑容器挂载——库内 refs 只收主容器类的引用
+        //     （analysis_ingest 按 primaryClasses 过滤入库），挂载态的跨容器
+        //     命中与 supporting/supportId 标注必须由引擎的合并扫描面回答；
+        // (3) method_callees resolved=true——解析展开走 jbc DOM+层次图，无 DB
+        //     等价面；选择器不完整（raw 直通留空 owner/name/descriptor/class）
+        //     同样回落，由引擎给出既有 canonical 校验错误，错误面零漂移。
+        //行序：库行按 id 序返回，mjt 侧 finalizeReferenceRows（sortReferences
+        //收口）重排为引擎全序，下游 role 过滤/descriptor 诊断/分页零改动。
+        const bool resolvedExpansion =
+            name == "method_callees" && arguments.value("resolved", false);
+        const bool selectorsComplete =
+            name == "xref_class" ? !className.empty()
+                                 : (!owner.empty() && !member.empty() && !descriptor.empty());
+        const bool referencesFromDb = session.analysisDb != nullptr && selectorsComplete &&
+                                      !resolvedExpansion && current->supportingResources().empty();
+        std::vector<mjt::workspace::ReferenceInfo> items;
+        if (referencesFromDb) {
+            auto rows = name == "xref_method"
+                            ? session.analysisDb->referencesToMethod(utf8Ref(owner),
+                                                                    utf8Ref(member),
+                                                                    utf8Ref(descriptor))
+                            : name == "xref_field"
+                                  ? session.analysisDb->referencesToField(utf8Ref(owner),
+                                                                          utf8Ref(member),
+                                                                          utf8Ref(descriptor))
+                                  : name == "xref_class"
+                                        ? session.analysisDb->referencesToClass(utf8Ref(className))
+                                        : session.analysisDb->referencesFromMember(
+                                              utf8Ref(owner), utf8Ref(member), utf8Ref(descriptor));
+            if (rows.is_err()) {
+                const auto failure = std::move(rows).unwrap_err();
+                const auto code    = failure.kind == mjbase::project::AnalysisDbErrorKind::Schema
+                                        ? ca::StatusCode::FAILED_PRECONDITION
+                                        : ca::StatusCode::INTERNAL;
+                const auto status  = ca::ErrStatus(
+                    code, "analysis db reference query failed: " + failure.message.to_std_string());
+                return toolError("analysis db reference query failed", &status);
             }
-            if (name == "xref_field") {
-                return current->xrefsToField(utf8Ref(owner), utf8Ref(member), utf8Ref(descriptor));
+            //行映射（引擎口径逐字对齐，workspace.cpp xrefsTo*/calleesOfMethod）：
+            // - insnIndex 静态收窄 i64→i32（扫描面本就是 i32 序号）；
+            // - kind 文本按分支恒定：to-method/to-field/from-method → "direct"，
+            //   to-class → "type"（引擎 referenceInfo 的字面量）；
+            // - target 文本：成员分支 = owner+"."+name+descriptor 拼接、类分支 =
+            //   内部名本身（ReferenceInfo.target 的实际拼法）；
+            // - supporting=false/supportId 空：守卫保证无支撑容器，标注本就是
+            //   无操作（finalizeReferenceRows 内 annotate 空表直通）。
+            //referencesToClass 命中 targetClass 的全部行（type/field/method），
+            //类分支只取 Type 行；referencesFromMember 命中方法体发出的全部引
+            //用（method/field/type），callees 分支只取 Method 行——与引擎
+            //typeReferencesTo/methodReferencesFrom 的切片面一致。
+            auto records = std::move(rows).unwrap();
+            items.reserve(records.size());
+            for (auto& row : records) {
+                const bool kindRowWanted =
+                    name == "xref_class"
+                        ? row.kind == mjbase::project::DbReferenceKind::Type
+                        : name == "method_callees"
+                              ? row.kind == mjbase::project::DbReferenceKind::Method
+                              : true;
+                if (!kindRowWanted) continue;
+                mjt::workspace::ReferenceInfo info;
+                info.sourceClass      = std::move(row.sourceClass);
+                info.sourceMethod     = std::move(row.sourceMethod);
+                info.sourceDescriptor = std::move(row.sourceDescriptor);
+                info.instructionIndex = static_cast<ca::i32>(row.insnIndex);
+                if (name == "xref_class") {
+                    info.target = std::move(row.targetClass);
+                    info.kind   = ca::str::Utf8String::from_cstr("type");
+                }
+                else {
+                    const std::string target = row.targetClass.to_std_string() + "." +
+                                               row.targetName.to_std_string() +
+                                               row.targetDescriptor.to_std_string();
+                    info.target = ca::str::Utf8String::from_data_unchecked(
+                        reinterpret_cast<const ca::u8*>(target.data()), target.size());
+                    info.kind = ca::str::Utf8String::from_cstr("direct");
+                }
+                items.push_back(std::move(info));
             }
-            if (name == "xref_class") {
-                return current->xrefsToClass(utf8Ref(className));
-            }
-            return current->calleesOfMethod(utf8Ref(owner), utf8Ref(member), utf8Ref(descriptor),
-                                            arguments.value("resolved", false));
-        };
-        auto references = query();
-        if (references.is_err()) {
-            const auto err = shared::toCaStatus(references.unwrap_err());
-            return toolError("reference query failed", &err);
+            session.workspace->finalizeReferenceRows(items);
         }
-        auto items = std::move(references).unwrap();
+        else {
+            //显式 if-else 分派替代原 3 层嵌套三元，避免重复读取 arguments 与拷贝；
+            //用 lambda 单次构造返回。
+            auto query = [&]() -> mjt::workspace::WorkspaceResult<
+                                 std::vector<mjt::workspace::ReferenceInfo>> {
+                if (name == "xref_method") {
+                    return current->xrefsToMethod(utf8Ref(owner), utf8Ref(member),
+                                                  utf8Ref(descriptor));
+                }
+                if (name == "xref_field") {
+                    return current->xrefsToField(utf8Ref(owner), utf8Ref(member),
+                                                 utf8Ref(descriptor));
+                }
+                if (name == "xref_class") {
+                    return current->xrefsToClass(utf8Ref(className));
+                }
+                return current->calleesOfMethod(utf8Ref(owner), utf8Ref(member),
+                                                utf8Ref(descriptor),
+                                                arguments.value("resolved", false));
+            };
+            auto references = query();
+            if (references.is_err()) {
+                const auto err = shared::toCaStatus(references.unwrap_err());
+                return toolError("reference query failed", &err);
+            }
+            items = std::move(references).unwrap();
+        }
 
         //role 过滤（RFC 0001 P5）：站点归属按「primary = 非支撑站点；支撑站
         //点 = workspace 在册 id → 挂载栈角色对号」判定，未挂载的支撑站点归
