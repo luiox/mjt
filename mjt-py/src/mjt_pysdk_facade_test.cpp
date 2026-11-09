@@ -15,6 +15,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 #include "jbc/jbc.hpp"
@@ -1846,4 +1847,450 @@ TEST(FacadeCensus, MissingJarFailsClosed)
 {
     EXPECT_THROW(facadeClassCensusFile(tmpPath("mjt_facade_census_missing.jar"), ""),
                  std::runtime_error);
+}
+
+// ── 查询面（analysis.db DB-first，语义随 mjt #94；MCP search/xref 等位物） ──
+
+namespace {
+
+/// 查询面夹具罐（search/xref DB-first 端到端）：Subject.value = ldc String
+/// 字面量 + ldc Integer 常量池行 + `bipush 1`（汇编器整型装载糖——落到 ldc
+/// CP 行或真立即数行均可能，断言按两源并集写）+ ireturn；Second 对照
+///（bipush 2 + 重载对照）；Caller 直调 Subject 方法/字段（xref 探针）；
+/// notice.txt 资源串（strings 并集面探针）。jasm 文本 raw string 定版规则
+/// 同 makeAmbiguousModuleJar。
+std::string makeQueryFacesJar(const char* name)
+{
+    mjbase::jasm::JvmJasmService assembler;
+    const auto assemble = [&](const char* sourceName, const std::string& source) {
+        const auto nameText   = utf16Text(sourceName);
+        const auto sourceText = utf16Text(source);
+        const auto assembled  = assembler.assemble(nameText.ref(), sourceText.ref());
+        if (!assembled.isOk()) throw std::runtime_error("query faces fixture did not assemble");
+        return assembled.value->bytes;
+    };
+
+    const auto subject = assemble("Subject.jasm", R"JASM(.super java/lang/Object
+.class public super pysdk/Subject {
+  .field public counter I
+  .method public static value ()I {
+    code: {
+      ldc "hello pysdk-fixture world"
+      pop
+      ldc 100000
+      pop
+      bipush 1
+      ireturn
+    }
+  }
+}
+)JASM");
+    const auto second = assemble("Second.jasm", R"JASM(.super java/lang/Object
+.class public super pysdk/Second {
+  .field public counter I
+  .method public static value ()I {
+    code: {
+      bipush 2
+      ireturn
+    }
+  }
+  .method public static value (I)I {
+    code: {
+      iload 0
+      ireturn
+    }
+  }
+}
+)JASM");
+    const auto caller = assemble("Caller.jasm", R"JASM(.super java/lang/Object
+.class public super pysdk/Caller {
+  .method public static call ()I {
+    code: {
+      invokestatic pysdk/Subject.value ()I
+      ireturn
+    }
+  }
+  .method public static read ()I {
+    code: {
+      getstatic pysdk/Subject.counter I
+      ireturn
+    }
+  }
+}
+)JASM");
+
+    mjbase::model::ResourceContainer container;
+    container.addResource("pysdk/Subject.class",
+                          std::make_unique<mjbase::model::ClassResource>("pysdk/Subject.class",
+                                                                         subject));
+    container.addResource("pysdk/Second.class",
+                          std::make_unique<mjbase::model::ClassResource>("pysdk/Second.class",
+                                                                         second));
+    container.addResource("pysdk/Caller.class",
+                          std::make_unique<mjbase::model::ClassResource>("pysdk/Caller.class",
+                                                                         caller));
+    container.addResource("notice.txt",
+                          std::make_unique<mjbase::model::UnknownResource>(
+                              "notice.txt",
+                              std::vector<ca::u8>{'p', 'y', 's', 'd', 'k', '-', 'f', 'i', 'x',
+                                                  't', 'u', 'r', 'e'}));
+    const auto path = tmpPath(name);
+    const auto exported = mjbase::model::ResourceHelper::exportToJar(container, path);
+    if (exported.is_err()) throw std::runtime_error("query faces fixture export failed");
+    return path;
+}
+
+/// 开查询面夹具会话（句柄随注册表；用例自行 close）。
+FacadeSession& openQueryFacesSession(const char* jarName)
+{
+    auto& s = FacadeRegistry::instance().create();
+    facadeImportJar(s, makeQueryFacesJar(jarName));
+    return s;
+}
+
+SearchRequest makeSearchRequest(const char* kind, const char* query)
+{
+    SearchRequest request;
+    request.kind      = kind;
+    request.query     = query;
+    request.matchMode = "contains";
+    return request;
+}
+
+}   // namespace
+
+TEST(FacadeQuery, NumbersValueParityAndScopes)
+{
+    auto&  reg = FacadeRegistry::instance();
+    auto&  s   = openQueryFacesSession("mjt_facade_query_numbers.jar");
+    auto ownerNameInsn = [](const SearchRow& row) {
+        return std::make_tuple(row.owner, row.name, row.descriptor, row.instructionIndex);
+    };
+    auto collect = [&](const char* query, const char* owner = "") {
+        auto request = makeSearchRequest("numbers", query);
+        request.owner = owner;
+        std::vector<std::tuple<std::string, std::string, std::string, ca::i32>> hits;
+        for (const auto& row : facadeSearch(s, request)) hits.push_back(ownerNameInsn(row));
+        std::sort(hits.begin(), hits.end());
+        return hits;
+    };
+
+    // bipush 1 命中 Subject.value 方法行（ldc CP 行或真立即数行两源并集）：
+    // owner=Subject、value 文本 "1"、kind ∈ 常量池/指令两源。
+    const auto ones = collect("1");
+    ASSERT_FALSE(ones.empty());
+    bool subjectOne = false;
+    for (const auto& row : facadeSearch(s, makeSearchRequest("numbers", "1"))) {
+        EXPECT_TRUE(row.kind == "constant_pool_number" || row.kind == "instruction_number") << row.kind;
+        if (row.owner == "pysdk/Subject" && row.value == "1") subjectOne = true;
+    }
+    EXPECT_TRUE(subjectOne);
+
+    // "1.0" 与 "1" 数值等值 parity：同一命中行集（值文本存的是入库原文本 "1"）。
+    EXPECT_EQ(collect("1.0"), ones);
+
+    // Second（bipush 2）对照："2" 命中 Second、"1" 不命中。
+    const auto twos = collect("2");
+    ASSERT_FALSE(twos.empty());
+    EXPECT_TRUE(std::any_of(twos.begin(), twos.end(), [](const auto& hit) {
+        return std::get<0>(hit) == "pysdk/Second";
+    }));
+    EXPECT_TRUE(std::none_of(ones.begin(), ones.end(), [](const auto& hit) {
+        return std::get<0>(hit) == "pysdk/Second";
+    }));
+
+    // 常量池行（ldc 100000 → CP Integer）：memberName 空 → kind=
+    // constant_pool_number；ldc 指令本体另落方法体行（两源并集，断言按
+    // 两源写——bipush 装载糖是否折 CP 同理）。
+    bool sawCpNumber = false;
+    for (const auto& row : facadeSearch(s, makeSearchRequest("numbers", "100000"))) {
+        EXPECT_EQ(row.owner, "pysdk/Subject");
+        EXPECT_EQ(row.value, "100000");
+        if (row.kind == "constant_pool_number") {
+            sawCpNumber = true;
+            EXPECT_EQ(row.name, "");
+            EXPECT_EQ(row.instructionIndex, -1);
+        }
+    }
+    EXPECT_TRUE(sawCpNumber);
+
+    // owner 作用域收窄：Subject 的 "1" 用 Second 作用域查 → 空集。
+    EXPECT_TRUE(collect("1", "pysdk/Second").empty());
+
+    reg.close(s.handle);
+}
+
+TEST(FacadeQuery, StringsUnionClassPoolAndResource)
+{
+    auto& reg = FacadeRegistry::instance();
+    auto& s   = openQueryFacesSession("mjt_facade_query_strings.jar");
+
+    // strings "pysdk-fixture"：类常量池 String 行 + notice.txt 资源串行（并集）。
+    const auto rows = facadeSearch(s, makeSearchRequest("strings", "pysdk-fixture"));
+    bool hasCpString = false, hasResource = false;
+    for (const auto& row : rows) {
+        if (row.kind == "constant_pool_string") {
+            hasCpString = true;
+            EXPECT_EQ(row.value, "hello pysdk-fixture world");
+            EXPECT_EQ(row.owner, "pysdk/Subject");
+            EXPECT_EQ(row.stringKind, "string_literal");
+        }
+        if (row.kind == "resource_string") {
+            hasResource = true;
+            EXPECT_EQ(row.value, "pysdk-fixture");
+            EXPECT_EQ(row.resourceUri, "notice.txt");
+            EXPECT_EQ(row.stringKind, "string_literal");
+        }
+    }
+    EXPECT_TRUE(hasCpString);
+    EXPECT_TRUE(hasResource);
+
+    // string_kind 过滤：string_literal 两路全留；utf8_name 只剩裸 UTF8 名行。
+    auto literalRequest = makeSearchRequest("strings", "pysdk-fixture");
+    literalRequest.stringKind = "string_literal";
+    const auto literals = facadeSearch(s, literalRequest);
+    EXPECT_EQ(literals.size(), rows.size());
+    auto nameRequest = makeSearchRequest("strings", "value");
+    nameRequest.stringKind = "utf8_name";
+    bool hasUtf8Name = false;
+    for (const auto& row : facadeSearch(s, nameRequest)) {
+        EXPECT_EQ(row.kind, "constant_pool_utf8");
+        EXPECT_EQ(row.stringKind, "utf8_name");
+        if (row.value == "value" && row.owner == "pysdk/Subject") hasUtf8Name = true;
+    }
+    EXPECT_TRUE(hasUtf8Name);
+
+    // 大小写：缺省 ASCII 折叠命中，case_sensitive 失配零命中。
+    auto insensitive = makeSearchRequest("strings", "PYSDK-FIXTURE");
+    EXPECT_FALSE(facadeSearch(s, insensitive).empty());
+    insensitive.caseSensitive = true;
+    EXPECT_TRUE(facadeSearch(s, insensitive).empty());
+
+    // owner 作用域：DB-only（引擎资源串半边在作用域场景本就不出）。
+    auto scoped = makeSearchRequest("strings", "pysdk-fixture");
+    scoped.owner = "pysdk/Subject";
+    const auto scopedRows = facadeSearch(s, scoped);
+    EXPECT_EQ(scopedRows.size(), std::size_t{1});
+    EXPECT_EQ(scopedRows.front().kind, "constant_pool_string");
+
+    // regex 回落引擎活扫描：资源串行照常命中（SQL 无正则等价面）。
+    auto regex = makeSearchRequest("strings", "^pysdk-fixture$");
+    regex.matchMode = "regex";
+    bool regexResource = false;
+    for (const auto& row : facadeSearch(s, regex)) {
+        if (row.kind == "resource_string" && row.value == "pysdk-fixture") regexResource = true;
+    }
+    EXPECT_TRUE(regexResource);
+
+    reg.close(s.handle);
+}
+
+TEST(FacadeQuery, ClassesAndMembersMatchModes)
+{
+    auto& reg = FacadeRegistry::instance();
+    auto& s   = openQueryFacesSession("mjt_facade_query_classes.jar");
+
+    // classes prefix 三类全中（行形：owner = value = 内部名）。
+    auto prefix = makeSearchRequest("classes", "pysdk/");
+    prefix.matchMode = "prefix";
+    const auto prefixed = facadeSearch(s, prefix);
+    ASSERT_EQ(prefixed.size(), std::size_t{3});
+    for (const auto& row : prefixed) {
+        EXPECT_EQ(row.kind, "class");
+        EXPECT_EQ(row.owner, row.value);
+        EXPECT_EQ(row.resourceUri, row.owner + ".class");
+    }
+
+    // exact 单中；大小写缺省折叠 / 敏感失配。
+    auto exact = makeSearchRequest("classes", "pysdk/Subject");
+    exact.matchMode = "exact";
+    const auto exactRows = facadeSearch(s, exact);
+    ASSERT_EQ(exactRows.size(), std::size_t{1});
+    EXPECT_EQ(exactRows.front().owner, "pysdk/Subject");
+    auto insensitive = makeSearchRequest("classes", "SUBJECT");
+    EXPECT_EQ(facadeSearch(s, insensitive).size(), std::size_t{1});
+    insensitive.caseSensitive = true;
+    EXPECT_TRUE(facadeSearch(s, insensitive).empty());
+
+    // regex 回落引擎：单中 Subject（DB 面无正则等价）。
+    auto regex = makeSearchRequest("classes", "^pysdk/Sub.*$");
+    regex.matchMode = "regex";
+    const auto regexRows = facadeSearch(s, regex);
+    ASSERT_EQ(regexRows.size(), std::size_t{1});
+    EXPECT_EQ(regexRows.front().owner, "pysdk/Subject");
+
+    // members：方法行（Second 重载一并命中，value = name+desc 拼接）。
+    const auto methods = facadeSearch(s, makeSearchRequest("members", "value"));
+    ASSERT_EQ(methods.size(), std::size_t{3});   // Subject.value + Second.value × 2
+    for (const auto& row : methods) EXPECT_EQ(row.kind, "method");
+    // member_kind 过滤：字段行 counter（value = "counterI"）；method 档零命中。
+    auto fields = makeSearchRequest("members", "counter");
+    fields.memberKind = "field";
+    const auto fieldRows = facadeSearch(s, fields);
+    ASSERT_EQ(fieldRows.size(), std::size_t{2});   // Subject.counter + Second.counter
+    EXPECT_EQ(fieldRows.front().kind, "field");
+    EXPECT_EQ(fieldRows.front().descriptor, "I");
+    auto wrongKind = makeSearchRequest("members", "value");
+    wrongKind.memberKind = "field";
+    EXPECT_TRUE(facadeSearch(s, wrongKind).empty());
+
+    reg.close(s.handle);
+}
+
+TEST(FacadeQuery, ParamGuardsFailClosed)
+{
+    auto& reg = FacadeRegistry::instance();
+    auto& s   = openQueryFacesSession("mjt_facade_query_guards.jar");
+
+    // kind / match_mode 词表外。
+    EXPECT_THROW(facadeSearch(s, makeSearchRequest("instructions", "x")), std::invalid_argument);
+    auto badMode = makeSearchRequest("classes", "x");
+    badMode.matchMode = "glob";
+    EXPECT_THROW(facadeSearch(s, badMode), std::invalid_argument);
+    // numbers 无 match_mode（值等值语义）。
+    auto numbersMode = makeSearchRequest("numbers", "1");
+    numbersMode.matchMode = "prefix";
+    EXPECT_THROW(facadeSearch(s, numbersMode), std::invalid_argument);
+    // 过滤位错位：classes 不吃 owner；strings 不吃 member_kind；members 词表外。
+    auto scopedClasses = makeSearchRequest("classes", "x");
+    scopedClasses.owner = "pysdk/Subject";
+    EXPECT_THROW(facadeSearch(s, scopedClasses), std::invalid_argument);
+    auto stringsMember = makeSearchRequest("strings", "x");
+    stringsMember.memberKind = "field";
+    EXPECT_THROW(facadeSearch(s, stringsMember), std::invalid_argument);
+    auto badMemberKind = makeSearchRequest("members", "x");
+    badMemberKind.memberKind = "constructor";
+    EXPECT_THROW(facadeSearch(s, badMemberKind), std::invalid_argument);
+    auto badStringKind = makeSearchRequest("strings", "x");
+    badStringKind.stringKind = "utf8_other";
+    EXPECT_THROW(facadeSearch(s, badStringKind), std::invalid_argument);
+    auto badOpcode = makeSearchRequest("numbers", "1");
+    badOpcode.opcode = 250;
+    EXPECT_THROW(facadeSearch(s, badOpcode), std::invalid_argument);
+    // query 边界态走引擎校验（空 query 报错，不静默全量）。
+    EXPECT_THROW(facadeSearch(s, makeSearchRequest("classes", "")), std::runtime_error);
+
+    reg.close(s.handle);
+}
+
+TEST(FacadeXref, ReferencesToAndFrom)
+{
+    auto& reg = FacadeRegistry::instance();
+    auto& s   = openQueryFacesSession("mjt_facade_xref.jar");
+
+    // to-method（显式 descriptor）：Caller.call 指令级直调行。
+    XrefRequest toMethod;
+    toMethod.target     = "method";
+    toMethod.direction  = "to";
+    toMethod.owner      = "pysdk/Subject";
+    toMethod.name       = "value";
+    toMethod.descriptor = "()I";
+    const auto methodRefs = facadeXref(s, toMethod);
+    ASSERT_EQ(methodRefs.size(), std::size_t{1});
+    EXPECT_EQ(methodRefs.front().sourceClass, "pysdk/Caller");
+    EXPECT_EQ(methodRefs.front().sourceMethod, "call");
+    EXPECT_EQ(methodRefs.front().target, "pysdk/Subject.value()I");
+    EXPECT_EQ(methodRefs.front().kind, "direct");
+    EXPECT_EQ(methodRefs.front().instructionIndex, 0);
+    EXPECT_FALSE(methodRefs.front().supporting);
+
+    // descriptor 省略回填（宿主类名称唯一命中）：同 1 行。
+    XrefRequest backfilled = toMethod;
+    backfilled.descriptor.clear();
+    const auto backfilledRefs = facadeXref(s, backfilled);
+    ASSERT_EQ(backfilledRefs.size(), std::size_t{1});
+    EXPECT_EQ(backfilledRefs.front().target, "pysdk/Subject.value()I");
+
+    // to-field：Caller.read 的 getstatic 行。
+    XrefRequest toField;
+    toField.target     = "field";
+    toField.owner      = "pysdk/Subject";
+    toField.name       = "counter";
+    toField.descriptor = "I";
+    const auto fieldRefs = facadeXref(s, toField);
+    ASSERT_EQ(fieldRefs.size(), std::size_t{1});
+    EXPECT_EQ(fieldRefs.front().sourceMethod, "read");
+    EXPECT_EQ(fieldRefs.front().target, "pysdk/Subject.counterI");
+    EXPECT_EQ(fieldRefs.front().kind, "direct");
+
+    // to-class：invoke/getstatic 的 owner 类引用双行（Type 切片，target=内部名）。
+    XrefRequest toClass;
+    toClass.target = "class";
+    toClass.owner  = "pysdk/Subject";
+    const auto classRefs = facadeXref(s, toClass);
+    ASSERT_EQ(classRefs.size(), std::size_t{2});
+    bool sawCall = false, sawRead = false;
+    for (const auto& row : classRefs) {
+        EXPECT_EQ(row.kind, "type");
+        EXPECT_EQ(row.target, "pysdk/Subject");
+        if (row.sourceMethod == "call") sawCall = true;
+        if (row.sourceMethod == "read") sawRead = true;
+    }
+    EXPECT_TRUE(sawCall && sawRead);
+
+    // from-method：callees 切片面（只取 Method 行）——Caller.call 发出的
+    // Subject.value 直调。
+    XrefRequest fromMethod;
+    fromMethod.target     = "method";
+    fromMethod.direction  = "from";
+    fromMethod.owner      = "pysdk/Caller";
+    fromMethod.name       = "call";
+    fromMethod.descriptor = "()I";
+    const auto callees = facadeXref(s, fromMethod);
+    ASSERT_EQ(callees.size(), std::size_t{1});
+    EXPECT_EQ(callees.front().sourceClass, "pysdk/Caller");
+    EXPECT_EQ(callees.front().target, "pysdk/Subject.value()I");
+    EXPECT_EQ(callees.front().kind, "direct");
+
+    reg.close(s.handle);
+}
+
+TEST(FacadeXref, SelectorAndParamGuards)
+{
+    auto& reg = FacadeRegistry::instance();
+    auto& s   = openQueryFacesSession("mjt_facade_xref_guards.jar");
+
+    // target / direction 词表外；from 只对 method 开放。
+    XrefRequest badTarget;
+    badTarget.target = "package";
+    badTarget.owner  = "pysdk/Subject";
+    EXPECT_THROW(facadeXref(s, badTarget), std::invalid_argument);
+    XrefRequest badDirection = badTarget;
+    badDirection.target    = "method";
+    badDirection.direction = "into";
+    EXPECT_THROW(facadeXref(s, badDirection), std::invalid_argument);
+    XrefRequest fromField;
+    fromField.target    = "field";
+    fromField.direction = "from";
+    fromField.owner     = "pysdk/Subject";
+    fromField.name      = "counter";
+    EXPECT_THROW(facadeXref(s, fromField), std::invalid_argument);
+    // selector 缺失。
+    XrefRequest noOwner;
+    noOwner.target = "class";
+    EXPECT_THROW(facadeXref(s, noOwner), std::invalid_argument);
+    // 名字不存在（宿主类在索引）→ invalid_argument；宿主类未索引 → StaleRefError。
+    XrefRequest missing;
+    missing.target = "method";
+    missing.owner  = "pysdk/Subject";
+    missing.name   = "missing";
+    EXPECT_THROW(facadeXref(s, missing), std::invalid_argument);
+    XrefRequest foreign;
+    foreign.target = "method";
+    foreign.owner  = "java/lang/String";
+    foreign.name   = "length";
+    EXPECT_THROW(facadeXref(s, foreign), StaleRefError);
+    // 重载歧义：Second.value × 2 无 descriptor → 列候选报错。
+    XrefRequest ambiguous;
+    ambiguous.target = "method";
+    ambiguous.owner  = "pysdk/Second";
+    ambiguous.name   = "value";
+    EXPECT_THROW(facadeXref(s, ambiguous), std::invalid_argument);
+    // 显式 descriptor 的表外目标直通（引用查询零漂移）。
+    XrefRequest foreignExplicit = foreign;
+    foreignExplicit.descriptor = "()I";
+    const auto foreignRefs = facadeXref(s, foreignExplicit);
+    EXPECT_TRUE(foreignRefs.empty());   // 容器内无指向 JDK 的该引用 → 空集非错
+
+    reg.close(s.handle);
 }

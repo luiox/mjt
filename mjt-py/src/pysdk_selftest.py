@@ -15,7 +15,9 @@
 # shadow sidecar 文件面（generate 幂等/prune 失配清理/缺侧车报错）→
 # decompiler_compare（fail-closed + fake java 双后端实跑）→ init_order（静态
 # 初始化拓扑序：超类边 + clinit 引用边 + 环报告 + roots 子图）→
-# class_census 文件面（#39 S0 量化基线：导出 → 读回 → 确定性 + 缺省目录）。
+# class_census 文件面（#39 S0 量化基线：导出 → 读回 → 确定性 + 缺省目录）→
+# search/xref 查询面（analysis.db DB-first，语义随 mjt #94：四档 + to/from，
+# 每命令临时库即弃、新增条目即时可见、regex 引擎回落、错误面 fail-closed）。
 # 全程合成样本（mjt.write_demo_jar），零样本字节入库。
 # 文件尾有 __main__ 兜底入口：--script 宿主 exec 的 __name__ 是 "__main__"，
 # 直接 `--script pysdk_selftest.py` 即跑全套并按 fail 数定退出码。
@@ -1122,6 +1124,107 @@ def run_all():
         check("census missing jar throws", False, "no exception")
     except RuntimeError as e:
         check("census missing jar throws", "jar not found" in str(e), str(e))
+
+    # ── 28. search/xref 查询面（analysis.db DB-first，语义随 mjt #94） ──
+    # 每命令临时库整库导入后即弃（census 同款生命周期），恒查容器落账字节；
+    # add_entry 的新增资源下一命令即时可见（新鲜 ingest，无陈旧库可失真）。
+    # contains/prefix/exact 直查库；regex 无 SQL 等价面，回落引擎活扫描。
+    p28, h28 = fresh("query")
+    names28 = mjt.search(h28, "classes", "me/demo", match_mode="prefix")
+    check("search classes prefix",
+          len(names28) == 5
+          and all(r["kind"] == "class" and r["class"] == r["value"] for r in names28)
+          and {r["class"] for r in names28} == {"me/demo/Api", "me/demo/App",
+                                                "me/demo/Color", "me/demo/Crypto",
+                                                "me/demo/Util"},
+          str(names28))
+    check("search classes case fold",
+          len(mjt.search(h28, "classes", "ME/DEMO")) == 5
+          and mjt.search(h28, "classes", "ME/DEMO", case_sensitive=True) == [],
+          "case fold")
+    check("search classes regex fallback",
+          [r["class"] for r in mjt.search(h28, "classes", r"^me/demo/Api$",
+                                          match_mode="regex")] == ["me/demo/Api"], "regex")
+    members28 = mjt.search(h28, "members", "decode")
+    check("search members decode",
+          len(members28) == 1 and members28[0]["owner"] == "me/demo/Crypto"
+          and members28[0]["kind"] == "method"
+          and members28[0]["name"] == "decode"
+          and members28[0]["value"] == "decode(II)Ljava/lang/String;", str(members28))
+    numbers28 = mjt.search(h28, "numbers", "7")
+    check("search numbers bipush",
+          any(r["owner"] == "me/demo/Crypto" and r["name"] == "decode"
+              and r["value"] == "7" and r["kind"] == "instruction_number"
+              and r["instruction_index"] >= 0 for r in numbers28), str(numbers28))
+    # 数值等值 parity："7.0" 与 "7" 同一行集（值文本存入库原文本）。
+    def hitKeys28(rows28b):
+        return [(r["resource_uri"], r["kind"], r["owner"], r["name"], r["descriptor"],
+                 r["instruction_index"], r["value"]) for r in rows28b]
+    check("search numbers parity",
+          hitKeys28(numbers28) == hitKeys28(mjt.search(h28, "numbers", "7.0")),
+          f"{numbers28} vs {mjt.search(h28, 'numbers', '7.0')}")
+    strings28 = mjt.search(h28, "strings", "demo-payload")
+    check("search strings cp",
+          any(r["kind"] == "constant_pool_string" and r["value"] == "demo-payload"
+              and r["owner"] == "me/demo/App" and r["string_kind"] == "string_literal"
+              for r in strings28), str(strings28))
+    mjt.add_entry(h28, "notice.txt", b"sdk-resource-probe")
+    resource28 = mjt.search(h28, "strings", "sdk-resource")
+    check("search strings resource union",
+          any(r["kind"] == "resource_string" and r["resource_uri"] == "notice.txt"
+              and r["value"] == "sdk-resource-probe" for r in resource28), str(resource28))
+    # owner 作用域：DB-only（引擎资源串半边在作用域场景本就不出）。
+    check("search strings scoped db-only",
+          mjt.search(h28, "strings", "sdk-resource", owner="me/demo/App") == [],
+          "scoped half")
+    to28 = mjt.xref(h28, "method", "me/demo/Crypto", "decode",
+                    "(II)Ljava/lang/String;")
+    check("xref to method",
+          len(to28) == 2 and {r["source"]["class"] for r in to28}
+          == {"me/demo/App", "me/demo/Crypto"}
+          and all(r["target"] == "me/demo/Crypto.decode(II)Ljava/lang/String;"
+                  and r["kind"] == "direct" and r["source"]["instruction_index"] >= 0
+                  for r in to28), str(to28))
+    from28 = mjt.xref(h28, "method", "me/demo/App", "main",
+                      "([Ljava/lang/String;)V", direction="from")
+    targets28 = {r["target"] for r in from28}
+    check("xref from method callees",
+          len(from28) == 2
+          and "me/demo/Crypto.decode(II)Ljava/lang/String;" in targets28
+          and "java/io/PrintStream.println(Ljava/lang/String;)V" in targets28, str(from28))
+    toc28 = mjt.xref(h28, "class", "me/demo/Crypto")
+    # Type 行三处：App.main 的 decode 直调、Crypto.decode 自调、Crypto.guarded
+    # 的 wrap 直调（恒等 handler 形态自带一条对 Crypto 的类引用）。
+    check("xref to class",
+          len(toc28) == 3 and all(r["kind"] == "type" and r["target"] == "me/demo/Crypto"
+                                  for r in toc28), str(toc28))
+    backfill28 = mjt.xref(h28, "method", "me/demo/Crypto", "decode")
+    check("xref descriptor backfill",
+          len(backfill28) == 2
+          and all(r["target"] == "me/demo/Crypto.decode(II)Ljava/lang/String;"
+                  for r in backfill28), str(backfill28))
+    try:
+        mjt.search(h28, "instructions", "x")
+        check("search bad kind", False, "no exception")
+    except ValueError as e:
+        check("search bad kind", "kind must be" in str(e), str(e))
+    try:
+        mjt.search(h28, "numbers", "1", match_mode="prefix")
+        check("search numbers match_mode", False, "no exception")
+    except ValueError as e:
+        check("search numbers match_mode", "match_mode" in str(e), str(e))
+    try:
+        mjt.xref(h28, "field", "me/demo/Crypto", "counter", direction="from")
+        check("xref from field", False, "no exception")
+    except ValueError as e:
+        check("xref from field", "direction=from" in str(e), str(e))
+    h28_dead = h28
+    mjt.close_container(h28)
+    try:
+        mjt.search(h28_dead, "classes", "me/demo")
+        check("search stale handle", False, "no exception")
+    except KeyError:
+        check("search stale handle", True, "")
 
     if fallback_tmp is not None:
         import shutil
