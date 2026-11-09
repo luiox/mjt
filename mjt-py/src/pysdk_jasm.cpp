@@ -193,6 +193,10 @@ JasmReport applyInPlace(FacadeSession& s, const std::string& uri, const std::str
         report.internalName = assembled.value->internalName.to_std_string();
         report.written      = assembled.value->bytes.size();
         s.trees.erase(name);
+        // 内容编辑边界（class 级 jasm 落账，方法级 apply 拼回 class 面同走
+        // 此处）：容器字节已换 → 会话库增量同步该类（成员键漂移由同步的
+        // 幽灵检查标 stale 交全量重建；失败 fail-open，apply 本身不受影响）。
+        facadeSyncAnalysisDbAfterEdit(s, name);
     }
     return report;
 }

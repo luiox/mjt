@@ -292,6 +292,10 @@ std::shared_ptr<PyRunStats> runPass(ca::u64 h, const std::string& name,
     runPipelineOnContainer(*session.container, {name}, "", false, jdkPath, *stats,
                            failSoft);
     session.clearTrees();   // 管线直驱容器字节 → 树缓存作废（lazy 重解析）
+    // 管线面改写的类集合不可知（pass 批量直驱，无逐类落账清单）→ 内容编辑
+    // 边界按粗粒度收口：会话库标 stale，下次查询全量重建（管线本就是重批
+    // 量作业，重建成本相称）。
+    facadeInvalidateAnalysisDb(session);
     session.lastStats    = stats;
     session.lastPipeline = name;
     return stats;
@@ -310,6 +314,8 @@ std::shared_ptr<PyRunStats> runPipeline(ca::u64 h, std::vector<std::string> pass
     runPipelineOnContainer(*session.container, std::move(passNames), pipeline, false,
                            jdkPath, *stats, failSoft);
     session.clearTrees();
+    // 管线直驱容器字节 → 会话库标 stale（runPass 同款粗粒度收口）。
+    facadeInvalidateAnalysisDb(session);
     session.lastStats    = stats;
     session.lastPipeline = stats->pipeline;
     return stats;

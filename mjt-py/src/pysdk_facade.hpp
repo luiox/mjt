@@ -47,6 +47,11 @@ public:
     using std::runtime_error::runtime_error;
 };
 
+/// 会话级分析库状态（pysdk_facade.cpp 内定义；pimpl 隐藏实现——临时目录 +
+/// workspace 快照 + AnalysisDb 连接三件套）。lazily 建立：首次查询触发整库
+/// 导入；结构变更 / 增量同步失败标 stale，下次查询全量重建。
+class SessionAnalysisDb;
+
 /// 指令 kind 外显常量（ASM 系编码，值进 Python 契约；facadeInsnKindName 同表）。
 namespace insn_kind {
 inline constexpr int kInsn            = 0;
@@ -144,6 +149,14 @@ public:
     /// shadow 显示层表（#1072/#1156：真名→仅显示层名字；永不写回字节码）。
     /// shadow_generate/shadow_load 填充，shadow_dump/shadow_entries 消费。
     std::shared_ptr<mjbase::renamer::ShadowAliasTable> shadowTable;
+
+    /// 会话级分析库（查询面底座；lazily 建立，unique_ptr 隐藏实现——析构须
+    /// 在实现可见处完成，Windows 下开着 sqlite 句柄删不掉 .mjdb）。
+    std::unique_ptr<SessionAnalysisDb> analysisDb;
+
+    /// 析构（unique_ptr<SessionAnalysisDb> 不完整类型的防线：实现随
+    /// pysdk_facade.cpp 落位）。
+    ~FacadeSession();
 
     /// 全会话缓存作废（管线直驱容器字节 / rename 提交后调用；lazy 下零成本）。
     void clearTrees() { trees.clear(); }
@@ -728,13 +741,17 @@ ClassCensusFileReport facadeClassCensusFile(const std::string& jarPath,
                                             const std::string& outDir);
 
 // ── 查询面（analysis.db DB-first，语义随 mjt #94；MCP search/xref 的 SDK 等位物）──
-// 数据源 = 一次性临时分析库：容器落账字节落盘临时 jar → workspace 打开 → 整库
-// 导入（analysis_ingest 同一事实源）→ SQL 可表达档直查库 → 即弃。pysdk 编辑不
-// 经 workspace 提交链（无 analysis_edit_sync 增量同步挂点），会话持有库会随编辑
-// 静默失真——每命令新鲜 ingest = 恒查当前落账字节（与 class_bytes/census 同一
-// 口径；脏树不参与，写回后再查）。SQL 不可表达面回落引擎活扫描（与 MCP 守卫
-// 同形）：regex（SQLite 无原生等价）与 query 边界态（空/超 1024 字节，校验报
-// 错由引擎面给出，不重复口径）。
+// 数据源 = 会话级分析库（SessionAnalysisDb）：首次查询触发建立——容器落账字节
+// 深拷贝落盘临时 jar → workspace 打开 → 整库导入（analysis_ingest 同一事实源）
+// → SQL 可表达档直查库。编辑边界增量同步：树面写回 / class 级 jasm apply /
+// set_class_bytes 落账后按脏类做类事实 upsert + refs 切片 + 常量面批量切片
+//（mjbase 0.0.30 replaceConstantFaceSlices），失败 fail-open 到重建；结构变更
+//（add/remove/import/rename/token 提交）标 stale，下次查询全量重建——rename
+// 会留幽灵类行（mjbase 类身份按 internal_name 只增不删），成员增删改名同理
+//（成员行同纪律），全量重建是唯一不引入遮蔽复杂度的出口。脏树不参与口径保持
+//（未 write_back 的树面编辑不可见）。regex（SQLite 无原生等价）与 query 边界态
+//（空/超 1024 字节，校验报错由引擎面给出）回落引擎活扫描：走每命令一次性临时
+// 库上下文（AnalysisQueryContext，恒查当前落账字节）。
 
 /// search 分面请求（bind 层 kwargs 收集；kind 决定哪些过滤位合法，错位
 /// fail-closed 抛 std::invalid_argument → Python ValueError）。
@@ -849,5 +866,17 @@ struct HierarchyRow
 /// invalid_argument（mjbase 各面未登记起点返回空表，pysdk 面升格为明确寻址
 /// 错误）。可达闭包（storeClosureBatch 家族，需先跑闭包批次）不在本面。
 std::vector<HierarchyRow> facadeHierarchy(FacadeSession& s, const HierarchyRequest& request);
+
+// ── 会话库边界（编辑落账面挂钩；pysdk_jasm 的 apply 族共用） ────────────────
+
+/// 标记会话分析库失真（结构变更面：import/add/remove/set_entry_bytes/rename/
+/// token 提交/建议应用）。下次查询全量重建；库未建立时零成本。恒不抛。
+void facadeInvalidateAnalysisDb(FacadeSession& s);
+
+/// 内容编辑落账后的会话库增量同步（@p name = 编辑后类内部名；调用前提 =
+/// 容器字节已是编辑后状态）。库未建立 / 已失真 → 零成本直通；同步失败
+///（DB 错误 / 抽取失败 / 成员幽灵）→ fail-open：库标 stale，下次查询重建，
+/// 编辑命令本身照常成功。DeadlineExceeded 不吞（协作层取消语义）。
+void facadeSyncAnalysisDbAfterEdit(FacadeSession& s, const std::string& name);
 
 }   // namespace mjt::pysdk

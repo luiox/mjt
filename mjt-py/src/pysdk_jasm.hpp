@@ -9,7 +9,8 @@
 //
 // 事务语义：validate 在容器深拷贝上试汇编（绝不落容器）；apply 经
 // ResourceJasmService 事务式替换 ClassResource（名称校验 + 候选工作区复验
-// 全过才 set），成功后该类缓存树作废——与 set_class_bytes 同款脏纪律。
+// 全过才 set），成功后该类缓存树作废 + 会话库增量同步该类——与
+// set_class_bytes 同款脏纪律。
 
 #include <string>
 #include <vector>
