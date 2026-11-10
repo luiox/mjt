@@ -47,12 +47,6 @@ WorkspaceResult<std::optional<std::regex>> compileSearchRegex(const std::string&
 /// @brief 类内部名作用域：owner 字节精确等值 / packagePrefix 字节前缀。
 bool matchesSearchScope(std::string_view owner, const SearchOptions& options);
 
-/// @brief 多面任一命中（引擎类/成员扫描的文本面收口：同一匹配档下任一面
-///        命中即命中）。
-bool matchesAnyText(std::initializer_list<ca::str::Utf8StringRef> values,
-                    const std::string& query, const SearchOptions& options,
-                    const std::regex* compiledRegex);
-
 /// @brief 数值查询字面量校验（numbers 分面边界态）：stold 完整解析才算过，
 ///        否则 InvalidArgument（"query must be a complete numeric value"）。
 WorkspaceErrorInfo validateNumberQuery(const std::string& query);

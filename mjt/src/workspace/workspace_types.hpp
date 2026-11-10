@@ -469,13 +469,6 @@ struct ManifestAttribute final
     ca::str::Utf8String value;
 };
 
-/// @brief 非 class 资源中提取出的可打印字符串。
-struct ResourceStringInfo final
-{
-    ca::str::Utf8String uri;
-    ca::usize   offset = 0;
-    ca::str::Utf8String value;
-};
 
 /// @brief 一个可分页传输的结构化搜索命中。
 ///

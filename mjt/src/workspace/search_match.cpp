@@ -78,15 +78,6 @@ bool matchesSearchScope(std::string_view owner, const SearchOptions& options)
            owner.rfind(std::string_view(options.packagePrefix), 0) == 0;
 }
 
-bool matchesAnyText(std::initializer_list<ca::str::Utf8StringRef> values,
-                    const std::string& query, const SearchOptions& options,
-                    const std::regex* compiledRegex)
-{
-    return std::any_of(values.begin(), values.end(), [&](const ca::str::Utf8StringRef& value) {
-        return matchesText(value.to_std_string(), query, options, compiledRegex);
-    });
-}
-
 WorkspaceErrorInfo validateNumberQuery(const std::string& query)
 {
     try {

@@ -167,34 +167,6 @@ public:
     /// @brief 返回主资源 MANIFEST 的稳定排序主属性。
     WorkspaceResult<std::vector<ManifestAttribute>> manifestAttributes() const override;
 
-    /// @brief 提取主资源所有非 class 条目中的最短长度为 @p minimumLength 的可打印字符串。
-    WorkspaceResult<std::vector<ResourceStringInfo>> resourceStrings(ca::usize minimumLength = 4) const override;
-
-    /// @brief 按 class 内部名或资源 URI 查询 class；损坏 class 会被跳过。
-    WorkspaceResult<std::vector<SearchHit>> searchClasses(
-        ca::str::Utf8StringRef query, const SearchOptions& options = {}) const override;
-
-    /// @brief 按 owner/name/descriptor/signature 查询字段和方法；损坏 class 会被跳过。
-    WorkspaceResult<std::vector<SearchHit>> searchMembers(
-        ca::str::Utf8StringRef query, const SearchOptions& options = {}) const override;
-
-    /// @brief 查询 class 常量池字符串和非 class 可打印资源字符串；损坏 class 会被跳过。
-    WorkspaceResult<std::vector<SearchHit>> searchStrings(
-        ca::str::Utf8StringRef query, const SearchOptions& options = {}) const override;
-
-    /// @brief searchStrings 的资源串半边单独公开（非 class 资源可打印串扫描；
-    ///        owner/packagePrefix 作用域由调用方守卫——本面无作用域语义）。
-    ///
-    /// DB strings 路径（query.cpp）的并集半边：analysis.db 只收类常量池事实，
-    /// 资源串仍由引擎活扫描回答；引擎 searchStrings 内联分支改调本面，两条
-    /// 调用路同一实现零漂移（#93 finalizeReferenceRows 的公开非虚面先例）。
-    WorkspaceResult<std::vector<SearchHit>> searchResourceStrings(
-        ca::str::Utf8StringRef query, const SearchOptions& options) const;
-
-    /// @brief 精确查询常量池及即时数值字面量；数值文本支持等价的标准数值写法。
-    WorkspaceResult<std::vector<SearchHit>> searchNumbers(
-        ca::str::Utf8StringRef query, const SearchOptions& options = {}) const override;
-
     /// @brief 按 mnemonic、opcode、节点类型和指令操作数查询方法指令；损坏 class 会被跳过。
     WorkspaceResult<std::vector<SearchHit>> searchInstructions(
         ca::str::Utf8StringRef query, const SearchOptions& options = {}) const override;

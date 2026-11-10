@@ -152,27 +152,14 @@ public:
     /// @brief 返回主资源 MANIFEST 的稳定排序主属性。
     virtual WorkspaceResult<std::vector<ManifestAttribute>> manifestAttributes() const = 0;
 
-    /// @brief 提取主资源所有非 class 条目中的最短长度为 @p minimumLength 的可打印字符串。
-    virtual WorkspaceResult<std::vector<ResourceStringInfo>> resourceStrings(
-        ca::usize minimumLength = 4) const = 0;
-
-    /// @brief 按 class 内部名或资源 URI 查询 class；损坏 class 会被跳过。
-    virtual WorkspaceResult<std::vector<SearchHit>> searchClasses(
-        ca::str::Utf8StringRef query, const SearchOptions& options = {}) const = 0;
-
-    /// @brief 按 owner/name/descriptor/signature 查询字段和方法；损坏 class 会被跳过。
-    virtual WorkspaceResult<std::vector<SearchHit>> searchMembers(
-        ca::str::Utf8StringRef query, const SearchOptions& options = {}) const = 0;
-
-    /// @brief 查询 class 常量池字符串和非 class 可打印资源字符串；损坏 class 会被跳过。
-    virtual WorkspaceResult<std::vector<SearchHit>> searchStrings(
-        ca::str::Utf8StringRef query, const SearchOptions& options = {}) const = 0;
-
-    /// @brief 精确查询常量池及即时数值字面量；数值文本支持等价的标准数值写法。
-    virtual WorkspaceResult<std::vector<SearchHit>> searchNumbers(
-        ca::str::Utf8StringRef query, const SearchOptions& options = {}) const = 0;
-
     /// @brief 按 mnemonic、opcode、节点类型和指令操作数查询方法指令；损坏 class 会被跳过。
+    ///
+    /// 引擎文本搜索四分面（classes/members/strings/numbers）与资源串活扫描
+    /// 面已随查询面 DB-first 收编退役（analysis.db 的 searchClassesPaged/
+    /// searchMembersPaged/searchStringsPaged/searchNumbers/searchResource
+    /// StringsPaged 承接；regex 档按 mjbase 契约全量拉取客户端过滤）——接口
+    /// 面只剩 instructions 这一刻意的引擎保留面（千万行级事实面，DB 反而
+    /// 慢于活扫描）。
     virtual WorkspaceResult<std::vector<SearchHit>> searchInstructions(
         ca::str::Utf8StringRef query, const SearchOptions& options = {}) const = 0;
 
