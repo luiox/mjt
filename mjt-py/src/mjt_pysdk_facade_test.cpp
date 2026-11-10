@@ -2073,7 +2073,8 @@ TEST(FacadeQuery, StringsUnionClassPoolAndResource)
     EXPECT_EQ(scopedRows.size(), std::size_t{1});
     EXPECT_EQ(scopedRows.front().kind, "constant_pool_string");
 
-    // regex 回落引擎活扫描：资源串行照常命中（SQL 无正则等价面）。
+    // regex 全量拉取客户端过滤：资源串行照常命中（SQL 无正则等价面，
+    // resources 表行随全量拉取参与同面过滤）。
     auto regex = makeSearchRequest("strings", "^pysdk-fixture$");
     regex.matchMode = "regex";
     bool regexResource = false;
@@ -2112,7 +2113,7 @@ TEST(FacadeQuery, ClassesAndMembersMatchModes)
     insensitive.caseSensitive = true;
     EXPECT_TRUE(facadeSearch(s, insensitive).empty());
 
-    // regex 回落引擎：单中 Subject（DB 面无正则等价）。
+    // regex 全量拉取客户端过滤：单中 Subject（DB 面无正则等价）。
     auto regex = makeSearchRequest("classes", "^pysdk/Sub.*$");
     regex.matchMode = "regex";
     const auto regexRows = facadeSearch(s, regex);

@@ -110,6 +110,13 @@ std::filesystem::path writeFixtureJar()
                           std::make_unique<mjbase::model::ClassResource>(
                               "workspace/Child.class",
                               assemble("workspace/Child", childSource())));
+    // 非 class 条目（资源串事实面 fixture）：两段可打印 run，0x01 分隔
+    //（run 边界非可打印字节）。
+    const std::string noticeText = "notice-marker-alpha-text\x01notice-marker-beta";
+    std::vector<ca::u8> noticeBytes(noticeText.begin(), noticeText.end());
+    container.addResource("workspace/notice.txt",
+                          std::make_unique<mjbase::model::UnknownResource>(
+                              "workspace/notice.txt", std::move(noticeBytes)));
     const auto path = test::getTempOutPath("mjt_analysis_ingest_input.jar");
     mjbase::model::ResourceHelper::exportToJar(container, path.string());
     return path;
@@ -505,3 +512,56 @@ TEST(MjAnalysisIngestTest, LandsProducerRegistryAndBatchOwnership)
 }
 
 }   // namespace mjt::workspace
+
+/// @brief 资源串事实面（schema v13）：非 class 条目的可打印 run 经抽取层
+///        （constant_scan::resourceStringRecords，引擎 resourceStrings 逐字节
+///        同形）落 resources 表，整库单事务（replaceResources）；manifest 与
+///        fixture 自带资源条目的 run 均可经 searchResourceStringsPaged 查回。
+TEST(MjAnalysisIngestTest, LandsResourceStringsForNonClassEntries)
+{
+    const auto jarPath = writeFixtureJar();
+    const auto dbPath  = freshDbPath();
+
+    WorkspaceBase workspace;
+    ASSERT_TRUE(
+        workspace.openJar(ca::str::Utf8StringRef::from_string_view(jarPath.string())).is_ok());
+
+    {
+        auto db    = openOrDie(dbPath);
+        auto stats = ingestIntoAnalysisDb(workspace, db);
+        ASSERT_TRUE(stats.is_ok());
+        // manifest run + fixture notice 两段 run：资源行非空且含确定性内容。
+        EXPECT_GT(std::move(stats).unwrap().resourceStrings, 2U);
+
+        // contains 不敏感：两段 notice run 全中（(path, value) 全序）。
+        mjbase::project::DbResourceSearchQuery query;
+        query.needle = ca::str::Utf8String::from_cstr("NOTICE-MARKER");
+        query.match  = mjbase::project::DbTextMatchKind::Contains;
+        auto page    = db.searchResourceStringsPaged(query, 100, 0);
+        ASSERT_TRUE(page.is_ok());
+        const auto result = std::move(page).unwrap();
+        ASSERT_EQ(2U, result.rows.size());
+        EXPECT_EQ("workspace/notice.txt", result.rows[0].entryPath.to_std_string());
+        EXPECT_EQ("notice-marker-alpha-text", result.rows[0].value.to_std_string());
+        EXPECT_EQ("workspace/notice.txt", result.rows[1].entryPath.to_std_string());
+        EXPECT_EQ("notice-marker-beta", result.rows[1].value.to_std_string());
+
+        // manifest 机器 run 落库（空 needle 全量 > notice 两行）。
+        mjbase::project::DbResourceSearchQuery all;
+        auto allPage = db.searchResourceStringsPaged(all, 1000, 0);
+        ASSERT_TRUE(allPage.is_ok());
+        EXPECT_GT(std::move(allPage).unwrap().total, 2U);
+
+        ASSERT_TRUE(db.save().is_ok());
+    }
+
+    // 只读重开：资源行持久（save 后 checkpoint 收敛）。
+    auto readOnly = openOrDie(dbPath, mjbase::project::AnalysisDbOpenMode::ReadOnly);
+    mjbase::project::DbResourceSearchQuery again;
+    again.needle = ca::str::Utf8String::from_cstr("notice-marker-beta");
+    auto reread  = readOnly.searchResourceStringsPaged(again, 100, 0);
+    ASSERT_TRUE(reread.is_ok());
+    const auto rows = std::move(reread).unwrap();
+    ASSERT_EQ(1U, rows.rows.size());
+    EXPECT_EQ("notice-marker-beta", rows.rows[0].value.to_std_string());
+}
