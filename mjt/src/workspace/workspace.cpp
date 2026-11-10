@@ -1,4 +1,5 @@
 #include "workspace.hpp"
+#include "search_match.hpp"
 
 #include <algorithm>
 #include <atomic>

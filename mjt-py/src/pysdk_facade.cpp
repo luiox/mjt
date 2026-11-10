@@ -19,6 +19,7 @@
 #include "workspace/classfile_support.hpp"
 #include "workspace/constant_scan.hpp"
 #include "workspace/reference_scan.hpp"
+#include "workspace/search_match.hpp"
 #include "workspace/workspace.hpp"
 
 #include "mjbase/jasm/classfile_utf8.hpp"

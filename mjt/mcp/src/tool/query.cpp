@@ -32,6 +32,7 @@
 #include "mjbase/project/project_store.hpp"
 #include "mjbase/renamer/shadow_alias.hpp"
 #include "workspace/constant_scan.hpp"
+#include "workspace/search_match.hpp"
 
 namespace mjt::mcp {
 
