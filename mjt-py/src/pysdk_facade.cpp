@@ -33,6 +33,8 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <optional>
+#include <regex>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -3135,9 +3137,9 @@ void writeSidecarTable(const std::string& sidecarPath,
 //（write_back / jasm apply / set_class_bytes）按脏类增量同步（类事实
 // upsert + refs 切片 + 常量面批量切片），结构变更（import/add/remove/
 // set_entry_bytes/rename/token 提交/建议应用）标 stale 下次查询全量重建。
-// 回落面（regex / query 边界态）走 AnalysisQueryContext 一次性临时库，恒
-// 查当前落账字节——会话库 workspace 快照的类字节会随编辑落后，不能喂
-// 引擎活扫描。
+// schema v13 资源串事实面落地后查询面无引擎回落态：regex 档按 mjbase 契约
+// 全量拉取客户端过滤（search_match 共享层单源），query 边界态由共享层校验
+// 器报错——会话库 workspace 只留给 ingest，不再喂任何引擎活扫描。
 
 /// 会话级分析库状态（pysdk_facade.hpp 前置声明的实现）。
 class SessionAnalysisDb
@@ -3705,55 +3707,6 @@ std::runtime_error dbQueryError(const char* operation, mjbase::project::Analysis
     return std::runtime_error(std::string(operation) + " failed: analysis db error: " + message);
 }
 
-/// 回落面专用一次性工作区上下文（regex / query 边界态；census 同款生命周
-/// 期）：容器深拷贝落盘临时 jar → workspace 打开 → 引擎活扫描 → 析构即弃
-/// 临时目录。会话库的 workspace 快照类字节会随编辑落后，引擎活扫描必须恒
-/// 查当前落账字节——回落路径每次现建（低频面，成本可接受）。
-/// 深拷贝后导出：exportToJar 的 Multi-Release manifest 守护可能改容器，
-/// 只读查询面零会话副作用。
-class AnalysisQueryContext
-{
-public:
-    explicit AnalysisQueryContext(FacadeSession& session)
-    {
-        std::error_code fsError;
-        const auto root = fs::path(fs::temp_directory_path()) /
-                          ("mjt_pysdk_query_" +
-                           std::to_string(std::chrono::steady_clock::now()
-                                              .time_since_epoch()
-                                              .count()));
-        fs::create_directories(root, fsError);
-        if (fsError)
-            throw std::runtime_error("create query temp dir failed: " + fsError.message());
-        root_ = root;
-
-        auto cloned = facadeCloneContainer(session);
-        const auto jarPath = (root / "container.jar").u8string();
-        auto exported = ResourceHelper::exportToJar(*cloned, jarPath);
-        if (exported.is_err()) {
-            throw std::runtime_error(std::string("export container for query failed: ") +
-                                     mjbase::model::to_string(std::move(exported).unwrap_err()));
-        }
-        if (auto opened = workspace_.openJar(pathRefOf(jarPath)); opened.is_err())
-            throw std::runtime_error("open query workspace failed: " +
-                                     std::move(opened).unwrap_err().message);
-    }
-
-    AnalysisQueryContext(const AnalysisQueryContext&)            = delete;
-    AnalysisQueryContext& operator=(const AnalysisQueryContext&) = delete;
-
-    mjt::workspace::WorkspaceBase& workspace() { return workspace_; }
-
-    ~AnalysisQueryContext()
-    {
-        std::error_code ec;
-        fs::remove_all(root_, ec);
-    }
-
-private:
-    fs::path                      root_;
-    mjt::workspace::WorkspaceBase workspace_;
-};
 
 /// 分面参数守卫（错位 fail-closed → invalid_argument = Python ValueError）。
 /// kind 决定合法过滤位（MCP 分支键白名单的 pysdk 等位）：classes 不吃 owner/
@@ -3887,22 +3840,41 @@ std::vector<SearchRow> facadeSearch(FacadeSession& s, const SearchRequest& reque
     options.memberKind    = utf8Owned(request.memberKind);
     options.opcode        = request.opcode;
 
-    // DB-first 守卫与 MCP 同形：SQL 可表达档（contains/prefix/exact）且 query
-    // 非空 ≤1024 字节直查会话库（编辑边界增量同步保新鲜，见会话库段）；regex
-    //（SQLite 无原生等价）与 query 边界态（空/超长的引擎校验报错）回落引擎
-    // 活扫描（一次性临时工作区，恒查当前落账字节）。numbers 无 match_mode，
-    // 守卫只看 query 非空——空 query numbers 走引擎校验报错，不进库。
-    const bool fromDb = request.matchMode != "regex" && !request.query.empty() &&
-                        request.query.size() <= 1024;
+    // 查询面全量 DB-first（schema v13 资源串事实面落地后的终态，与 MCP 同
+    // 形）：contains/prefix/exact 三档 SQL 可表达直查会话库（编辑边界增量
+    // 同步保新鲜，见会话库段）；regex 无 SQLite 原生等价——按 mjbase 契约
+    // 全量拉取（needle 空 = 不做文本过滤，LIMIT i64 极值惯例）+ 客户端过滤
+    //（search_match 共享层 matchesText regex 档单源，与引擎逐字节同形）；
+    // query 边界态（空/超长/member_kind/opcode/数值字面量/非法 pattern）由
+    // 共享层校验器给出与引擎面逐字节同形的报错（会话库建立失败显式抛，无
+    // 引擎回落态——workspace 快照不再喂任何引擎活扫描）。numbers 无
+    // match_mode（值等值语义）。
+    SessionAnalysisDb&            held = ensureSessionAnalysisDb(s);
+    mjbase::project::AnalysisDb&  db   = held.analysis();
     std::vector<mjt::workspace::SearchHit> hitList;
 
-    if (fromDb && !(request.kind == "numbers" && request.query.empty())) {
-        SessionAnalysisDb&            held = ensureSessionAnalysisDb(s);
-        mjbase::project::AnalysisDb&  db   = held.analysis();
+    {
 
         if (request.kind == "classes") {
+            auto validation =
+                mjt::workspace::validateSearchOptions(request.query, options, "search classes");
+            if (validation.is_err())
+                throw std::runtime_error("search classes failed: " + validation.message);
+            // regex 档：全量拉取（needle 空）+ 客户端过滤（引擎类行文本面 =
+            // 内部名 / 条目 path 双面任一命中）。
+            std::optional<std::regex> compiled;
+            if (request.matchMode == "regex") {
+                auto compiledResult =
+                    mjt::workspace::compileSearchRegex(request.query, options, "search classes");
+                if (compiledResult.is_err())
+                    throw std::runtime_error("search classes failed: " +
+                                             compiledResult.unwrap_err().message);
+                compiled = std::move(compiledResult).unwrap();
+            }
+            const std::regex* compiledRegex = compiled ? &*compiled : nullptr;
             mjbase::project::DbClassSearchQuery dbQuery;
-            dbQuery.needle        = utf8Owned(request.query);
+            dbQuery.needle        = compiledRegex != nullptr ? ca::str::Utf8String{}
+                                                             : utf8Owned(request.query);
             dbQuery.match         = matchKindOf(request.matchMode);
             dbQuery.caseSensitive = request.caseSensitive;
             dbQuery.packagePrefix = utf8Owned(request.packagePrefix);
@@ -3917,14 +3889,38 @@ std::vector<SearchRow> facadeSearch(FacadeSession& s, const SearchRequest& reque
             auto& rows = page.rows;
             hitList.reserve(rows.size());
             for (auto& row : rows) {
+                if (compiledRegex != nullptr &&
+                    !mjt::workspace::matchesText(row.internalName.to_std_string(),
+                                                 request.query, options, compiledRegex) &&
+                    !mjt::workspace::matchesText(row.entryPath.to_std_string(),
+                                                 request.query, options, compiledRegex)) {
+                    continue;
+                }
                 hitList.push_back({std::move(row.entryPath), ca::str::Utf8String::from_cstr("class"),
                                    row.internalName.clone(), {}, {}, -1,
                                    std::move(row.internalName)});
             }
         }
         else if (request.kind == "members") {
+            auto validation =
+                mjt::workspace::validateSearchOptions(request.query, options, "search members");
+            if (validation.is_err())
+                throw std::runtime_error("search members failed: " + validation.message);
+            // regex 档：全量拉取 + 客户端过滤（引擎成员行文本面 = owner/name/
+            // descriptor/signature 四面 + 单空格拼接复合串，任一命中即命中）。
+            std::optional<std::regex> compiled;
+            if (request.matchMode == "regex") {
+                auto compiledResult =
+                    mjt::workspace::compileSearchRegex(request.query, options, "search members");
+                if (compiledResult.is_err())
+                    throw std::runtime_error("search members failed: " +
+                                             compiledResult.unwrap_err().message);
+                compiled = std::move(compiledResult).unwrap();
+            }
+            const std::regex* compiledRegex = compiled ? &*compiled : nullptr;
             mjbase::project::DbMemberSearchQuery dbQuery;
-            dbQuery.needle        = utf8Owned(request.query);
+            dbQuery.needle        = compiledRegex != nullptr ? ca::str::Utf8String{}
+                                                             : utf8Owned(request.query);
             dbQuery.match         = matchKindOf(request.matchMode);
             dbQuery.caseSensitive = request.caseSensitive;
             dbQuery.owner         = utf8Owned(request.owner);
@@ -3943,6 +3939,26 @@ std::vector<SearchRow> facadeSearch(FacadeSession& s, const SearchRequest& reque
             for (auto& row : rows) {
                 // value = name + descriptor 无空格拼接（引擎命中行同款）。
                 const std::string value = row.name.to_std_string() + row.descriptor.to_std_string();
+                if (compiledRegex != nullptr) {
+                    // 引擎成员行文本面（search_match::matchesText 同源）。
+                    const std::string ownerText = row.internalName.to_std_string();
+                    const std::string compound = ownerText + " " +
+                                                 row.name.to_std_string() + " " +
+                                                 row.descriptor.to_std_string() + " " +
+                                                 row.signature.to_std_string();
+                    const bool hit =
+                        mjt::workspace::matchesText(ownerText, request.query, options,
+                                                    compiledRegex) ||
+                        mjt::workspace::matchesText(row.name.to_std_string(), request.query,
+                                                    options, compiledRegex) ||
+                        mjt::workspace::matchesText(row.descriptor.to_std_string(),
+                                                    request.query, options, compiledRegex) ||
+                        mjt::workspace::matchesText(row.signature.to_std_string(),
+                                                    request.query, options, compiledRegex) ||
+                        mjt::workspace::matchesText(compound, request.query, options,
+                                                    compiledRegex);
+                    if (!hit) continue;
+                }
                 hitList.push_back({std::move(row.entryPath),
                                    row.kind == mjbase::project::DbMemberKind::Field
                                        ? ca::str::Utf8String::from_cstr("field")
@@ -3952,8 +3968,25 @@ std::vector<SearchRow> facadeSearch(FacadeSession& s, const SearchRequest& reque
             }
         }
         else if (request.kind == "strings") {
+            auto validation =
+                mjt::workspace::validateSearchOptions(request.query, options, "search strings");
+            if (validation.is_err())
+                throw std::runtime_error("search strings failed: " + validation.message);
+            // regex 档：全量拉取 + 客户端过滤（引擎 strings 行文本面 = value
+            // 单面，常量池行与资源串行同面）。
+            std::optional<std::regex> compiled;
+            if (request.matchMode == "regex") {
+                auto compiledResult =
+                    mjt::workspace::compileSearchRegex(request.query, options, "search strings");
+                if (compiledResult.is_err())
+                    throw std::runtime_error("search strings failed: " +
+                                             compiledResult.unwrap_err().message);
+                compiled = std::move(compiledResult).unwrap();
+            }
+            const std::regex* compiledRegex = compiled ? &*compiled : nullptr;
             mjbase::project::DbStringSearchQuery dbQuery;
-            dbQuery.needle        = utf8Owned(request.query);
+            dbQuery.needle        = compiledRegex != nullptr ? ca::str::Utf8String{}
+                                                             : utf8Owned(request.query);
             dbQuery.match         = matchKindOf(request.matchMode);
             dbQuery.caseSensitive = request.caseSensitive;
             dbQuery.owner         = utf8Owned(request.owner);
@@ -3968,31 +4001,57 @@ std::vector<SearchRow> facadeSearch(FacadeSession& s, const SearchRequest& reque
             auto& rows = page.rows;
             hitList.reserve(rows.size());
             for (auto& row : rows) {
+                if (compiledRegex != nullptr &&
+                    !mjt::workspace::matchesText(row.value.to_std_string(), request.query,
+                                                 options, compiledRegex)) {
+                    continue;
+                }
                 hitList.push_back({std::move(row.entryPath),
                                    row.kind == mjbase::project::DbStringKind::String
                                        ? ca::str::Utf8String::from_cstr("constant_pool_string")
                                        : ca::str::Utf8String::from_cstr("constant_pool_utf8"),
                                    std::move(row.internalName), {}, {}, -1, std::move(row.value)});
             }
-            // 资源串并集（owner 与 packagePrefix 均空时）：DB 只收类常量池事实，
-            // notice.txt 这类非 class 资源的可打印串由引擎活扫描回答
-            //（searchResourceStrings 与引擎内联分支同一实现）；作用域非空时
-            // DB-only（引擎该场景本就不出资源串，域零漂移）。资源串走会话库
-            // workspace 快照：非 class 资源字节只随结构变更（必标 stale → 重建）
-            // 变化，内容编辑不触碰——快照恒新鲜。
+            // 资源串并集（owner 与 packagePrefix 均空时）：schema v13 起资源串
+            // 与常量池同库同源（resources 表，ingest 整库替换——非 class 资源
+            // 字节只随结构变更（必标 stale → 重建）变化，内容编辑不触碰，会话
+            // 库恒新鲜）；作用域非空时 DB-only（引擎该场景本就不出资源串，域
+            // 零漂移）。regex 档全量拉取后同面过滤。
             if (options.owner.is_empty() && options.packagePrefix.is_empty()) {
-                auto resources =
-                    held.engine().searchResourceStrings(utf8RefOf(request.query), options);
+                mjbase::project::DbResourceSearchQuery resourceQuery;
+                resourceQuery.needle        = dbQuery.needle.clone();
+                resourceQuery.match         = dbQuery.match;
+                resourceQuery.caseSensitive = dbQuery.caseSensitive;
+                auto resources = db.searchResourceStringsPaged(
+                    resourceQuery, std::numeric_limits<ca::i64>::max(), 0);
                 if (resources.is_err())
-                    throw std::runtime_error("search strings failed: " +
-                                             std::move(resources).unwrap_err().message);
-                auto resourceHits = std::move(resources).unwrap();
-                hitList.insert(hitList.end(), std::make_move_iterator(resourceHits.begin()),
-                               std::make_move_iterator(resourceHits.end()));
+                    throw dbQueryError("search strings", std::move(resources).unwrap_err());
+                auto resourcePage = std::move(resources).unwrap();
+                hitList.reserve(hitList.size() + resourcePage.rows.size());
+                for (auto& row : resourcePage.rows) {
+                    if (compiledRegex != nullptr &&
+                        !mjt::workspace::matchesText(row.value.to_std_string(), request.query,
+                                                     options, compiledRegex)) {
+                        continue;
+                    }
+                    hitList.push_back({std::move(row.entryPath),
+                                       ca::str::Utf8String::from_cstr("resource_string"),
+                                       {}, {}, {}, -1, std::move(row.value)});
+                }
             }
             mjt::workspace::sortAndDeduplicateSearchHits(hitList);
         }
         else if (request.kind == "numbers") {
+            // 引擎 searchNumbers 的边界态校验同形直通（validateSearchOptions
+            // 先行——空/超长/opcode 词表，validateNumberQuery 随后——数值字面
+            // 量完整解析），报错逐字节同形。
+            auto validation =
+                mjt::workspace::validateSearchOptions(request.query, options, "search numbers");
+            if (validation.is_err())
+                throw std::runtime_error("search numbers failed: " + validation.message);
+            validation = mjt::workspace::validateNumberQuery(request.query);
+            if (validation.is_err())
+                throw std::runtime_error("search numbers failed: " + validation.message);
             mjbase::project::DbNumberQuery dbQuery;
             dbQuery.needle        = utf8Owned(request.query);
             // 收窄键（超集安全）：stold 完整解析成功时整值且 |v|<2^63 → valueInt，
@@ -4027,23 +4086,6 @@ std::vector<SearchRow> facadeSearch(FacadeSession& s, const SearchRequest& reque
             }
             mjt::workspace::sortAndDeduplicateSearchHits(hitList);
         }
-    }
-    else {
-        // 引擎回落（regex / query 边界态；校验报错由引擎面给出，不重复口径）。
-        // 一次性临时工作区：类字节恒为当前落账态（会话库快照不喂引擎活扫描）。
-        AnalysisQueryContext context(s);
-        auto hits =
-            request.kind == "classes"
-                ? context.workspace().searchClasses(utf8RefOf(request.query), options)
-                : request.kind == "members"
-                      ? context.workspace().searchMembers(utf8RefOf(request.query), options)
-                      : request.kind == "strings"
-                            ? context.workspace().searchStrings(utf8RefOf(request.query), options)
-                            : context.workspace().searchNumbers(utf8RefOf(request.query), options);
-        if (hits.is_err())
-            throw std::runtime_error("search " + request.kind + " failed: " +
-                                     std::move(hits).unwrap_err().message);
-        hitList = std::move(hits).unwrap();
     }
 
     if (request.matchMode == "prefix") filterPrefixHits(hitList, request.query, request.caseSensitive);
