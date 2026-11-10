@@ -72,6 +72,8 @@ struct AnalysisIngestStats
     ca::usize constantStrings = 0;
     /// @brief 写入的数值字面量切片行数（number_literals：常量池 + 方法体）。
     ca::usize constantNumbers = 0;
+    /// @brief 写入的资源串行数（resources，schema v13 资源串事实面）。
+    ca::usize resourceStrings = 0;
 };
 
 /// @brief 把工作区主容器的类/成员/直接引用整库写入分析数据库。

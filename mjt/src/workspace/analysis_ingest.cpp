@@ -114,6 +114,8 @@ ca::Result<AnalysisIngestStats, AnalysisIngestError> ingestIntoAnalysisDb(
 
     std::vector<mjbase::project::DbEntryInput> entryInputs;
     entryInputs.reserve(resourceList.size());
+    // 非 class 条目的资源串切片（path 键控；entry_id 回填在条目登记后）。
+    std::map<std::string, std::vector<Utf8String>> resourceValues;
     ca::crypto::SHA256 containerHasher;
     ca::usize          canonicalSize = 0;
     const auto         feedU64       = [&containerHasher](ca::u64 value) {
@@ -147,6 +149,14 @@ ca::Result<AnalysisIngestStats, AnalysisIngestError> ingestIntoAnalysisDb(
             utf8(ca::crypto::sha256_hex(ca::core::ByteSlice(bytes.data(), bytes.size())));
         input.regular = mjbase::project::isRegularEntryPath(resource.uri.ref());
         entryInputs.push_back(std::move(input));
+
+        // 资源串抽取（schema v13）：非 class 条目的可打印 run——与引擎
+        // resourceStrings 活扫描同一事实源（readResource 的 bytesOf 序列化
+        // 同形），抽取规则在 constant_scan 单源。entry_id 在登记后回填。
+        if (resource.type.to_std_string() != "class") {
+            resourceValues.emplace(resource.uri.to_std_string(),
+                                   resourceStringRecords(bytes));
+        }
     }
 
     const std::string containerDigest = containerHasher.get_hash();
@@ -357,6 +367,25 @@ ca::Result<AnalysisIngestStats, AnalysisIngestError> ingestIntoAnalysisDb(
     auto replacedFaces = db.replaceConstantFaces(batchId, std::move(classFaces));
     if (replacedFaces.is_err()) {
         return ca::core::Err(databaseError(std::move(replacedFaces).unwrap_err()));
+    }
+
+    //-- 资源串事实面（resources，mjbase schema v13）---------------------------
+    // 条目走查攒的切片按活跃条目 id 回填后单次 replaceResources（整库单事务，
+    // batchId 同现行批次——批次锚复用 input 作用域）。资源变更 = 结构变更走
+    // 重建（#97 分工），无逐条目增量入口。
+    std::vector<mjbase::project::DbResourceEntryInput> resourceInputs;
+    for (auto& [path, values] : resourceValues) {
+        const auto entry = entryIdByPath.find(path);
+        if (entry == entryIdByPath.end()) continue;   // 防御：活跃行缺席不写
+        mjbase::project::DbResourceEntryInput resourceInput;
+        resourceInput.entryId = entry->second;
+        resourceInput.values  = std::move(values);
+        stats.resourceStrings += resourceInput.values.size();
+        resourceInputs.push_back(std::move(resourceInput));
+    }
+    auto replacedResources = db.replaceResources(batchId, std::move(resourceInputs));
+    if (replacedResources.is_err()) {
+        return ca::core::Err(databaseError(std::move(replacedResources).unwrap_err()));
     }
 
     //-- 批次收尾：计数从导入统计回填（注册表不核对，对账由消费方负责） ------

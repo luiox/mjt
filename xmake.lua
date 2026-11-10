@@ -224,7 +224,12 @@ includes("xmake/libca_rules.lua")
 -- 0.0.30 = analysis_db edit 侧常量面批量切片 replaceConstantFaceSlices（mjbase
 -- #216）：三个逐切片入口的单事务合批。消费方 = edit_sync 常量面切片合批
 -- （编辑提交常量面事务数 N→1）。
-add_requires("mjbase 0.0.30")
+-- 0.0.31 = analysis_db 资源串事实面（mjbase #217，schema v13）：resources 表
+--（行 = (entry_id, value)，UNIQUE 折叠）+ replaceResources 整库单事务 +
+-- searchResourceStringsPaged 三档分页；v12→v13 原地迁移，v11 隔代
+-- fail-loud。消费方 = ingest 资源串落库 + MCP/pysdk strings 并集资源半边
+-- 与 regex 拉取化（引擎 resourceStrings/searchStrings 族退役）。
+add_requires("mjbase 0.0.31")
 
 includes("test_helper")
 includes("mjt")

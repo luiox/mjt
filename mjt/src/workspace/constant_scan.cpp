@@ -142,6 +142,26 @@ std::vector<mjbase::project::DbStringRecord> cpStringRecords(const jbc::core::Cl
     return records;
 }
 
+std::vector<ca::str::Utf8String> resourceStringRecords(const std::vector<ca::u8>& bytes)
+{
+    std::vector<ca::str::Utf8String> values;
+    // 可打印 run 走查（引擎 resourceStrings 逐字节同形）：printable 谓词
+    // [0x20,0x7e]，run 边界 = 越界字节或缓冲尾（循环走到 size 含尾冲刷），
+    // 最短长度 1。空缓冲恒零产出（首步即边界，零长 run 不收）。
+    ca::usize start = 0;
+    for (ca::usize index = 0; index <= bytes.size(); ++index) {
+        const bool printable =
+            index < bytes.size() && bytes[index] >= 0x20 && bytes[index] <= 0x7e;
+        if (printable) continue;
+        if (index - start >= 1) {
+            values.push_back(utf8(std::string_view(
+                reinterpret_cast<const char*>(bytes.data()) + start, index - start)));
+        }
+        start = index + 1;
+    }
+    return values;
+}
+
 std::string numberText(ca::i64 value)
 {
     std::ostringstream output;

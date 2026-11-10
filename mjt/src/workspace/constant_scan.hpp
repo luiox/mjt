@@ -11,7 +11,9 @@
 ///   数行（valueText 用引擎 numberText 逐字节，valueInt/valueBits 收窄键
 ///   在本层收口）；
 /// - numberText / numbersEqual：数值格式化与等值终审（引擎查询面的原语，
-///   DB 查询路径的客户端终审共用）。
+///   DB 查询路径的客户端终审共用）；
+/// - resourceStringRecords：非 class 条目可打印串 run（资源串事实面，
+///   mjbase schema v13，引擎 resourceStrings 活扫描的抽取层对应物）。
 #pragma once
 
 #include <optional>
@@ -48,6 +50,14 @@ mjbase::project::DbUtf8Facet dbUtf8Facet(ConstantUtf8Facet facet);
 /// @brief 类常量池字符串切片（CONSTANT_String 行 + 裸 utf8 行含 facet 预分；
 ///        String 背书 utf8 去重与池遍历序逐字节同引擎 searchStrings 常量池分支）。
 std::vector<mjbase::project::DbStringRecord> cpStringRecords(const jbc::core::ClassFile& cf);
+
+/// @brief 非 class 条目字节的资源串切片（资源串事实面，mjbase schema v13
+///        `resources` 表的抽取源）：可打印 run 规则逐字节同引擎
+///        `resourceStrings` 活扫描——谓词 [0x20,0x7e]，run 边界 = 越界字节
+///        或缓冲尾，最短长度 1 档（引擎搜索路 resourceStrings(1) 同档；
+///        同条目同值由库 UNIQUE 折叠吸收，引擎按 offset 区分的重复行在
+///        SearchHit 去重后同集）。
+std::vector<ca::str::Utf8String> resourceStringRecords(const std::vector<ca::u8>& bytes);
 
 /// @brief 数值文本格式化（引擎 numberText 逐字节）：整型十进制；浮点
 ///        max_digits10 + defaultfloat（1.0f → "1"）。
