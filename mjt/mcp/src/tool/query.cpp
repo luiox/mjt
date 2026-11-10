@@ -581,21 +581,6 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
                               {"value", item.value.to_std_string()}});
         return toolResult({{"attributes", std::move(values)}});
     }
-    if (name == "resource_strings") {
-        auto strings = current->resourceStrings(arguments.value("minimum_length", static_cast<ca::usize>(4)));
-        if (strings.is_err()) { const auto err = shared::toCaStatus(strings.unwrap_err()); return toolError("extract resource strings failed", &err); }
-        Json values = Json::array();
-        // ResourceStringInfo 携 move-only Utf8String：unwrap 走移动重载。
-        for (const auto& item : std::move(strings).unwrap())
-            values.push_back({{"uri", item.uri.to_std_string()},
-                              {"offset", item.offset},
-                              {"value", item.value.to_std_string()}});
-        Json paged;
-        std::string pageError;
-        if (!page(std::move(values), arguments, paged, pageError, {"offset", "uri", "value"}))
-            return toolError(pageError);
-        return toolResult(std::move(paged));
-    }
     if (op == "search_classes" || op == "search_members" || op == "search_strings" ||
         op == "search_numbers" || op == "search_instructions") {
         const auto query = arguments.value("query", std::string{});
@@ -625,37 +610,44 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         SearchOptions options;
         std::string parseError;
         if (!parseSearchOptions(arguments, options, parseError)) return toolError(parseError);
-        //kind=classes / kind=members / kind=strings / kind=numbers DB-first
-        //（#121 查询面换轨）：SQL 可表达档（contains/prefix/exact；numbers 是
-        //值等值 + 收窄键超集）直接查 analysis_db——免工作副本全容器逐类解
-        //字节；类/成员库行序即引擎命中行全序，不经客户端重排；strings 的
-        //资源串半边与 numbers 的行并集在客户端收口（见分支内注释）。编辑会
-        //话不再回落：commit/undo/redo 挂 analysis_edit_sync 增量同步，受影响
-        //类的条目锚/类事实/引用切片/常量事实切片随编辑追平工作副本（早期
-        //版本以 revision==0 收窄到干净会话，增量同步批解除）。回落引擎扫描
-        //的情形：regex（SQLite 无原生等价）、query 边界态（空/超长走引擎同
-        //款校验报错，不在此重复口径）、instructions（见 else 分支注释——
-        //刻意的引擎保留面）。
-        const bool classSearchFromDb =
-            op == "search_classes" && matchMode != "regex" && !query.empty() &&
-            query.size() <= 1024 && session.analysisDb != nullptr;
-        const bool memberSearchFromDb =
-            op == "search_members" && matchMode != "regex" && !query.empty() &&
-            query.size() <= 1024 && session.analysisDb != nullptr;
-        //strings 守卫与类/成员同形；DB 只答类常量池半边，资源串并集见分支内。
-        const bool stringsSearchFromDb =
-            op == "search_strings" && matchMode != "regex" && !query.empty() &&
-            query.size() <= 1024 && session.analysisDb != nullptr;
-        //numbers 无 match_mode（分支键表无该键），守卫只看库在线与 query 非空；
-        //引擎 validateNumberQuery 的完整字面量校验由引擎路径保留，DB 分支构造
-        //收窄键时自行 stold（解析失败按超集不收窄，终审照常给出空集）。
-        const bool numbersSearchFromDb =
-            op == "search_numbers" && session.analysisDb != nullptr && !query.empty();
+        //查询面全量 DB-first（#121 查询面换轨；schema v13 资源串事实面落地
+        //后的终态）：四类文本分面（classes/members/strings/numbers）不再回
+        //落引擎活扫描——
+        //contains/prefix/exact 三档 SQL 可表达；regex 无 SQLite 原生等价，按
+        //mjbase 契约「消费方按同一可见域取全量行客户端过滤」（needle 空 =
+        //全量拉取，LIMIT i64 极值惯例），过滤语义与引擎 matchesText regex 档
+        //逐字节同源（search_match 共享层单源）。query 边界态（空/超长/
+        //member_kind/opcode/数值字面量/非法 pattern）由共享层校验器给出与引
+        //擎面逐字节同形的报错（会话分析库由 project_open fail-closed 保证在
+        //线，无「库缺席」回落态）。instructions 刻意保留引擎路径（见 else
+        //分支注释）。strings 的资源串半边（schema v13 resources 表）与常量池
+        //半边同库同源，并集后在出口收口（七元组全序排序 + 去重）。
         std::vector<mjt::workspace::SearchHit> hitList;
-        if (classSearchFromDb) {
+        if (op == "search_classes") {
+            auto validation = mjt::workspace::validateSearchOptions(query, options, "search classes");
+            if (validation.is_err()) {
+                const auto err = shared::toCaStatus(validation);
+                return toolError("workspace search failed", &err);
+            }
+            //regex 档：DB 全量拉取（needle 空 = 不做文本过滤）+ 客户端 regex
+            //过滤（引擎类行文本面 = 内部名 / 资源 URI 双面任一命中）。
+            std::optional<std::regex> compiled;
+            if (matchMode == "regex") {
+                auto compiledResult =
+                    mjt::workspace::compileSearchRegex(query, options, "search classes");
+                if (compiledResult.is_err()) {
+                    const auto err = shared::toCaStatus(compiledResult.unwrap_err());
+                    return toolError("workspace search failed", &err);
+                }
+                compiled = std::move(compiledResult).unwrap();
+            }
+            const std::regex* compiledRegex = compiled ? &*compiled : nullptr;
             mjbase::project::DbClassSearchQuery dbQuery;
-            dbQuery.needle       = ca::str::Utf8String::from_data_unchecked(
-                reinterpret_cast<const ca::u8*>(query.data()), query.size());
+            dbQuery.needle       = compiledRegex
+                                       ? ca::str::Utf8String{}
+                                       : ca::str::Utf8String::from_data_unchecked(
+                                             reinterpret_cast<const ca::u8*>(query.data()),
+                                             query.size());
             dbQuery.match        = matchMode == "exact" ? mjbase::project::DbTextMatchKind::Exact
                              : matchMode == "prefix" ? mjbase::project::DbTextMatchKind::Prefix
                                                      : mjbase::project::DbTextMatchKind::Contains;
@@ -678,22 +670,49 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
             auto page = std::move(searched).unwrap();
             hitList.reserve(page.rows.size());
             for (auto& row : page.rows) {
+                if (compiledRegex != nullptr &&
+                    !mjt::workspace::matchesText(row.internalName.to_std_string(), query,
+                                                 options, compiledRegex) &&
+                    !mjt::workspace::matchesText(row.entryPath.to_std_string(), query,
+                                                 options, compiledRegex)) {
+                    continue;
+                }
                 hitList.push_back({std::move(row.entryPath),
                                    ca::str::Utf8String::from_cstr("class"),
                                    row.internalName.clone(), {}, {}, -1,
                                    std::move(row.internalName)});
             }
         }
-        else if (memberSearchFromDb) {
-            //member_kind：schema enum 已拦非法值，此处兜底引擎面同款校验，
-            //防绕过 schema 的调用方静默丢过滤。
+        else if (op == "search_members") {
+            auto validation = mjt::workspace::validateSearchOptions(query, options, "search members");
+            if (validation.is_err()) {
+                const auto err = shared::toCaStatus(validation);
+                return toolError("workspace search failed", &err);
+            }
+            //member_kind：引擎面同款校验先行（防绕过 schema 的调用方静默丢过滤）。
             if (!options.memberKind.is_empty() && options.memberKind != "field" &&
                 options.memberKind != "method") {
                 return toolError("member kind must be field or method");
             }
+            //regex 档：DB 全量拉取 + 客户端过滤（引擎成员行文本面 = owner/
+            //name/descriptor/signature 四面 + 单空格拼接复合串，任一命中即命中）。
+            std::optional<std::regex> compiled;
+            if (matchMode == "regex") {
+                auto compiledResult =
+                    mjt::workspace::compileSearchRegex(query, options, "search members");
+                if (compiledResult.is_err()) {
+                    const auto err = shared::toCaStatus(compiledResult.unwrap_err());
+                    return toolError("workspace search failed", &err);
+                }
+                compiled = std::move(compiledResult).unwrap();
+            }
+            const std::regex* compiledRegex = compiled ? &*compiled : nullptr;
             mjbase::project::DbMemberSearchQuery dbQuery;
-            dbQuery.needle       = ca::str::Utf8String::from_data_unchecked(
-                reinterpret_cast<const ca::u8*>(query.data()), query.size());
+            dbQuery.needle       = compiledRegex
+                                       ? ca::str::Utf8String{}
+                                       : ca::str::Utf8String::from_data_unchecked(
+                                             reinterpret_cast<const ca::u8*>(query.data()),
+                                             query.size());
             dbQuery.match        = matchMode == "exact" ? mjbase::project::DbTextMatchKind::Exact
                              : matchMode == "prefix" ? mjbase::project::DbTextMatchKind::Prefix
                                                      : mjbase::project::DbTextMatchKind::Contains;
@@ -724,6 +743,25 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
                 //value = name + descriptor 无空格拼接（引擎命中行同款）。
                 const std::string value =
                     row.name.to_std_string() + row.descriptor.to_std_string();
+                if (compiledRegex != nullptr) {
+                    //引擎成员行文本面（search_match::matchesText 同源）：owner/
+                    //name/descriptor/signature 四面 + 单空格拼接复合串。
+                    const std::string ownerText = row.internalName.to_std_string();
+                    const std::string compound = ownerText + " " +
+                                                 row.name.to_std_string() + " " +
+                                                 row.descriptor.to_std_string() + " " +
+                                                 row.signature.to_std_string();
+                    const bool hit =
+                        mjt::workspace::matchesText(ownerText, query, options, compiledRegex) ||
+                        mjt::workspace::matchesText(row.name.to_std_string(), query, options,
+                                                    compiledRegex) ||
+                        mjt::workspace::matchesText(row.descriptor.to_std_string(), query,
+                                                    options, compiledRegex) ||
+                        mjt::workspace::matchesText(row.signature.to_std_string(), query,
+                                                    options, compiledRegex) ||
+                        mjt::workspace::matchesText(compound, query, options, compiledRegex);
+                    if (!hit) continue;
+                }
                 hitList.push_back({std::move(row.entryPath),
                                    row.kind == mjbase::project::DbMemberKind::Field
                                        ? ca::str::Utf8String::from_cstr("field")
@@ -735,10 +773,31 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
                                        value.size())});
             }
         }
-        else if (stringsSearchFromDb) {
+        else if (op == "search_strings") {
+            auto validation = mjt::workspace::validateSearchOptions(query, options, "search strings");
+            if (validation.is_err()) {
+                const auto err = shared::toCaStatus(validation);
+                return toolError("workspace search failed", &err);
+            }
+            //regex 档：DB 全量拉取 + 客户端过滤（引擎 strings 行文本面 = value
+            //单面，常量池行与资源串行同面）。
+            std::optional<std::regex> compiled;
+            if (matchMode == "regex") {
+                auto compiledResult =
+                    mjt::workspace::compileSearchRegex(query, options, "search strings");
+                if (compiledResult.is_err()) {
+                    const auto err = shared::toCaStatus(compiledResult.unwrap_err());
+                    return toolError("workspace search failed", &err);
+                }
+                compiled = std::move(compiledResult).unwrap();
+            }
+            const std::regex* compiledRegex = compiled ? &*compiled : nullptr;
             mjbase::project::DbStringSearchQuery dbQuery;
-            dbQuery.needle       = ca::str::Utf8String::from_data_unchecked(
-                reinterpret_cast<const ca::u8*>(query.data()), query.size());
+            dbQuery.needle       = compiledRegex
+                                       ? ca::str::Utf8String{}
+                                       : ca::str::Utf8String::from_data_unchecked(
+                                             reinterpret_cast<const ca::u8*>(query.data()),
+                                             query.size());
             dbQuery.match        = matchMode == "exact" ? mjbase::project::DbTextMatchKind::Exact
                              : matchMode == "prefix" ? mjbase::project::DbTextMatchKind::Prefix
                                                      : mjbase::project::DbTextMatchKind::Contains;
@@ -762,6 +821,11 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
             auto page = std::move(searched).unwrap();
             hitList.reserve(page.rows.size());
             for (auto& row : page.rows) {
+                if (compiledRegex != nullptr &&
+                    !mjt::workspace::matchesText(row.value.to_std_string(), query, options,
+                                                 compiledRegex)) {
+                    continue;
+                }
                 hitList.push_back({std::move(row.entryPath),
                                    row.kind == mjbase::project::DbStringKind::String
                                        ? ca::str::Utf8String::from_cstr("constant_pool_string")
@@ -770,25 +834,57 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
                                    std::move(row.value)});
             }
             //并集规则（与引擎 searchStrings 同域）：owner 与 packagePrefix 均
-            //空时另取引擎资源串命中——DB 只收类常量池事实，notice.txt 这类非
-            //class 资源的可打印串仍由引擎活扫描回答（searchResourceStrings 与
-            //引擎内联分支同一实现）；作用域非空时 DB-only（引擎该场景本就不
-            //出资源串，域零漂移）。两路拼接后经引擎出口收口（七元组全序排序
-            //+ 去重），既有 string_kind/prefix post-filter、遮蔽与分页零改动。
+            //空时另取资源串命中——schema v13 起资源串与常量池同库同源
+            //（searchResourceStringsPaged，引擎活扫描面退役）；作用域非空时
+            //DB-only（引擎该场景本就不出资源串，域零漂移）。regex 档全量拉取
+            //后同面过滤。两路拼接后经引擎出口收口（七元组全序排序 + 去重），
+            //既有 string_kind/prefix post-filter、遮蔽与分页零改动。
             if (options.owner.is_empty() && options.packagePrefix.is_empty()) {
-                auto resources = session.workspace->searchResourceStrings(utf8Ref(query), options);
+                mjbase::project::DbResourceSearchQuery resourceQuery;
+                resourceQuery.needle        = dbQuery.needle.clone();
+                resourceQuery.match         = dbQuery.match;
+                resourceQuery.caseSensitive = dbQuery.caseSensitive;
+                auto resources = session.analysisDb->searchResourceStringsPaged(
+                    resourceQuery, std::numeric_limits<ca::i64>::max(), 0);
                 if (resources.is_err()) {
-                    const auto err = shared::toCaStatus(resources.unwrap_err());
-                    return toolError("workspace search failed", &err);
+                    const auto failure = std::move(resources).unwrap_err();
+                    const auto code    = failure.kind ==
+                                            mjbase::project::AnalysisDbErrorKind::Schema
+                                            ? ca::StatusCode::FAILED_PRECONDITION
+                                            : ca::StatusCode::INTERNAL;
+                    const auto status  = ca::ErrStatus(
+                        code,
+                        "analysis db search failed: " + failure.message.to_std_string());
+                    return toolError("analysis db search failed", &status);
                 }
-                auto resourceHits = std::move(resources).unwrap();
-                hitList.insert(hitList.end(),
-                               std::make_move_iterator(resourceHits.begin()),
-                               std::make_move_iterator(resourceHits.end()));
+                auto resourcePage = std::move(resources).unwrap();
+                for (auto& row : resourcePage.rows) {
+                    if (compiledRegex != nullptr &&
+                        !mjt::workspace::matchesText(row.value.to_std_string(), query,
+                                                     options, compiledRegex)) {
+                        continue;
+                    }
+                    hitList.push_back({std::move(row.entryPath),
+                                       ca::str::Utf8String::from_cstr("resource_string"),
+                                       {}, {}, {}, -1, std::move(row.value)});
+                }
             }
             mjt::workspace::sortAndDeduplicateSearchHits(hitList);
         }
-        else if (numbersSearchFromDb) {
+        else if (op == "search_numbers") {
+            //引擎 searchNumbers 的边界态校验同形直通（validateSearchOptions 先
+            //行——空/超长/opcode 词表，validateNumberQuery 随后——数值字面量
+            //完整解析），报错逐字节同形。
+            auto validation = mjt::workspace::validateSearchOptions(query, options, "search numbers");
+            if (validation.is_err()) {
+                const auto err = shared::toCaStatus(validation);
+                return toolError("workspace search failed", &err);
+            }
+            validation = mjt::workspace::validateNumberQuery(query);
+            if (validation.is_err()) {
+                const auto err = shared::toCaStatus(validation);
+                return toolError("workspace search failed", &err);
+            }
             mjbase::project::DbNumberQuery dbQuery;
             dbQuery.needle       = ca::str::Utf8String::from_data_unchecked(
                 reinterpret_cast<const ca::u8*>(query.data()), query.size());
@@ -836,21 +932,12 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
             //contains 子串（LIKE '%…%' 无索引可用，全表扫）与 regex/结构化过滤
             //（mnemonic/operand/cst 互斥面；operand 的 ${} slot 展开依赖 shadow
             //表解析，均不可 SQL 化）——DB 反而慢于引擎活扫描（命中后即时收
-            //口，无入库/同步开销）。classes/members/strings/numbers 是低行数
-            //或可索引收窄的面，DB 化才有净收益。
+            //口，无入库/同步开销）。classes/members/strings/numbers 已 DB 化
+            //（schema v13 资源串事实面收口，见上方分支注释）。
             //结构化模式借道全量指令集（mjbase 拒绝空 query，单空格恒命中拼
             //接文本），命中后再按结构化字段收紧。
-            auto hits =
-                op == "search_classes"
-                    ? current->searchClasses(utf8Ref(query), options)
-                    : op == "search_members"
-                          ? current->searchMembers(utf8Ref(query), options)
-                          : op == "search_strings"
-                                ? current->searchStrings(utf8Ref(query), options)
-                                : op == "search_numbers"
-                                      ? current->searchNumbers(utf8Ref(query), options)
-                                      : current->searchInstructions(
-                                            utf8Ref(structured ? std::string(" ") : query), options);
+            auto hits = current->searchInstructions(
+                utf8Ref(structured ? std::string(" ") : query), options);
             if (hits.is_err()) { const auto err = shared::toCaStatus(hits.unwrap_err()); return toolError("workspace search failed", &err); }
             hitList = std::move(hits).unwrap();
         }
