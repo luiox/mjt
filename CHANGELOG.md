@@ -58,6 +58,17 @@
   迁移（类/成员行改写，ID 与 renames 覆盖零触碰），undo/redo/restore 的
   shadow 规格跨会话持久。
 
+### Changed
+
+- pysdk 编辑面统一走编辑管道（与 MCP `edit_apply` 同一实现，W4 收敛）：
+  类改名条目搬移、rename/mapping 提交、class/method 级 Jasm 应用、条目
+  增删改（`set_entry` / `add_entry` / `remove_entry` / `set_class_bytes` /
+  `write_back`）不再直改容器，统一经候选构建 + 校验门 + 提交落账的单
+  入口。行为点：`rename_commit` / `mapping_apply` 提交现在对改动类执行
+  校验门（relaxed 档，此前无门禁）；Jasm 报告的 `internal_name` /
+  `written` 口径不变；`new_container` 空会话（不开源文件、纯
+  `add_entry` 填充）行为不变。
+
 ### Fixed
 
 - `edit_apply` `validation=off` 档耗时回归（#80）：off 档 dry_run/apply 的

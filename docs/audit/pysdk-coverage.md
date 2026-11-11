@@ -2,6 +2,18 @@
 
 > 审计快照：2026-10-23，基于 mjt commit 612ea79（origin/main 最新）。
 > 只读源码审计，为「SDK 优先、MCP 面收敛」RFC 提供输入；未运行构建。
+>
+> **复核注记（2026-11，工作区重构波次完成后）**：§4.2 的「事务编排层两套代码」
+> 已不成立——`FacadeSession` 统一持 `WorkspaceBase`（`open` / 空容器出生
+> `openEmpty`），SDK 的条目增删改、类改名条目搬移、rename/mapping 提交、
+> class/method 级 Jasm 应用全部经 `EditCommand`/`applyEdit` 单入口（与 MCP
+> `edit_apply` 同一实现，revision/台账/undo/redo/savepoint 共享）；SDK 自管面
+> 只剩树缓存/uid 映射/rename token（展示层缓存，非事务）。§⑤ 清单中的
+> 事务面（第 1 项）**底座统一但 Python 绑定面未开**：`bind_facade`/`bind_core`
+> 未暴露任何 undo/redo/revision/savepoint/dry_run 绑定，脚本编辑在 SDK 面
+> 仍是不可回滚的单发，该项按原判仍属未关闭（待绑定暴露后复判）；Jasm
+> 汇编面（第 2 项）已绑定（pysdk_jasm）；
+> 其余（反编译面、宿主 `--script` 接线、CI 构建 mjt.pyd、资源上限）仍缺。
 
 ---
 
@@ -124,7 +136,7 @@
 
 - **共享底座 = mjbase::model::ResourceContainer 数据模型 + mjbase 各引擎组件**。两侧都消费：ResourceContainer（数据）、mjbase::spi pass 注册表与管线（SDK `run_pass` 用 `defaultPassRegistry` + `runContainerPipeline`，`bind_core.cpp:137-226`；MCP 经 `WorkspaceBase::runPipeline`）、asm_remapper（`applyResourceRemapPlan` 两侧同用）、mjbase::renamer（ShadowAliasTable/RenamerEngine 两侧同用：`pysdk_facade.hpp:114` / `mutation.cpp:519`）、mapping 格式注册表。
 - **但事务编排层是两套代码**：
-  - MCP：74 个工具全部经 `IWorkspace`（65 个虚方法，`mjbase/src/mjbase/workspace/i_workspace.hpp`）→ `WorkspaceBase`（`workspace.hpp:39-358`，内持 original_/working_ 双容器 + undo_/redo_/savepoints_ 快照栈 + revision + MutationRequest 原子提交/dry-run）。mjt 侧 `JarWorkspace` 是空壳继承（`mjt/src/shared/jar_workspace.hpp:12-16`）。
+  - MCP：74 个工具直接消费具体类 `mjt::workspace::WorkspaceBase`（`mjt/src/workspace/workspace.hpp`）。原 59 纯虚的 `IWorkspace` 与空壳 `JarWorkspace` 已在 W0 移除，`ProjectSession` 直接持 `WorkspaceBase`；双容器 + 台账换底的 undo/redo/savepoint + revision + MutationRequest 原子提交/dry-run 仍在该类内，待 W1/W2 拆为组合根 + EditEngine。
   - SDK：`FacadeSession` 直接持单个 ResourceContainer，自管树缓存/脏纪律/uid 映射/rename token，**没有** revision/undo/redo/savepoint/dry-run 事务机制；MCP 侧也没有 SDK 的树缓存与 rename token。
 - **若 MCP 收敛，SDK 侧缺的共享层入口**（IWorkspace 有而 facade 无的族）：事务族（MutationRequest expected_revision/dry_run/label、savepoint/undo/redo/restore/revert、modifiedClasses）、supporting JAR 族、search 五族引擎级搜索、xref/callees/classRelations/overridesOfMethod 分析族（analysisGraph）、Jasm 族（libjhasm）、反编译编排族、jar diff/repair 族、mapping 文本导入族、注解族（add/remove_marker_annotation）、LVT/local 改名、analysis_evaluate（mjbase::expr）。
 
@@ -147,10 +159,10 @@
 
 ## ⑤ SDK 补缺清单（收敛 MCP 面前必须补齐，按优先级排序）
 
-1. **事务/版本面（最高优先）**：把 IWorkspace 的 revision、expected_revision、dry-run 候选、undo/redo/savepoint/restore/revert、modifiedClasses 移植为 FacadeSession 之上的薄层（或干脆让 FacadeSession 换持 WorkspaceBase）。没有它，收敛后 AI 每一次编辑都是不可回滚的单发——patch/rename/mapping 全族都依赖这个安全网。这是"MCP 收敛"的硬前置。
+1. **事务/版本面（最高优先）**：把 WorkspaceBase 的 revision、expected_revision、dry-run 候选、undo/redo/savepoint/restore/revert、modifiedClasses 移植为 FacadeSession 之上的薄层（W4 定为 FacadeSession 统一换持 Session/EditEngine，不设兼容层）。没有它，收敛后 AI 每一次编辑都是不可回滚的单发——patch/rename/mapping 全族都依赖这个安全网。这是"MCP 收敛"的硬前置。
 2. **Jasm 汇编面**：绑定 libjhasm（class_jasm/method_jasm/get/apply + diff 变体等位物，共 8~10 个 MCP 工具的来源）。文本级汇编是 LLM 最顺手的编辑形态；指令原语面（emit_*/insn_set_*）对 AI 太低层，80 行 Python 才能等价一个 method_apply_jasm。
 3. **反编译面**：class_source/method_source 等位物。需要把 MCP 侧 CFR/Vineflower 子进程编排 + timeout/内存/输出上限 +（可选）后台 job 下沉为共享层；或明确定"SDK 不带反编译、脚本自调 java"的边界——但必须先定，不能悬着。
-4. **分析族绑定**：xref_field/xref_class/method_callees（resolved）/class_relations 反向（子类/实现者）/method_overrides。引擎已在 IWorkspace/analysisGraph 里，缺的只是 facade 绑定；配合 util.call_sites 可覆盖全部 xref 工具。
+4. **分析族绑定**：xref_field/xref_class/method_callees（resolved）/class_relations 反向（子类/实现者）/method_overrides。引擎已在 WorkspaceBase/analysisGraph 里，缺的只是 facade 绑定；配合 util.call_sites 可覆盖全部 xref 工具。
 5. **运行形态**：宿主 `--script` 接线（把 mjt_py_embed 接进 mjt-mcp main 或独立 mjt CLI）+ **脚本路径资源上限（超时/内存/输出上限）与取消透传**（现状为零，见 4.1）+ CI 构建 mjt.pyd（Python 3.14/pybind11 环境准备 + pysdk unittest 进 CI 门）。当前连 `mjt --script` 都跑不起来，"SDK 优先"没有运行载体。
 6. **注解 + LVT/local 面**：annotations 读写（patch_apply 的 annotation kind、class_get 的 annotations）、rename_local/LVT 表读写。小而硬的引擎缺口。
 7. **search 与 mapping 导入**：引擎级 search_strings/numbers/instructions 绑定（现靠脚本全罐循环）；mapping 文本导入（mjbase mapping_format_registry 的解析器已存在，缺 facade 入口）。

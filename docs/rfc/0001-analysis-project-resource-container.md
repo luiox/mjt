@@ -1,6 +1,10 @@
 # RFC 0001：分析工程 + 资源容器双层模型
 
-- 状态：**草案待评审**（本文所有"方案"小节均为草案，未定案；"现状"小节均带代码证据）
+- 状态：**主体已落地**（P0–P4 已实现合入；工作区重构波次 W0–W4 完成：接口空壳删除、
+  会话级 `ContainerRegistry` 归一、`EditCommand`/`applyEdit` 编辑单入口、查询面
+  analysis.db 直查 + `analysis_ops` 无状态算子、pysdk 会话统一持 `WorkspaceBase`
+  且全部写边界收敛 `applyEdit`。P5 多容器未动。本文 §1 与附录 A 中的旧行号为
+  落地前证据，落地注记见 §10；"方案"小节为设计定稿，"现状"小节保留历史口径）
 - 作者：mjt 架构重设计
 - 日期：2026-10-23
 - 关联：luiox/morpher#1092（分析工程）、luiox/morpher#1096（实体口径 v1 冻结）、mjbase 私有仓 `doc_ai/analysis-project-store-design.md`（R45 评审通过稿）
@@ -428,14 +432,18 @@ mjt --script│  Python SDK（FacadeSession 全粒度面，IDAPython 形态）�
 
 ## 10. 分阶段落地路线（每阶段独立合并、可回归验证）
 
-| 阶段 | 内容 | 交付与回归门 | 依赖 |
-|---|---|---|---|
-| **P0 对齐**（mjbase） | project.json v2 草案定稿（role 扩展 primary/library/runtime + 挂载树 parent 字段 + 容器 digest sha256 口径）；#1096 侧裁决 v1 读者遇 v2 的行为 | mjbase 单测 + 文档；mjt 零改动 | 无 |
-| **P1 工程接线**（mjt） | `ProjectSession`：MCP 会话持有工程 bundle；`workspace_open` 挂 `--project` 参数（缺省内存态兼容旧轨）；容器登记/指纹落 project.json；store.lock 接入 | 旧 74 工具行为零变化（回归 = 现有 mjt_mcp_unittest 全绿）+ 新开合测试 | P0 |
-| **P2 台账与 overlay**（mjbase+ mjt） | §6 重建模：ledger section 读写 + 重放引擎（mjbase project 扩展）；WorkspaceBase undo/redo/savepoint 换底（签名不变）；flush 挂点（close/export 前）；台账压缩引擎（§6.4，手动 + 自动阈值） | mjbase 事务单测（含崩溃注入：staged 残留/Damaged/孤儿档）+ 压缩不变量测试（书签存活/undo 深度/digest 补链）+ mjt 事务回归 | P1 |
-| **P3 缓存落盘**（mjt） | xref 与 decompile 缓存写 sections/（§7 失效键）；条目级 decompile 命中 | 二次打开同工程命中率断言 + 容器变更失效断言 | P2（键定义可先冻结并行开发） |
-| **P4 工具收敛**（mjt） | 11 个粗工具落地（新 schema + 分发）；SDK 补齐 12 个 SDK 化能力的等价函数；**同版本删除全部旧工具名**并迁移仓内消费方（skills 包、测试、文档），不设别名期 | 新工具单测 + 旧名删除后的全量回归；SDK selftest 扩面；changelog 声明破坏性变更 | P1（不依赖 P2/P3，可提前） |
-| **P5 多容器**（mjt+ mjbase） | `container_mount` 开放 library/runtime 多容器 + 复合寻址扩展位（§5.3）；v2 role 字段启用 | 工具数 = 11；多容器 xref 归并测试 | P2 P3 P4 |
+> 落地注记（2026-11）：P0–P4 已落地。P4 的 MCP 面完成（11 粗工具 + 旧名同版本
+> 删除）；SDK 侧能力补缺仍有余量（反编译面、宿主 `--script` 接线、CI 构建
+> mjt.pyd，见 `docs/audit/pysdk-coverage.md` §5 复核注记）。P5 未动。
+
+| 阶段 | 内容 | 交付与回归门 | 依赖 | 状态 |
+|---|---|---|---|---|
+| **P0 对齐**（mjbase） | project.json v2 草案定稿（role 扩展 primary/library/runtime + 挂载树 parent 字段 + 容器 digest sha256 口径）；#1096 侧裁决 v1 读者遇 v2 的行为 | mjbase 单测 + 文档；mjt 零改动 | 无 | ✅ 落地（容器 digest 已切 sha256，schema v2） |
+| **P1 工程接线**（mjt） | `ProjectSession`：MCP 会话持有工程 bundle；`workspace_open` 挂 `--project` 参数（缺省内存态兼容旧轨）；容器登记/指纹落 project.json；store.lock 接入 | 旧 74 工具行为零变化（回归 = 现有 mjt_mcp_unittest 全绿）+ 新开合测试 | P0 | ✅ 落地（`project_open` 取代 `workspace_open`，无游离内存工作区） |
+| **P2 台账与 overlay**（mjbase+ mjt） | §6 重建模：ledger section 读写 + 重放引擎（mjbase project 扩展）；WorkspaceBase undo/redo/savepoint 换底（签名不变）；flush 挂点（close/export 前）；台账压缩引擎（§6.4，手动 + 自动阈值） | mjbase 事务单测（含崩溃注入：staged 残留/Damaged/孤儿档）+ 压缩不变量测试（书签存活/undo 深度/digest 补链）+ mjt 事务回归 | P1 | ✅ 落地（`EditLedgerStore` 换底 + `edit_history` 工具） |
+| **P3 缓存落盘**（mjt） | xref 与 decompile 缓存写 sections/（§7 失效键）；条目级 decompile 命中 | 二次打开同工程命中率断言 + 容器变更失效断言 | P2（键定义可先冻结并行开发） | ✅ 落地 |
+| **P4 工具收敛**（mjt） | 11 个粗工具落地（新 schema + 分发）；SDK 补齐 12 个 SDK 化能力的等价函数；**同版本删除全部旧工具名**并迁移仓内消费方（skills 包、测试、文档），不设别名期 | 新工具单测 + 旧名删除后的全量回归；SDK selftest 扩面；changelog 声明破坏性变更 | P1（不依赖 P2/P3，可提前） | ✅ MCP 面落地（11 粗工具 + 旧名删除）；SDK 补缺余量见 audit §5 |
+| **P5 多容器**（mjt+ mjbase） | `container_mount` 开放 library/runtime 多容器 + 复合寻址扩展位（§5.3）；v2 role 字段启用 | 工具数 = 11；多容器 xref 归并测试 | P2 P3 P4 | ⬜ 未动（`container_mount` 现只开放 support 角色） |
 
 ---
 
@@ -458,23 +466,23 @@ mjt --script│  Python SDK（FacadeSession 全粒度面，IDAPython 形态）�
 | 断言 | 证据 |
 |---|---|
 | mjt 源码级依赖 mjbase | `mjt/xmake.lua:175-181` |
-| JarWorkspace 无扩展语义直继承 | `mjt/src/shared/jar_workspace.hpp:12-16` |
-| workspace 状态全内存（original/working/support/undo/redo/savepoint） | `mjbase .../workspace/workspace.hpp:347-352` |
-| savepoint = 整容器克隆 | `workspace.cpp:3942` |
-| commit 压 before 快照入 undo 栈 | `workspace.cpp:2723-2724` |
+| JarWorkspace 无扩展语义直继承（W0 已删除） | 原 `mjt/src/shared/jar_workspace.hpp:12-16` |
+| workspace 状态全内存（original/working/support/undo/redo/savepoint）（P2 已换台账底：undo/redo/savepoint = `EditLedgerStore` 指针回退/书签，`mjt/src/workspace/workspace.hpp`） | `mjbase .../workspace/workspace.hpp:347-352` |
+| savepoint = 整容器克隆（P2 台账换底后退役） | `workspace.cpp:3942` |
+| commit 压 before 快照入 undo 栈（P2 后 commit 落台账事务，before 只留 digest） | `workspace.cpp:2723-2724` |
 | MutationRequest{expectedRevision,dryRun,label} | `workspace_types.hpp:108-113` |
-| 容器指纹 fnv1a64 | `workspace.cpp:887-914` |
+| 容器指纹 fnv1a64（P0 已切 sha256：`ledgerBaseDigest`，schema v2 裁决） | `workspace.cpp:887-914` |
 | export 原子写新文件 | `workspace.cpp:4037-4049` |
 | 工程实体 schema v1（inputs/role/annotations/sidecar） | `mjbase .../project/analysis_project.hpp:48-102` |
 | bundle 布局与 section 字段（缓存失效键） | `mjbase .../project/project_store.hpp:47-62,142-183` |
 | 单写者锁/PID 探测/stealLock | `project_store.hpp:570-666` |
 | 恢复扫描与孤儿两档 | `project_store.hpp:421-497` |
-| 容器 first-wins + 重复记录 | `mjbase .../model/resource_container.hpp:9-11,92-101` |
-| MCP 74 工具注册 | `mjt/mcp/src/tool/contract.cpp:345-745` |
+| 容器 first-wins + 重复记录（mjbase 已改 last-wins：JVM 类加载实测口径，重复仍记录可上报；pysdk 显示索引层保持 first-wins #962） | `mjbase .../model/resource_container.hpp:9-11,92-101` |
+| MCP 74 工具注册（P4 已收敛 11 粗工具，旧名同版本删除） | `mjt/mcp/src/tool/contract.cpp:345-745` |
 | 会话工具持锁分发（open/close 内存态） | `mjt/mcp/src/tool/session.cpp:131-249` |
 | workspace 上限 16 / job 上限 64 | `mjt/mcp/src/tool/limits.hpp:22,27` |
 | 同族工具同分支（search/xref/patch/txn） | `query.cpp:131-144,223,272`；`mutation.cpp:33-85,176-250,374-479`；`decompiler.cpp:66-67` |
 | `mjt --script` 嵌入解释器 | `mjt-py/src/pysdk_embed.hpp:3`；`pysdk_embed.cpp:129-190` |
-| SDK FacadeSession 旧栈树载体 | `mjt-py/src/pysdk_facade.hpp:71-122` |
+| SDK FacadeSession 旧栈树载体（W4 已统一：持 `WorkspaceBase`，写边界收敛 `applyEdit`，见 `pysdk_facade.hpp`） | `mjt-py/src/pysdk_facade.hpp:71-122` |
 | project/model 已落 mjbase 批次 | `mjbase/mjbase/doc_ai/module-map.md:35,33`；`mjbase/doc_ai/migration-boundary.md:60,63` |
 | multi-release 挂账（P0-6） | `mjbase/mjbase/dev_plan.md:25-26` |

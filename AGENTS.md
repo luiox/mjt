@@ -47,8 +47,9 @@ libjbytecode / libjblw 已全退役（B7 摘 libjblw，B8 8.7 摘 libjbytecode�
 ## mjbase 基座
 
 字节码基座是 **mjbase**（独立仓），本仓经 luiox-repo 包词条消费
-（`add_requires("mjbase 0.0.30")`，git 直连 + commit 锁；0.0.7 起含
-analysis_db/sqlite3 面）：
+（`add_requires("mjbase 0.0.31")`，git 直连 + commit 锁；0.0.7 起含
+analysis_db/sqlite3 面；0.0.31 门控 libjbc>=0.4.22，本仓统一 0.4.27
+单实例）：
 
 - **依赖对齐**：包词条按 mjbase 源仓根 require 清单声明依赖；本仓根的
   libca/libjstr/libjzip/libjhasm 钉版必须与其字面对齐，版本不一致会在消费
