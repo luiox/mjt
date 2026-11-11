@@ -136,8 +136,12 @@ add_requires("libjclassfile 0.0.2")
 -- libjbc 走项目内联包定义（git 直连 + commit 锁，≥ mjbase 门控下界 0.4.22）：
 -- luiox-repo 的发布版落后于 mjbase 需要的面，且内联定义不吃 requireconfs，
 -- 其嵌套 libca 由定义内的 add_deps 钉到上面的单源版本。
+-- 0.4.27：0.4.26 包产物含 __imp__wassert 动态 CRT 引用（manifest 写 MT、obj
+-- 却按 dllimport 引 assert），消费方 /MT 链接 mjt_mcp_unittest 报 LNK2019；
+-- 0.4.27 源码级消除（code_dom.cpp 退出 assert 面）且修 StrictDomain ldc 类
+-- 常量建模。mjbase 0.0.31 门控 libjbc>=0.4.22，直接抬到 0.4.27 单实例。
 includes("xmake/packages/libjbc.lua")
-add_requires("libjbc 0.4.23")
+add_requires("libjbc 0.4.27")
 add_requires("libjstd 0.0.1")
 add_requires("libjdk_finder 0.1.1")
 add_requires("libjhasm 0.3.3")

@@ -63,6 +63,12 @@ package("libjbc")
     add_versions("0.4.22", "a408506203aaba7f74cdf588885187d3a49b0bd0") -- PR #19 合入 main 头  2026-10-28
     -- 0.4.23 = 仓库瘦身（dev_plan/doc_ai/ergonomics 撤离，design.md 现状化）+ class_build_attrs_test 类构建挂载面契约收编（PR #20，main 合入头）。
     add_versions("0.4.23", "4228cf3650b2409a106511a3cf8ca7275ed5ed04") -- PR #21 合入 main 头  2026-10-29
+    -- 0.4.27 = StrictDomain ldc 类常量装载建模修复（改推 java/lang/Class，异常
+    -- handler 合并帧重算 StackMapTable 与 JVM 验证器冲突实测 VerifyError 抓出）。
+    -- 同时消 0.4.26 包产物的 __imp__wassert 动态 CRT 引用（code_dom.cpp.obj，
+    -- 消费方 /MT 链接 LNK2019 根因）；0.4.24–0.4.26 包产物实测均含该引用，
+    -- 0.4.27 起为零（源码级：code_dom.cpp 不再引入 assert 面）。
+    add_versions("0.4.27", "0c54fc2ccd7734bffb0a5d1188e9fafcf0f9eff3") -- fix 提交直上 main  2026-11-09
 
     -- 嵌套 libca 直接钉到本仓单源版本：项目内联包定义不吃 deps.lua 的
     -- **.libca / libjbc.libca requireconfs（实测），裸声明会解析到仓库最新版
