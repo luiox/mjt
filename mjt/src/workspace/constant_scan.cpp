@@ -11,6 +11,7 @@
 #include <utility>
 
 #include "jbc/core/opcode.hpp"
+#include "libca/str/utf16_string.hpp"
 
 #include "classfile_support.hpp"
 
@@ -20,6 +21,7 @@ namespace {
 
 using mjbase::project::DbNumberKind;
 using mjbase::project::DbNumberRecord;
+using ca::str::Utf8String;
 
 /// @brief 底层文本（string_view）→ 拥有型 Utf8String（与 analysis_ingest 的
 ///        utf8() 同口径：字节原文直通）。
@@ -175,6 +177,118 @@ std::vector<ca::str::Utf8String> resourceStringRecords(const std::vector<ca::u8>
         start = index + 1;
     }
     return values;
+}
+
+namespace {
+
+ca::u16 readLe16(const ca::u8* bytes)
+{
+    return static_cast<ca::u16>(bytes[0] | (bytes[1] << 8));
+}
+
+ca::u32 readLe32(const ca::u8* bytes)
+{
+    return readLe16(bytes) | (static_cast<ca::u32>(readLe16(bytes + 2)) << 16);
+}
+
+std::optional<ca::usize> readPoolLength(const ca::u8*& next, const ca::u8* end,
+                                        bool utf8Encoded)
+{
+    const ca::usize width = utf8Encoded ? 1 : 2;
+    if (static_cast<ca::usize>(end - next) < width) return std::nullopt;
+    const ca::usize first = utf8Encoded ? *next : readLe16(next);
+    next += width;
+    const ca::usize highBit = utf8Encoded ? 0x80 : 0x8000;
+    if (first < highBit) return first;
+    if (static_cast<ca::usize>(end - next) < width) return std::nullopt;
+    const ca::usize second = utf8Encoded ? *next : readLe16(next);
+    next += width;
+    return ((first - highBit) << (width * 8)) | second;
+}
+
+std::optional<Utf8String> readPoolString(const ca::u8* next, const ca::u8* end,
+                                        bool utf8Encoded)
+{
+    const auto utf16Length = readPoolLength(next, end, utf8Encoded);
+    if (!utf16Length) return std::nullopt;
+    if (utf8Encoded) {
+        const auto byteLength = readPoolLength(next, end, true);
+        if (!byteLength || *byteLength >= static_cast<ca::usize>(end - next) ||
+            next[*byteLength] != 0) return std::nullopt;
+        auto value = Utf8String::try_from_data(next, *byteLength);
+        if (value.is_err()) return std::nullopt;
+        return std::move(value).unwrap();
+    }
+    if (*utf16Length >= static_cast<ca::usize>(end - next) / 2 ||
+        readLe16(next + *utf16Length * 2) != 0) return std::nullopt;
+
+    std::vector<ca::u16> units;
+    units.reserve(*utf16Length);
+    for (ca::usize i = 0; i < *utf16Length; ++i) {
+        const auto unit = readLe16(next + i * 2);
+        const bool needsLow = !units.empty() && units.back() >= 0xd800 && units.back() <= 0xdbff;
+        const bool isLow = unit >= 0xdc00 && unit <= 0xdfff;
+        if (needsLow != isLow) return std::nullopt;
+        units.push_back(unit);
+    }
+    if (units.empty() || (units.back() >= 0xd800 && units.back() <= 0xdbff)) return std::nullopt;
+    return ca::str::Utf16String(units.data(), units.size()).to_utf8_string();
+}
+
+std::vector<Utf8String> readXmlStringPool(const ca::u8* chunk, ca::usize headerSize,
+                                         ca::usize chunkSize)
+{
+    constexpr ca::usize poolHeaderSize = 28;
+    if (headerSize < poolHeaderSize) return {};
+    const auto stringCount = readLe32(chunk + 8);
+    const auto styleCount = readLe32(chunk + 12);
+    const bool utf8Encoded = (readLe32(chunk + 16) & 0x100) != 0;
+    const auto stringsStart = readLe32(chunk + 20);
+    const auto stylesStart = readLe32(chunk + 24);
+    const ca::usize stringsEnd = stylesStart == 0 ? chunkSize : stylesStart;
+    if (stringsStart < headerSize || stringsStart > stringsEnd || stringsEnd > chunkSize ||
+        static_cast<ca::u64>(stringCount) + styleCount > (stringsStart - headerSize) / 4) {
+        return {};
+    }
+
+    std::vector<Utf8String> values;
+    for (ca::usize i = 0; i < stringCount; ++i) {
+        const auto offset = readLe32(chunk + headerSize + i * 4);
+        if (offset >= stringsEnd - stringsStart) continue;
+        auto value = readPoolString(chunk + stringsStart + offset, chunk + stringsEnd,
+                                    utf8Encoded);
+        if (value && !value->is_empty()) values.push_back(std::move(*value));
+    }
+    return values;
+}
+
+}   // namespace
+
+std::vector<Utf8String> androidManifestStringRecords(const std::vector<ca::u8>& bytes)
+{
+    constexpr ca::u16 xmlType = 0x0003;
+    constexpr ca::u16 stringPoolType = 0x0001;
+    constexpr ca::usize chunkHeaderSize = 8;
+    if (bytes.size() < 2 || readLe16(bytes.data()) != xmlType)
+        return resourceStringRecords(bytes);
+    if (bytes.size() < chunkHeaderSize) return {};
+    const ca::usize xmlHeaderSize = readLe16(bytes.data() + 2);
+    const ca::usize xmlSize = readLe32(bytes.data() + 4);
+    if (xmlHeaderSize < chunkHeaderSize || xmlHeaderSize > xmlSize || xmlSize > bytes.size())
+        return {};
+
+    // Android's ResXMLTree stores the document strings in a ResStringPool child.
+    for (ca::usize offset = xmlHeaderSize; xmlSize - offset >= chunkHeaderSize;) {
+        const auto* chunk = bytes.data() + offset;
+        const ca::usize headerSize = readLe16(chunk + 2);
+        const ca::usize chunkSize = readLe32(chunk + 4);
+        if (headerSize < chunkHeaderSize || headerSize > chunkSize || chunkSize > xmlSize - offset)
+            return {};
+        if (readLe16(chunk) == stringPoolType)
+            return readXmlStringPool(chunk, headerSize, chunkSize);
+        offset += chunkSize;
+    }
+    return {};
 }
 
 std::string numberText(ca::i64 value)

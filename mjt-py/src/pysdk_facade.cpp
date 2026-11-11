@@ -18,6 +18,7 @@
 #include "workspace/analysis_ingest.hpp"
 #include "workspace/classfile_support.hpp"
 #include "workspace/constant_scan.hpp"
+#include "workspace/dex_domain.hpp"
 #include "workspace/reference_scan.hpp"
 #include "workspace/search_match.hpp"
 #include "workspace/workspace.hpp"
@@ -219,6 +220,7 @@ const mjbase::model::ResourceContainer& facadeContainer(const FacadeSession& s)
 ///        runtime_error（SDK 错误面）。
 void applyEditEntry(FacadeSession& s, mjt::workspace::EditCommand::Op op)
 {
+    if (s.ws.isDexBacked()) throw std::runtime_error("APK/DEX entries are read-only");
     mjt::workspace::MutationRequest request;
     const auto applied =
         mjt::workspace::applyEdit(s.ws, mjt::workspace::EditCommand{std::move(op)}, request);
@@ -230,7 +232,7 @@ void facadeImportJar(FacadeSession& session, const std::string& path)
 {
     if (path.empty()) throw std::invalid_argument("import: path is empty");
     std::error_code ec;
-    if (!std::filesystem::is_regular_file(path, ec)) {
+    if (!std::filesystem::is_regular_file(std::filesystem::u8path(path), ec)) {
         throw std::runtime_error("import: not a file: " + path);
     }
     // 协作层取消检查点：importFromJar 内部循环引擎私有，检查点只能落在入口
@@ -373,6 +375,11 @@ void facadeLoadClassFile(FacadeSession& s, const std::string& path,
 std::vector<std::string> facadeClassNames(const FacadeSession& s)
 {
     std::vector<std::string> out;
+    if (const auto* dex = s.ws.dexDomain()) {
+        out = dex->classNames();
+        std::sort(out.begin(), out.end());
+        return out;
+    }
     out.reserve(s.nameToUri.size());
     for (const auto& [name, uri] : s.nameToUri) out.push_back(name);
     return out;
@@ -380,6 +387,11 @@ std::vector<std::string> facadeClassNames(const FacadeSession& s)
 
 std::string facadeClassUri(const FacadeSession& s, const std::string& name)
 {
+    if (const auto* dex = s.ws.dexDomain()) {
+        auto cls = dex->classInfo(name);
+        if (cls.is_err()) throw StaleRefError(cls.unwrap_err().message);
+        return std::move(cls).unwrap().resourceUri.to_std_string();
+    }
     auto it = s.nameToUri.find(name);
     if (it == s.nameToUri.end()) throw StaleRefError("class not found: " + name);
     return it->second;
@@ -460,6 +472,7 @@ void facadeSetClassBytes(FacadeSession& s, const std::string& name, std::vector<
 void facadeExportJar(FacadeSession& s, const std::string& path,
                      const std::vector<std::string>& uris)
 {
+    if (s.ws.isDexBacked()) throw std::runtime_error("JAR export requires JVM input");
     // 导出即全量语义（实测补刀盘：不 flush 的 export 静默丢掉脏树/挂账改名）。
     // 帧重算失败即抛（fail-loud 优于静默出坏罐）；要跳过帧重算可先
     // flush(compute_frames=False) 再 export。
@@ -1307,6 +1320,19 @@ void facadeParseClass(FacadeSession& s, const std::string& name)
 
 ClassInfo facadeClassInfo(FacadeSession& s, const std::string& name)
 {
+    if (const auto* dex = s.ws.dexDomain()) {
+        auto result = dex->classInfo(name);
+        if (result.is_err()) throw StaleRefError(result.unwrap_err().message);
+        const auto cls = std::move(result).unwrap();
+        ClassInfo info;
+        info.name = cls.internalName.to_std_string();
+        info.superName = cls.superName.to_std_string();
+        info.access = static_cast<int>(cls.access);
+        info.version = static_cast<int>(cls.version);
+        for (const auto& iface : cls.interfaces)
+            info.interfaces.push_back(iface.to_std_string());
+        return info;
+    }
     return classInfoOf(resolveTree(s, name));
 }
 
@@ -1314,10 +1340,23 @@ std::vector<std::tuple<std::string, std::string, int>> facadeMembers(FacadeSessi
                                                                      const std::string& name,
                                                                      bool methods)
 {
+    std::vector<std::tuple<std::string, std::string, int>> out;
+    if (const auto* dex = s.ws.dexDomain()) {
+        auto result = dex->classInfo(name);
+        if (result.is_err()) throw StaleRefError(result.unwrap_err().message);
+        const auto cls = std::move(result).unwrap();
+        const auto append = [&out](const auto& members) {
+            for (const auto& member : members)
+                out.emplace_back(member.name.to_std_string(), member.descriptor.to_std_string(),
+                                 static_cast<int>(member.access));
+        };
+        if (methods) append(cls.methods);
+        else append(cls.fields);
+        return out;
+    }
     auto& te   = resolveTree(s, name);
     auto& unit = te.session->unit();
     auto& sp   = unit.symbols();
-    std::vector<std::tuple<std::string, std::string, int>> out;
     if (methods) {
         for (const auto& mu : unit.methods) {
             out.emplace_back(std::string(sp.str(mu.name)), std::string(sp.str(mu.desc)),
@@ -2314,6 +2353,7 @@ std::vector<std::string> facadeFlush(FacadeSession& s, bool computeFrames)
 
 void facadeSave(FacadeSession& s, const std::string& path, bool computeFrames)
 {
+    if (s.ws.isDexBacked()) throw std::runtime_error("JAR save requires JVM input");
     facadeFlush(s, computeFrames);
     facadeSyncEntries(s);
     stagedExportJar(facadeContainer(s), path);
@@ -3216,18 +3256,20 @@ public:
                                      fsError.message());
         }
 
-        auto cloned = facadeCloneContainer(session);
-        const auto jarPath  = (root / "container.jar").u8string();
-        auto exported = ResourceHelper::exportToJar(*cloned, jarPath);
-        if (exported.is_err()) {
-            throw std::runtime_error(
-                std::string("export container for session db failed: ") +
-                mjbase::model::to_string(std::move(exported).unwrap_err()));
-        }
-        workspace = std::make_unique<mjt::workspace::WorkspaceBase>();
-        if (auto opened = workspace->open(pathRefOf(jarPath)); opened.is_err()) {
-            throw std::runtime_error("open session db workspace failed: " +
-                                     std::move(opened).unwrap_err().message);
+        if (!session.ws.isDexBacked()) {
+            auto cloned = facadeCloneContainer(session);
+            const auto jarPath = (root / "container.jar").u8string();
+            auto exported = ResourceHelper::exportToJar(*cloned, jarPath);
+            if (exported.is_err()) {
+                throw std::runtime_error(
+                    std::string("export container for session db failed: ") +
+                    mjbase::model::to_string(std::move(exported).unwrap_err()));
+            }
+            workspace = std::make_unique<mjt::workspace::WorkspaceBase>();
+            if (auto opened = workspace->open(pathRefOf(jarPath)); opened.is_err()) {
+                throw std::runtime_error("open session db workspace failed: " +
+                                         std::move(opened).unwrap_err().message);
+            }
         }
 
         const auto dbPath = (root / "analysis.mjdb").string();
@@ -3238,7 +3280,7 @@ public:
                                      std::move(opened).unwrap_err().message.to_std_string());
         }
         db = std::make_unique<mjbase::project::AnalysisDb>(std::move(opened).unwrap());
-        if (auto ingested = mjt::workspace::ingestIntoAnalysisDb(*workspace, *db);
+        if (auto ingested = mjt::workspace::ingestIntoAnalysisDb(engine(session), *db);
             ingested.is_err()) {
             throw std::runtime_error("session db ingest failed: " +
                                      std::move(ingested).unwrap_err().message);
@@ -3249,7 +3291,10 @@ public:
     }
 
     mjbase::project::AnalysisDb&   analysis() { return *db; }
-    mjt::workspace::WorkspaceBase& engine()   { return *workspace; }
+    mjt::workspace::WorkspaceBase& engine(FacadeSession& session)
+    {
+        return workspace ? *workspace : session.ws;
+    }
 
 private:
     std::filesystem::path                          root;
@@ -4239,7 +4284,7 @@ std::vector<XrefRow> facadeXref(FacadeSession& s, const XrefRequest& request)
         items.push_back(std::move(info));
     }
     // 引用行收口：sortReferences 全序（无支撑容器挂载，标注无操作）。
-    held.engine().finalizeReferenceRows(items);
+    held.engine(s).finalizeReferenceRows(items);
 
     std::vector<XrefRow> out;
     out.reserve(items.size());

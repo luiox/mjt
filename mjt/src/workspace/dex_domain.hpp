@@ -18,6 +18,7 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -62,6 +63,7 @@ public:
 
     /// @brief 类总数（跨 dex 文件的 class_def 总数）。
     ca::usize classCount() const noexcept { return classOrder_.size(); }
+    const std::vector<std::string>& classNames() const noexcept { return classOrder_; }
 
     /// @brief internal name 是否在 dex 域内。
     bool containsClass(const std::string& internalName) const;
@@ -69,7 +71,7 @@ public:
     //-- 类事实面 ------------------------------------------------------------
 
     WorkspaceResult<std::vector<ClassSummary>> listClassSummaries() const;
-    WorkspaceResult<std::vector<ClassInfo>> listClasses() const;
+    WorkspaceResult<std::vector<ClassInfo>> listClasses(bool includeMethodBodies = true) const;
     /// @brief URI 或 internal name 查询 class 详情（URI = dex 条目 URI 时只匹配
     ///        单类 dex；优先内名）。
     WorkspaceResult<ClassInfo> classInfo(const std::string& uriOrInternalName) const;
@@ -133,6 +135,9 @@ public:
 
     /// @brief 单类 smali 反汇编文本（libsmali disassembleClass）。
     WorkspaceResult<std::string> smaliText(const std::string& uriOrInternalName) const;
+    /// @brief Assemble a class replacement into a copy of its containing DEX unit.
+    WorkspaceResult<std::vector<ca::u8>> assembleSmali(const std::string& internalName,
+                                                       std::string_view source) const;
     /// @brief 指令文本搜索（smali 形操作数行渲染；SearchOptions 过滤）。
     WorkspaceResult<std::vector<SearchHit>> searchInstructions(const std::string& query,
                                                                const SearchOptions& options) const;

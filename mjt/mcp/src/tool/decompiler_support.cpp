@@ -10,6 +10,7 @@
 #include "shared/status_convert.hpp"
 
 #include "workspace/analysis_ops.hpp"
+#include "workspace/dex_domain.hpp"
 
 namespace mjt::mcp::detail {
 
@@ -113,6 +114,10 @@ const std::string& settingsArtifactFor(const DecompilerSessionSettings& settings
         case DecompilerKind::Cfr: return settings.cfrJar;
         case DecompilerKind::Vineflower: return settings.vineflowerJar;
         case DecompilerKind::Jcdc: return settings.jcdcExe;
+        case DecompilerKind::Jadx: {
+            static const std::string discovered;
+            return discovered;
+        }
     }
     return settings.cfrJar;
 }
@@ -265,19 +270,21 @@ ca::StatusOr<DecompiledSource> decompileSnapshotClass(
 
     const auto sourceRoot = directory.path() / "sources";
     DecompileRequest request;
-    request.inputPath     = snapshot.string();
-    request.outputPath    = sourceRoot.string();
+    request.inputPath     = snapshot.u8string();
+    const bool jadx = options.kind == DecompilerKind::Jadx;
+    const auto sourcePath = sourceRoot / (jadx ? fs::path("Class.java") : sourceRelative);
+    request.outputPath    = (jadx ? sourcePath : sourceRoot).u8string();
     request.kind          = options.kind;
     request.decompilerJar = options.decompilerJar;
     request.javaProgram   = options.javaProgram;
     request.timeout       = options.timeout;
     request.maxMemoryMiB  = options.maxMemoryMiB;
-    request.tempRoot      = directory.path().string();
+    request.tempRoot      = directory.path().u8string();
+    if (jadx) request.targetClass = internalName;
     request.cancellationRequested = cancellationRequested;
     auto decompiled = decompile(request);
     if (decompiled.is_err()) return ca::Err(decompiled.unwrap_err());
 
-    const auto sourcePath = sourceRoot / sourceRelative;
     std::error_code error;
     if (!fs::is_regular_file(sourcePath, error) || error) {
         //后端 rc=0 但目标类缺席（类级异常被后端内部吞掉、整体照常退出）：
@@ -299,6 +306,32 @@ ca::StatusOr<DecompiledSource> decompileSnapshotClass(
                                    std::move(source).unwrap()});
 }
 
+ca::StatusOr<fs::path> snapshotDecompilerInput(WorkspaceBase& workspace,
+                                              const fs::path& directory,
+                                              const std::string& internalName)
+{
+    if (const auto* dex = workspace.dexDomain()) {
+        auto info = dex->classInfo(internalName);
+        if (info.is_err()) return ca::Err(shared::toCaStatus(info.unwrap_err()));
+        const auto cls = std::move(info).unwrap();
+        auto unit = mjt::workspace::readResource(*workspace.workingContainer(), cls.resourceUri);
+        if (unit.is_err()) return ca::Err(shared::toCaStatus(unit.unwrap_err()));
+        const auto content = std::move(unit).unwrap();
+        const auto snapshot = directory / "workspace.dex";
+        std::ofstream stream(snapshot, std::ios::binary);
+        stream.write(reinterpret_cast<const char*>(content.bytes.data()),
+                     static_cast<std::streamsize>(content.bytes.size()));
+        stream.close();
+        if (!stream) return ca::Err(ca::ErrStatus(ca::StatusCode::INTERNAL,
+                                                   "could not write DEX snapshot"));
+        return ca::Ok(snapshot);
+    }
+    const auto snapshot = directory / "workspace.jar";
+    auto exported = workspace.exportArtifact(utf8Ref(snapshot.u8string()));
+    if (exported.is_err()) return ca::Err(shared::toCaStatus(exported.unwrap_err()));
+    return ca::Ok(snapshot);
+}
+
 ca::StatusOr<DecompiledSource> decompileWorkspaceClass(WorkspaceBase& workspace,
                                                         const std::string& className,
                                                         const DecompilerOptions& options)
@@ -311,8 +344,10 @@ ca::StatusOr<DecompiledSource> decompileWorkspaceClass(WorkspaceBase& workspace,
         const auto err = shared::toCaStatus(std::move(info));
         return ca::Err(err);
     }
-    auto info = mjt::workspace::classInfo(*working, utf8Ref(className),
-                                                         workspace.lvtJarFallbackFlag());
+    const auto* dex = workspace.dexDomain();
+    auto info = dex ? dex->classInfo(className)
+                    : mjt::workspace::classInfo(*working, utf8Ref(className),
+                                                workspace.lvtJarFallbackFlag());
     if (info.is_err()) return ca::Err(shared::toCaStatus(info.unwrap_err()));
     // ClassInfo 携 move-only Utf8String：unwrap 走移动重载；内名落 std::string
     // 供快照反编译路径面（文件系统字节路径口径）。
@@ -322,10 +357,9 @@ ca::StatusOr<DecompiledSource> decompileWorkspaceClass(WorkspaceBase& workspace,
     if (temporary.is_err()) return ca::Err(temporary.unwrap_err());
     ScopedTemporaryDirectory directory(std::move(temporary).unwrap());
 
-    const auto snapshot = directory.path() / "workspace.jar";
-    auto exportStatus = workspace.exportArtifact(utf8Ref(snapshot.string()));
-    if (exportStatus.is_err()) return ca::Err(shared::toCaStatus(std::move(exportStatus).unwrap_err()));
-    return decompileSnapshotClass(snapshot, internalName, options);
+    auto snapshot = snapshotDecompilerInput(workspace, directory.path(), internalName);
+    if (snapshot.is_err()) return ca::Err(snapshot.unwrap_err());
+    return decompileSnapshotClass(snapshot.unwrap(), internalName, options);
 }
 
 Json decompiledSourceJson(const DecompiledSource& result, const char* sourceScope, bool cached)

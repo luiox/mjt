@@ -59,6 +59,9 @@ std::vector<mjbase::project::DbStringRecord> cpStringRecords(const jbc::core::Cl
 ///        SearchHit 去重后同集）。
 std::vector<ca::str::Utf8String> resourceStringRecords(const std::vector<ca::u8>& bytes);
 
+/// @brief APK manifest strings from the AXML string pool (UTF-8 or UTF-16).
+std::vector<ca::str::Utf8String> androidManifestStringRecords(const std::vector<ca::u8>& bytes);
+
 /// @brief 数值文本格式化（引擎 numberText 逐字节）：整型十进制；浮点
 ///        max_digits10 + defaultfloat（1.0f → "1"）。
 std::string numberText(ca::i64 value);

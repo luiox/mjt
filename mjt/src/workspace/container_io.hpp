@@ -132,6 +132,9 @@ private:
 /// @brief 按路径扩展名解析格式（未注册扩展 → None）。
 ContainerFormat formatForPath(const std::string& path) noexcept;
 
+/// @brief Load mounted APK/DEX through the format registry and retain the legacy JAR route.
+WorkspaceResult<ImportedArtifact> importSupportingContainer(const std::string& path);
+
 /// @brief UTF-8 窄串 → filesystem path（Windows 上 path(std::string) 按 ACP
 ///        解码，非 ASCII 必乱；与 model/resource_io.cpp 的 u8path 口径一致）。
 std::filesystem::path fsPath(const std::string& text);
@@ -139,6 +142,10 @@ std::filesystem::path fsPath(const std::string& text);
 /// @brief filesystem path → UTF-8 窄串（path::string() 在 Windows 走 ACP，
 ///        非 ASCII 会抛 code-page 异常；API 边界契约是 UTF-8）。
 std::string pathToUtf8(const std::filesystem::path& path);
+
+/// @brief Publish a rebuilt DEX to a new path without replacing existing files.
+WorkspaceErrorInfo writeDerivedDex(const std::string& sourcePath, const std::string& outputPath,
+                                   const std::vector<ca::u8>& bytes);
 
 /// @brief 单资源深拷贝（class/manifest/unknown；其余类型返回空）。
 std::unique_ptr<model::IResource> cloneResource(const model::IResource& resource);

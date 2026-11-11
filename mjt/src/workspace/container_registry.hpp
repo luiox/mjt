@@ -15,6 +15,8 @@
 
 namespace mjt::workspace {
 
+class DexDomain;
+
 /// @file container_registry.hpp
 /// @brief 会话级容器登记表：一个挂载容器一条记录，workspace 支撑面、
 ///        角色化容器栈与工程登记共用同一事实源。
@@ -32,6 +34,7 @@ struct ContainerRecord final
         mjbase::model::ContainerRole::Library;                        ///< library/runtime 角色
     std::string                                         roleLabel = "support";  ///< support/library/runtime 标签
     std::shared_ptr<mjbase::model::ResourceContainer>   container;  ///< 共享容器字节视图
+    std::shared_ptr<DexDomain>                           dexDomain;
 };
 
 /// @brief 会话内唯一的容器登记面：登记、查重、摘除与句柄分配。

@@ -6,6 +6,7 @@
 /// fixture：test_resource/dex 的 smalict 产物（与 workspace 层 dex 测试同源）
 /// 经 test::writeRawZip 包 apk（两 dex + 资源条目）；裸 dex 形态单独开工程。
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -186,7 +187,7 @@ TEST(McpDexSessionTest, OpensApkAndAnswersDbFirstSurfaces)
     EXPECT_NE(std::string::npos, smaliText.find(".end method"));
 }
 
-TEST(McpDexSessionTest, GuardsMutationAndDecompileButKeepsReads)
+TEST(McpDexSessionTest, GuardsJvmOnlyOperationsButKeepsReads)
 {
     McpSessionHarness server;
     const auto opened =
@@ -194,10 +195,7 @@ TEST(McpDexSessionTest, GuardsMutationAndDecompileButKeepsReads)
     ASSERT_FALSE(opened.at("result").at("isError")) << opened.dump();
     const auto projectId = payload(opened).at("project_id").get<std::string>();
 
-    //变更族守卫：edit_apply / container_mount 明确报只读原型错误（MVP 边界，
-    //dex 编辑是 follow-up）。edit_apply 参数须过 contract 合法键面（kind=jasm
-    //是 uri/source_name/source 一族；"class" 不在 edit_apply 契约里），守卫
-    //在 callMutationTool 入口先于任何寻址命中。
+    // JVM-only edits fail for DEX input.
     const auto edited = call(server,
                              "edit_apply",
                              {{"project_id", projectId},
@@ -214,31 +212,19 @@ TEST(McpDexSessionTest, GuardsMutationAndDecompileButKeepsReads)
                   .find("not supported for apk/dex input"))
         << payload(edited).dump();
 
-    const auto mounted = call(server,
-                              "container_mount",
-                              {{"project_id", projectId},
-                               {"action", "mount"},
-                               {"path", writeFixtureApk().string()}});
-    ASSERT_TRUE(mounted.at("result").at("isError")) << mounted.dump();
-    EXPECT_NE(std::string::npos,
-              payload(mounted)
-                  .at("status")
-                  .at("message")
-                  .get<std::string>()
-                  .find("not supported for apk/dex input"));
-
-    //decompile 守卫：dex 会话明确报错（管线按 JVM class 字节建面）。
+    // A JVM backend cannot handle DEX classes.
     const auto decompiled = call(server,
                                  "decompile",
                                  {{"project_id", projectId},
-                                  {"class", "com/mjt/dexfix/Subject"}});
+                                  {"class", "com/mjt/dexfix/Subject"},
+                                  {"decompiler", "cfr"}});
     ASSERT_TRUE(decompiled.at("result").at("isError")) << decompiled.dump();
     EXPECT_NE(std::string::npos,
               payload(decompiled)
                   .at("status")
                   .at("message")
                   .get<std::string>()
-                  .find("not supported for apk/dex input"));
+                  .find("require the jadx backend"));
 
     //守卫不误伤读面：xref_query references（DB 分支）照常回答。
     const auto callers = call(server,
@@ -272,6 +258,123 @@ TEST(McpDexSessionTest, OpensRawDexProject)
                               {{"project_id", projectId}, {"kind", "list"}});
     ASSERT_FALSE(classes.at("result").at("isError")) << classes.dump();
     ASSERT_EQ(3U, payload(classes).at("items").size());
+
+    const auto method = call(server, "class_query",
+                             {{"project_id", projectId}, {"kind", "method"},
+                              {"owner", "com/mjt/dexfix/Subject"}, {"name", "onEvent"}});
+    ASSERT_FALSE(method.at("result").at("isError")) << method.dump();
+    EXPECT_EQ("(I)V", payload(method).at("descriptor"));
+    const auto disassembled = call(server, "class_query",
+                                   {{"project_id", projectId}, {"kind", "bytecode"},
+                                    {"owner", "com/mjt/dexfix/Subject"}, {"name", "onEvent"},
+                                    {"descriptor", "(I)V"}, {"resolved", true}});
+    ASSERT_FALSE(disassembled.at("result").at("isError")) << disassembled.dump();
+    EXPECT_EQ("smali", payload(disassembled).at("format"));
+    const auto& instructions = payload(disassembled).at("instructions");
+    ASSERT_FALSE(instructions.empty());
+    EXPECT_EQ(0, instructions.front().at("index"));
+    EXPECT_EQ(0, instructions.front().at("pc"));
+    const auto branch = std::find_if(instructions.begin(), instructions.end(), [](const Json& row) {
+        return row.at("mnemonic") == "if-eqz";
+    });
+    ASSERT_NE(instructions.end(), branch);
+    EXPECT_EQ(instructions.back().at("pc"), branch->at("branch_target_pc"));
+    EXPECT_EQ("return-void", instructions.back().at("mnemonic"));
+    EXPECT_NE(std::string::npos, branch->at("operand_text").get<std::string>().find("v1"));
+}
+
+TEST(McpDexSessionTest, ReportsSwitchCasesAndFallthroughAsByteOffsets)
+{
+    McpSessionHarness server;
+    const auto opened =
+        call(server, "project_open", {{"path", dexResource("hello_refs.dex").u8string()}});
+    ASSERT_FALSE(opened.at("result").at("isError")) << opened.dump();
+    const auto projectId = payload(opened).at("project_id").get<std::string>();
+    const auto derived = test::getTempOutPath("mjt_switch_fixture.dex");
+    std::error_code cleanupError;
+    std::filesystem::remove(derived, cleanupError);
+    const auto assembled = call(server, "edit_apply",
+                                {{"project_id", projectId}, {"kind", "smali"},
+                                 {"class", "com/mjt/dexfix/Subject"}, {"path", derived.u8string()},
+                                 {"source", R"(.class public Lcom/mjt/dexfix/Subject;
+.super Lcom/mjt/dexfix/Base;
+.method public static choose(I)I
+    .registers 2
+    packed-switch v1, :cases
+    const/4 v0, -1
+    return v0
+    :one
+    const/4 v0, 1
+    return v0
+    :cases
+    .packed-switch 42
+        :one
+    .end packed-switch
+.end method
+)"}});
+    ASSERT_FALSE(assembled.at("result").at("isError")) << assembled.dump();
+    const auto reopened = call(server, "project_open", {{"path", derived.u8string()}});
+    ASSERT_FALSE(reopened.at("result").at("isError")) << reopened.dump();
+    const auto result = call(server, "class_query",
+                             {{"project_id", payload(reopened).at("project_id")},
+                              {"kind", "bytecode"}, {"owner", "com/mjt/dexfix/Subject"},
+                              {"name", "choose"}});
+    ASSERT_FALSE(result.at("result").at("isError")) << result.dump();
+    const auto& rows = payload(result).at("instructions");
+    ASSERT_GE(rows.size(), 6U);
+    const auto& branch = rows.at(0);
+    ASSERT_EQ("packed-switch", branch.at("mnemonic"));
+    EXPECT_EQ(rows.at(1).at("pc"), branch.at("switch_default_pc"));
+    EXPECT_EQ(rows.back().at("pc"), branch.at("payload_pc"));
+    EXPECT_EQ(true, rows.back().at("payload"));
+    const auto& cases = branch.at("switch_cases");
+    ASSERT_EQ(1U, cases.size());
+    EXPECT_EQ(42, cases.at(0).at("key"));
+    EXPECT_EQ(rows.at(3).at("pc"), cases.at(0).at("target_pc"));
+}
+
+TEST(McpDexSessionTest, MountsApkAlongsideJarAndQueriesItsClassesAndReferences)
+{
+    McpSessionHarness server;
+    const auto jar = test::getTempOutPath("mjt_mixed_primary.jar");
+    test::writeRawZip(jar, {{"data.txt", {'j', 'a', 'r'}}});
+    const auto opened = call(server, "project_open", {{"path", jar.u8string()}});
+    ASSERT_FALSE(opened.at("result").at("isError")) << opened.dump();
+    const auto projectId = payload(opened).at("project_id").get<std::string>();
+    const auto mounted = call(server, "container_mount",
+                              {{"project_id", projectId}, {"role", "library"},
+                               {"path", writeFixtureApk().u8string()}});
+    ASSERT_FALSE(mounted.at("result").at("isError")) << mounted.dump();
+    const auto supportId = payload(mounted).at("container").at("support_id");
+
+    const Json search = {{"project_id", projectId}, {"kind", "classes"},
+                         {"query", "subject"}, {"role", "library"}};
+    const auto classes = call(server, "search", search);
+    ASSERT_FALSE(classes.at("result").at("isError")) << classes.dump();
+    ASSERT_EQ(1u, payload(classes).at("items").size());
+    EXPECT_EQ("com/mjt/dexfix/Subject", payload(classes).at("items").at(0).at("class"));
+    const auto xrefs = call(server, "xref_query",
+                            {{"project_id", projectId}, {"kind", "references"},
+                             {"direction", "to"}, {"target", "class"},
+                             {"class", "com/mjt/dexfix/Hook"}, {"role", "library"}});
+    ASSERT_FALSE(xrefs.at("result").at("isError")) << xrefs.dump();
+    EXPECT_FALSE(payload(xrefs).at("items").empty());
+
+    const auto callees = call(server, "xref_query",
+                              {{"project_id", projectId}, {"kind", "references"},
+                               {"direction", "from"}, {"target", "method"},
+                               {"owner", "com/mjt/dexfix/Subject"}, {"name", "onEvent"},
+                               {"role", "library"}});
+    ASSERT_FALSE(callees.at("result").at("isError")) << callees.dump();
+    EXPECT_FALSE(payload(callees).at("items").empty());
+
+    const auto detached = call(server, "container_mount",
+                               {{"project_id", projectId}, {"role", "library"},
+                                {"action", "detach"}, {"support_id", supportId}});
+    ASSERT_FALSE(detached.at("result").at("isError")) << detached.dump();
+    const auto after = call(server, "search", search);
+    ASSERT_FALSE(after.at("result").at("isError")) << after.dump();
+    EXPECT_TRUE(payload(after).at("items").empty());
 }
 
 }   // namespace

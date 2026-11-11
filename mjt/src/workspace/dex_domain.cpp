@@ -14,6 +14,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <regex>
 #include <set>
@@ -21,6 +22,8 @@
 #include <utility>
 
 #include "dex/dex.hpp"
+#include "jstr/conversion.hpp"
+#include "smali/assemble.hpp"
 #include "smali/disassemble.hpp"
 
 #include "mjbase/asm/remapper/member_remapper.hpp"
@@ -358,14 +361,14 @@ std::vector<ReferenceInfo> collectReferenceInfos(
 }
 
 /// @brief dex 访问旗标 → MethodInfo/FieldInfo 装配。
-MethodInfo methodInfoOf(DexFile& dex, const EncodedMethod& method)
+MethodInfo methodInfoOf(DexFile& dex, const EncodedMethod& method, bool includeBody = true)
 {
     MethodInfo info;
     const MethodKey key = methodKeyOf(dex, method.methodIndex);
     info.name       = utf8(key.name);
     info.descriptor = utf8(key.descriptor);
     info.access     = accessFlagsOf(method.accessFlags);
-    if (method.codeOff != 0) {
+    if (includeBody && method.codeOff != 0) {
         auto code = dex.codeItem(method.codeOff);
         if (code.is_ok()) {
             const CodeItem* item = code.unwrap();
@@ -429,7 +432,8 @@ std::optional<ConstantValueInfo> constantValueOf(DexFile& dex, const EncodedValu
 }
 
 /// @brief 类全量事实装配（dex DOM → ClassInfo；version = dex 版本）。
-ClassInfo buildClassInfo(DexFile& dex, ca::u32 classDefIdx, const std::string& resourceUri)
+ClassInfo buildClassInfo(DexFile& dex, ca::u32 classDefIdx, const std::string& resourceUri,
+                        bool includeMethodBodies = true)
 {
     ClassInfo info;
     info.resourceUri  = utf8(resourceUri);
@@ -469,10 +473,10 @@ ClassInfo buildClassInfo(DexFile& dex, ca::u32 classDefIdx, const std::string& r
         info.fields.push_back(fieldInfoOf(dex, field));
     }
     for (const EncodedMethod& method : classData->directMethods) {
-        info.methods.push_back(methodInfoOf(dex, method));
+        info.methods.push_back(methodInfoOf(dex, method, includeMethodBodies));
     }
     for (const EncodedMethod& method : classData->virtualMethods) {
-        info.methods.push_back(methodInfoOf(dex, method));
+        info.methods.push_back(methodInfoOf(dex, method, includeMethodBodies));
     }
     return info;
 }
@@ -556,6 +560,92 @@ std::string renderInsnLine(DexFile& dex, const Insn& insn)
         }
     }
     return line;
+}
+
+ca::i32 dexBytePc(ca::i64 codeUnits)
+{
+    if (codeUnits < 0 || codeUnits > std::numeric_limits<ca::i32>::max() / 2) return -1;
+    return static_cast<ca::i32>(codeUnits * 2);
+}
+
+void renderDexFlow(const std::vector<Insn>& insns, const Insn& insn, InstructionDetailInfo& row)
+{
+    if (!insn.isBranch()) return;
+    const ca::i64 target = static_cast<ca::i64>(insn.address) + insn.branchOffset;
+    if (insn.format != InsnFormat::F31t) {
+        row.branchTargetPc = dexBytePc(target);
+        return;
+    }
+    row.payloadPc = dexBytePc(target);
+    const PayloadKind kind = switchKindOf(insn.opcode);
+    if (kind != PayloadKind::PackedSwitch && kind != PayloadKind::SparseSwitch) return;
+
+    row.isSwitch = true;
+    row.switchDefaultPc = dexBytePc(static_cast<ca::i64>(insn.address) + insn.width);
+    if (row.payloadPc < 0) return;
+    const auto payload = std::lower_bound(insns.begin(), insns.end(), target,
+                                         [](const Insn& item, ca::i64 address) {
+                                             return item.address < address;
+                                         });
+    if (payload == insns.end() || payload->address != target || payload->payloadKind != kind)
+        return;
+    const bool packed = kind == PayloadKind::PackedSwitch;
+    for (ca::u32 index = 0; index < payload->payloadCount; ++index) {
+        const ca::i64 key = packed ? static_cast<ca::i64>(payload->payloadFirstKey) + index
+                                   : payload->sparseSwitchKey(index);
+        const ca::i64 offset = packed ? payload->packedSwitchTarget(index)
+                                      : payload->sparseSwitchTarget(index);
+        const ca::i32 targetPc = dexBytePc(static_cast<ca::i64>(insn.address) + offset);
+        if (key <= std::numeric_limits<ca::i32>::max() && targetPc >= 0)
+            row.switchCases.push_back({static_cast<ca::i32>(key), targetPc});
+    }
+}
+
+void renderDexOperands(DexFile& dex, const Insn& insn, bool resolve, InstructionDetailInfo& row)
+{
+    std::string operands;
+    const auto append = [&](const std::string& value) {
+        if (!operands.empty()) operands += ", ";
+        operands += value;
+    };
+    if (insn.format == InsnFormat::F3rc || insn.format == InsnFormat::F4rcc) {
+        if (insn.registerCount > 0)
+            append("v" + std::to_string(insn.startRegister) + " .. v" +
+                   std::to_string(insn.startRegister + insn.registerCount - 1));
+    }
+    else {
+        for (ca::u8 index = 0; index < std::min<ca::u8>(insn.registerCount, 5); ++index)
+            append("v" + std::to_string(insn.registers[index]));
+    }
+    if (insn.indexKind != IndexKind::None) {
+        row.cpIndex = static_cast<ca::i32>(insn.index);
+        const auto line = renderInsnLine(dex, insn);
+        const auto space = line.find(' ');
+        std::string reference = "#" + std::to_string(insn.index);
+        if (space != std::string::npos) {
+            auto display = jstr::mutf8_to_utf8(
+                MUtf8StringRef(std::string_view(line).substr(space + 1)),
+                {jstr::ConversionValidationMode::kLenient, true});
+            if (display.is_ok()) {
+                reference = std::move(display).unwrap();
+                if (resolve) row.operandComment = utf8(reference);
+            }
+        }
+        append(reference);
+    }
+    else if (insn.isBranch()) {
+        const ca::i32 targetPc = insn.format == InsnFormat::F31t ? row.payloadPc
+                                                               : row.branchTargetPc;
+        if (targetPc >= 0) append(std::to_string(targetPc));
+    }
+    else if ((insn.opcode >= kOpConst4 && insn.opcode <= kOpConstWideHigh16) ||
+             insn.format == InsnFormat::F22b || insn.format == InsnFormat::F22s) {
+        append(std::to_string(insn.literal));
+    }
+    else if (insn.isPayload()) {
+        append(std::to_string(insn.payloadCount));
+    }
+    row.operandText = utf8(operands);
 }
 
 /// @brief jar 读错误的文本面（诊断消息用）。
@@ -659,6 +749,45 @@ bool DexDomain::containsClass(const std::string& internalName) const
     return byName_.find(internalName) != byName_.end();
 }
 
+WorkspaceResult<std::vector<ca::u8>> DexDomain::assembleSmali(
+    const std::string& internalName, std::string_view source) const
+{
+    const auto* slot = findClass(internalName);
+    if (!slot) return ca::core::Err(notFound("assemble smali", internalName));
+
+    auto original = writeDex(*dexes_[slot->dexIndex]);
+    if (original.is_err())
+        return ca::core::Err(domainError(WorkspaceError::DataLoss, "read original DEX",
+                                          to_string(original.unwrap_err())));
+    const auto bytes = std::move(original).unwrap();
+    auto parsed = readDex(ca::core::ByteSlice(bytes.data(), bytes.size()), ReadOptions{});
+    if (parsed.is_err())
+        return ca::core::Err(domainError(WorkspaceError::DataLoss, "read original DEX",
+                                          to_string(parsed.unwrap_err())));
+    auto copy = std::move(parsed).unwrap();
+    const auto originalClass = copy->classDefs[slot->classDefIndex].classIdx;
+    // libdex removes a definition by erasing classDefs. Existing ID table references
+    // remain valid, and the assembler reuses that class ID for the replacement.
+    copy->classDefs.erase(copy->classDefs.begin() + slot->classDefIndex);
+    dex::smali::SmaliAssembler assembler(*copy);
+    auto assembled = assembler.assembleClass(source);
+    if (assembled.is_err()) {
+        const auto detail = std::move(assembled).unwrap_err();
+        return ca::core::Err(domainError(
+            WorkspaceError::InvalidArgument, "assemble smali",
+            "line " + std::to_string(detail.line) + ": " + detail.detail));
+    }
+    if (copy->classDefs[assembled.unwrap()].classIdx != originalClass)
+        return ca::core::Err(domainError(WorkspaceError::InvalidArgument, "assemble smali",
+                                          "the replacement must keep the class descriptor"));
+
+    auto rebuilt = buildDex(*copy, assembler.options());
+    if (rebuilt.is_err())
+        return ca::core::Err(domainError(WorkspaceError::DataLoss, "rebuild DEX",
+                                          to_string(rebuilt.unwrap_err())));
+    return ca::core::Ok(std::move(rebuilt).unwrap());
+}
+
 const DexDomain::Slot* DexDomain::findClass(const std::string& uriOrInternalName) const
 {
     const auto byName = byName_.find(uriOrInternalName);
@@ -734,14 +863,14 @@ WorkspaceResult<std::vector<ClassSummary>> DexDomain::listClassSummaries() const
     return ca::core::Ok(std::move(result));
 }
 
-WorkspaceResult<std::vector<ClassInfo>> DexDomain::listClasses() const
+WorkspaceResult<std::vector<ClassInfo>> DexDomain::listClasses(bool includeMethodBodies) const
 {
     std::vector<ClassInfo> result;
     result.reserve(classOrder_.size());
     for (const std::string& name : classOrder_) {
         const Slot& slot = byName_.at(name);
-        result.push_back(
-            buildClassInfo(*dexes_[slot.dexIndex], slot.classDefIndex, dexUris_[slot.dexIndex]));
+        result.push_back(buildClassInfo(*dexes_[slot.dexIndex], slot.classDefIndex,
+                                        dexUris_[slot.dexIndex], includeMethodBodies));
     }
     return ca::core::Ok(std::move(result));
 }
@@ -871,20 +1000,12 @@ WorkspaceResult<MethodInstructions> DexDomain::methodInstructions(const std::str
             for (ca::u32 index = 0; index < body.insns.size(); ++index) {
                 const Insn& insn = body.insns[index];
                 InstructionDetailInfo row;
-                row.pc       = static_cast<ca::i32>(insn.address) * 2;   // code unit → 字节偏移
+                row.pc       = dexBytePc(insn.address);
                 row.opcode   = static_cast<ca::i32>(insn.opcode);
                 row.mnemonic = utf8(opcodeInfo(insn.opcode).name);
-                const std::string line = renderInsnLine(dex, insn);
-                // renderInsnLine 行首是助记符；操作数文本取首个空格之后。
-                const std::size_t space = line.find(' ');
-                if (space != std::string::npos) {
-                    row.operandText = utf8(line.substr(space + 1));
-                    if (resolve) row.operandComment = row.operandText.clone();
-                }
-                if (insn.payloadKind != PayloadKind::None) {
-                    row.isSwitch = insn.payloadKind == PayloadKind::PackedSwitch ||
-                                   insn.payloadKind == PayloadKind::SparseSwitch;
-                }
+                row.isPayload = insn.isPayload();
+                renderDexFlow(body.insns, insn, row);
+                renderDexOperands(dex, insn, resolve, row);
                 out.instructions.push_back(std::move(row));
             }
             return ca::core::Ok(std::move(out));
@@ -1097,118 +1218,6 @@ WorkspaceResult<std::vector<ReferenceInfo>> DexDomain::calleesOfMethod(
 }
 
 //-- 层次面 --------------------------------------------------------------------
-
-WorkspaceResult<ClassRelations> DexDomain::classRelations(const std::string& internalName) const
-{
-    ClassRelations out;
-    const Slot* slot = findClass(internalName);
-    if (slot == nullptr) return ca::core::Err(notFound("class relations", internalName));
-
-    // super 链（域内类；域外超类截断——与引擎层次图只含容器类同口径）。
-    std::set<std::string> visited{internalName};
-    std::string current = internalName;
-    while (containsClass(current)) {
-        const Slot& currentSlot = byName_.at(current);
-        DexFile& dex = *dexes_[currentSlot.dexIndex];
-        const std::string super = internalNameOfDescriptor(
-            textOf(dex.superclassDescriptor(currentSlot.classDefIndex)));
-        if (super.empty() || !containsClass(super) || !visited.insert(super).second) break;
-        out.superclasses.push_back(utf8(super));
-        current = super;
-    }
-
-    // 直接接口。
-    {
-        DexFile& dex = *dexes_[slot->dexIndex];
-        auto interfaces = dex.interfaces(slot->classDefIndex);
-        if (interfaces.is_ok()) {
-            const TypeListSpan& span = interfaces.unwrap();
-            for (ca::u32 i = 0; i < span.size; ++i) {
-                const std::string name =
-                    internalNameOfDescriptor(textOf(dex.typeDescriptor(span.at(i))));
-                if (!name.empty()) out.interfaces.push_back(utf8(name));
-            }
-        }
-    }
-
-    // 子类反向索引：super == internalName 的域内类 + 全后代闭包。
-    std::multimap<std::string, std::string> supersByClass;
-    for (const std::string& name : classOrder_) {
-        const Slot& candidate = byName_.at(name);
-        DexFile& dex = *dexes_[candidate.dexIndex];
-        const std::string super = internalNameOfDescriptor(
-            textOf(dex.superclassDescriptor(candidate.classDefIndex)));
-        if (!super.empty()) supersByClass.emplace(super, name);
-    }
-    const auto range = supersByClass.equal_range(internalName);
-    for (auto it = range.first; it != range.second; ++it) {
-        out.directSubclasses.push_back(utf8(it->second));
-    }
-    // 全后代：BFS（域内环防御——非法 super 环截断）。
-    std::vector<std::string> queue;
-    for (auto it = range.first; it != range.second; ++it) queue.push_back(it->second);
-    std::set<std::string> subclassSeen(queue.begin(), queue.end());
-    for (ca::usize head = 0; head < queue.size(); ++head) {
-        const std::string& name = queue[head];
-        out.allSubclasses.push_back(utf8(name));
-        const auto children = supersByClass.equal_range(name);
-        for (auto it = children.first; it != children.second; ++it) {
-            if (subclassSeen.insert(it->second).second) queue.push_back(it->second);
-        }
-    }
-
-    // 实现者：接口闭包含该接口的域内类 + 其全部后代。
-    if (containsClass(internalName)) {
-        for (const std::string& name : classOrder_) {
-            const Slot& candidate = byName_.at(name);
-            DexFile& dex = *dexes_[candidate.dexIndex];
-            // 接口闭包 = 声明接口 + 各自的 super 链接口（域内截断，环防御）。
-            std::set<std::string> closure;
-            std::vector<std::string> pending;
-            auto interfaces = dex.interfaces(candidate.classDefIndex);
-            if (interfaces.is_ok()) {
-                const TypeListSpan& span = interfaces.unwrap();
-                for (ca::u32 i = 0; i < span.size; ++i) {
-                    pending.push_back(
-                        internalNameOfDescriptor(textOf(dex.typeDescriptor(span.at(i)))));
-                }
-            }
-            ca::usize head = 0;
-            while (head < pending.size()) {
-                const std::string iface = pending[head++];
-                if (iface.empty() || !closure.insert(iface).second) continue;
-                if (!containsClass(iface)) continue;
-                const Slot& ifaceSlot = byName_.at(iface);
-                DexFile& ifaceDex = *dexes_[ifaceSlot.dexIndex];
-                auto ifaceIfaces = ifaceDex.interfaces(ifaceSlot.classDefIndex);
-                if (ifaceIfaces.is_err()) continue;
-                const TypeListSpan& span = ifaceIfaces.unwrap();
-                for (ca::u32 i = 0; i < span.size; ++i) {
-                    pending.push_back(
-                        internalNameOfDescriptor(textOf(ifaceDex.typeDescriptor(span.at(i)))));
-                }
-            }
-            if (closure.find(internalName) == closure.end()) continue;
-            out.implementors.push_back(utf8(name));
-            // 实现者的全部后代并入（mjbase 接口实现者闭包口径）。
-            const auto children = supersByClass.equal_range(name);
-            std::vector<std::string> descendantQueue;
-            for (auto it = children.first; it != children.second; ++it) descendantQueue.push_back(it->second);
-            std::set<std::string> descendantSeen(descendantQueue.begin(), descendantQueue.end());
-            for (ca::usize head2 = 0; head2 < descendantQueue.size(); ++head2) {
-                out.implementors.push_back(utf8(descendantQueue[head2]));
-                const auto grand = supersByClass.equal_range(descendantQueue[head2]);
-                for (auto it = grand.first; it != grand.second; ++it) {
-                    if (descendantSeen.insert(it->second).second) descendantQueue.push_back(it->second);
-                }
-            }
-        }
-    }
-
-    // 来源标注：查询起点（dex 会话无 supporting 容器）。
-    out.sources.push_back(ClassRelationSource{utf8(internalName), false, Utf8String{}});
-    return ca::core::Ok(std::move(out));
-}
 
 WorkspaceResult<std::vector<MethodOverrideInfo>> DexDomain::overridesOfMethod(
     const std::string& owner, const std::string& name, const std::string& descriptor) const

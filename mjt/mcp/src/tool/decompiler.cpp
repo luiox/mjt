@@ -19,6 +19,7 @@
 #include "mjbase/project/project_store.hpp"
 
 #include "workspace/analysis_ops.hpp"
+#include "workspace/dex_domain.hpp"
 
 namespace mjt::mcp {
 
@@ -203,12 +204,7 @@ std::optional<Json> McpToolService::callDecompilerTool(
         return toolError("decompile failed", &status);
     }
     if (name == "decompile") {
-        //dex 会话守卫：decompile 管线按 JVM class 字节建面（apk/dex 只读
-        //分析原型），先于寻址/缓存/异步面给人读错误。
-        if (session.workspace->isDexBacked()) {
-            return toolError(
-                "decompile is not supported for apk/dex input (read-only analysis prototype)");
-        }
+        const auto* dex = current->dexDomain();
         //decompile 的执行体（action=decompile；poll/cancel/release 是 session
         //工具，见 session.cpp）：class 或方法三元组二选一寻址。
         const auto action = arguments.value("action", std::string{"decompile"});
@@ -219,9 +215,15 @@ std::optional<Json> McpToolService::callDecompilerTool(
         {
             //decompilerSettings_ 默认值由服务持有；执行体不持状态锁，此处短持读取。
             std::lock_guard<std::mutex> lock(mutex_);
-            const auto optionsStatus = parseDecompilerOptions(arguments, decompilerSettings_, options);
+            auto settings = decompilerSettings_;
+            if (dex) settings.backend = "jadx";
+            const auto optionsStatus = parseDecompilerOptions(arguments, settings, options);
             if (optionsStatus.is_err()) return toolError("invalid decompiler options", &optionsStatus);
         }
+        if (dex && options.kind != DecompilerKind::Jadx)
+            return toolError("APK/DEX classes require the jadx backend");
+        if (!dex && options.kind == DecompilerKind::Jadx)
+            return toolError("the jadx backend requires an APK or DEX project");
 
         //name 槽：class/owner/name 同查询面口径——Ref 全量解析，
         //raw 全量核表（反编译目标必须是 jar 内已定义类，核表零漂移）。
@@ -234,14 +236,16 @@ std::optional<Json> McpToolService::callDecompilerTool(
             std::string descriptor;
             if (!slot::resolveMethodSlots(slots, arguments, true, owner, member, descriptor, slotError))
                 return slotError;
-            auto methodInfo = workspace::methodInfo(*working, utf8Ref(owner), utf8Ref(member), utf8Ref(descriptor), current->lvtJarFallbackFlag());
+            auto methodInfo = dex ? dex->methodInfo(owner, member, descriptor)
+                                  : workspace::methodInfo(*working, utf8Ref(owner), utf8Ref(member),
+                                                          utf8Ref(descriptor), current->lvtJarFallbackFlag());
             if (methodInfo.is_err()) {
                 const auto err = shared::toCaStatus(methodInfo.unwrap_err());
                 return toolError("get method source failed", &err);
             }
             className = owner;
         }
-        else if (!slot::resolveClassArgument(*current, arguments, "class", true, className, slotError)) {
+        else if (!slot::resolveClassArgument(*current, arguments, "class", !dex, className, slotError)) {
             return slotError;
         }
         if (className.empty()) return toolError("class is required");
@@ -260,7 +264,9 @@ std::optional<Json> McpToolService::callDecompilerTool(
                 if (jobs_.size() >= kMaximumRetainedJobs)
                     return toolError("too many retained jobs; release completed jobs before starting another");
             }
-            auto classInfo = workspace::classInfo(*working, utf8Ref(className), current->lvtJarFallbackFlag());
+            auto classInfo = dex ? dex->classInfo(className)
+                                 : workspace::classInfo(*working, utf8Ref(className),
+                                                        current->lvtJarFallbackFlag());
             if (classInfo.is_err()) {
                 const auto err = shared::toCaStatus(classInfo.unwrap_err());
                 return toolError("get decompile class failed", &err);
@@ -272,14 +278,14 @@ std::optional<Json> McpToolService::callDecompilerTool(
             auto temporary = createDecompilerTemporaryDirectory();
             if (temporary.is_err()) { const auto err = temporary.unwrap_err(); return toolError("create decompiler snapshot failed", &err); }
             const auto snapshotDirectory = std::move(temporary).unwrap();
-            const auto snapshot = snapshotDirectory / "workspace.jar";
-            const auto exportStatus = current->exportArtifact(utf8Ref(snapshot.string()));
-            if (exportStatus.is_err()) {
+            auto prepared = snapshotDecompilerInput(*current, snapshotDirectory, internalName);
+            if (prepared.is_err()) {
                 std::error_code cleanupError;
                 fs::remove_all(snapshotDirectory, cleanupError);
-                const auto err = shared::toCaStatus(exportStatus.unwrap_err());
+                const auto err = prepared.unwrap_err();
                 return toolError("snapshot decompiler workspace failed", &err);
             }
+            const auto snapshot = std::move(prepared).unwrap();
 
             auto job = std::make_shared<JobState>();
             job->projectId      = arguments.value("project_id", std::string{});

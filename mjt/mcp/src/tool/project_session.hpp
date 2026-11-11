@@ -171,12 +171,6 @@ ca::Status flushAnalysisCache(ProjectSession& session);
 const ProjectSession::MountedContainerRecord* findMountedContainer(
     const ProjectSession& session, const std::string& id);
 
-///@brief 挂载栈指定角色的类清点：类内部名 → 容器 id（visitRole 扫描 + 类名
-///        探针；畸形类跳过）。角色过滤查询的站点归属面；容器内容不可变，
-///        每次调用重建（挂载集合量级小）。
-std::map<std::string, std::string> mountedClassInventory(
-    const ProjectSession& session, mjbase::model::ContainerRole role);
-
 ///@brief ProjectStoreError → ca::Status（kind 决定码；供 MCP 工具面统一转换）。
 ca::Status projectStoreStatus(mjbase::project::ProjectStoreError error, const char* operation);
 

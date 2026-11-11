@@ -276,6 +276,7 @@ std::optional<BranchKeys> branchKeysFor(const std::string& tool,
             //即用；重载歧义/名字不存在报错），降级为可选定位键。
             branch.selectors = keys({"owner", "name"});
             branch.optionalSelectors = keys({"descriptor"});
+            if (kind == "bytecode") branch.supported = keys({"resolved"});
         }
         else if (kind != "manifest") return std::nullopt;
         return branch;

@@ -135,6 +135,22 @@ TEST(McpServerTest, PreservesParityFixtureEdgesAcrossQueriesTransactionsAndExpor
                            }),
               payload(frames).at("instructions").end());
 
+    EXPECT_FALSE(payload(frames).at("instructions").front().contains("pc"));
+    const auto flow = call(server,
+                           "class_query",
+                           {{"project_id", projectId},
+                            {"kind", "bytecode"},
+                            {"owner", "mcp/parity/FrameSubject"},
+                            {"name", "choose"},
+                            {"descriptor", "(Z)I"},
+                            {"resolved", true}});
+    ASSERT_FALSE(flow.at("result").at("isError")) << flow.dump();
+    const auto& flowRows = payload(flow).at("instructions");
+    ASSERT_EQ(6U, flowRows.size());
+    EXPECT_EQ(0, flowRows.at(0).at("pc"));
+    EXPECT_EQ(flowRows.at(4).at("pc"), flowRows.at(1).at("branch_target_pc"));
+    EXPECT_EQ(flowRows.at(5).at("pc"), flowRows.at(3).at("branch_target_pc"));
+
     const auto reflected = call(server,
                                 "xref_query",
                                 {{"project_id", projectId},

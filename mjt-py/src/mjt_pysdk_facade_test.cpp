@@ -117,6 +117,29 @@ TEST(FacadeContainer, OpenBuildsSortedIndex)
     reg.close(s.handle);
 }
 
+TEST(FacadeContainer, OpensDexWithSmaliAndDatabaseQueries)
+{
+    auto& reg = FacadeRegistry::instance();
+    auto& s = reg.create();
+    const auto fixture = fs::current_path() / "test_resource" / "dex" / "hello_refs.dex";
+    facadeImportJar(s, fixture.u8string());
+    EXPECT_EQ(3u, facadeClassNames(s).size());
+    const std::string owner = "com/mjt/dexfix/Subject";
+    EXPECT_EQ("com/mjt/dexfix/Base", facadeClassInfo(s, owner).superName);
+    EXPECT_TRUE(facadeClassJasm(s, owner).smali);
+
+    SearchRequest request;
+    request.kind = "strings";
+    request.query = "hook-fired";
+    request.matchMode = "contains";
+    request.owner = owner;
+    const auto hits = facadeSearch(s, request);
+    EXPECT_TRUE(std::any_of(hits.begin(), hits.end(), [&](const SearchRow& hit) {
+        return hit.owner == owner && hit.value == "hook-fired";
+    }));
+    reg.close(s.handle);
+}
+
 TEST(FacadeContainer, LoadClassFileAddsClass)
 {
     // v2 缺口回归位：loose .class 入容器 → 新增类全链（导出 → 重开可见）。

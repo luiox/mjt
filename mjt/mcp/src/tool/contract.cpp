@@ -309,7 +309,7 @@ Json toolsList()
                                                           {"minimum", 1},
                                                           {"maximum", kMaximumDecompilerSourceBytes}}}};
     Json decompiler = decompilerRuntime;
-    decompiler["decompiler"] = {{"type", "string"}, {"enum", {"cfr", "vineflower", "jcdc"}}};
+    decompiler["decompiler"] = {{"type", "string"}, {"enum", {"cfr", "vineflower", "jcdc", "jadx"}}};
     decompiler["async"] = {{"type", "boolean"}};
     const Json pipeline = {{"pipeline", {{"type", "string"}}},
                            {"passes", {{"type", "array"}, {"items", {{"type", "string"}}}}},
@@ -346,10 +346,10 @@ Json toolsList()
     //工程会话面（RFC 0001 §8.1）：11 个粗粒度工具，同版本切换取代全部旧名。
     result.push_back(tool(
         "project_open",
-        "Open a JAR in a persistent analysis project; creates or reopens the project bundle "
+        "Open a JAR, APK, DEX or class file in an analysis project. Creates or reopens the bundle "
         "and takes its single-writer store lock.",
         with({{"path",
-               {{"type", "string"}, {"description", "Filesystem path of the primary JAR to open."}}},
+               {{"type", "string"}, {"description", "Filesystem path of the primary input."}}},
               {"project_dir",
                {{"type", "string"},
                 {"description",
@@ -387,7 +387,7 @@ Json toolsList()
            {"description",
             "Container role; primary is rejected (bound by project_open), support/library/"
             "runtime are mountable."}}},
-         {"path", {{"type", "string"}, {"description", "Mount only: filesystem path of the container JAR."}}},
+         {"path", {{"type", "string"}, {"description", "Mount only: path to a JAR, APK or DEX."}}},
          {"support_id", {{"type", "string"}, {"description", "Detach only: stable container id from project_info."}}}}));
     result.push_back(projectTool(
         "class_query",
@@ -400,8 +400,9 @@ Json toolsList()
         "descriptors, absent names are rejected). "
         "cursor/offset/limit apply to kind=list (page), bytes and resource_bytes (chunk); "
         "page_size/fields apply to kind=list only. "
-        "instructions[] node_type is a coarse semantic label; operands, jump targets and "
-        "line numbers are authoritative in the jasm text.",
+        "Bytecode includes structured operands and byte-offset branch targets for DEX. "
+        "Pass resolved=true to include these details for JVM bytecode as well. "
+        "JVM bytecode responses also include method Jasm when available.",
         with(with(pagination,
              {{"kind",
                {{"type", "string"},
@@ -420,6 +421,10 @@ Json toolsList()
                 {"description",
                  "Required by kind=method|bytecode|method_jasm: host class internal name. "
                  "Other kinds reject it."}}},
+              {"resolved",
+               {{"type", "boolean"},
+                {"description", "Bytecode only. Include resolved operand comments and byte PCs, "
+                                "branch targets and switch cases."}}},
               {"name",
                {{"type", "string"},
                 {"description",
@@ -600,7 +605,8 @@ Json toolsList()
         {"kind"}));
     result.push_back(projectTool(
         "decompile",
-        "Decompile one class or the class containing one exact method; async runs return a "
+        "Decompile one class or the class containing one exact method. APK and DEX use JADX "
+        "by default. Async runs return a "
         "job_id polled with action=poll, cancelled with action=cancel and released with "
         "action=release.",
         with(decompiler,
@@ -686,14 +692,17 @@ Json toolsList()
     result.push_back(projectTool(
         "edit_apply",
         "Single edit entry point: structured ClassMutation, Jasm or unified diff, class byte "
-        "replacement, optimization pipeline, rename or mapping; dry_run previews without "
+        "replacement, optimization pipeline, rename or mapping. For smali, supply class, source "
+        "and a new .dex output path. dry_run previews without "
         "committing and expected_revision guards optimistic concurrency.",
         with(mutationOptions,
              {{"kind",
                {{"type", "string"},
                 {"enum",
                  {"structured", "jasm", "jasm_diff", "method_jasm", "method_jasm_diff",
-                  "class_bytes", "pipeline", "rename", "mapping"}}}},
+                  "class_bytes", "pipeline", "rename", "mapping", "smali"}}}},
+              {"class", {{"type", "string"}}},
+              {"path", {{"type", "string"}}},
               {"class_uri", {{"type", "string"}}},
               {"mutation_kind", structuredPatch.at("mutation_kind")},
               {"set", structuredPatch.at("set")},

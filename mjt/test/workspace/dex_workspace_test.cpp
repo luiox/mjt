@@ -18,6 +18,7 @@
 #include "workspace/analysis_ingest.hpp"
 #include "workspace/analysis_ops.hpp"
 #include "workspace/container_io.hpp"
+#include "workspace/constant_scan.hpp"
 #include "workspace/edit_command.hpp"
 #include "workspace/jar_ops.hpp"
 #include "workspace/workspace.hpp"
@@ -55,13 +56,26 @@ std::vector<ca::u8> readBytes(const std::filesystem::path& path)
                                std::istreambuf_iterator<char>());
 }
 
-/// @brief apk fixture：两个 dex + 一个资源条目（资源串面验证用）。
+std::vector<ca::u8> binaryManifest()
+{
+    // Android ResXMLTree header followed by a UTF-16 ResStringPool containing U+5E94.
+    return {
+        3, 0, 8, 0, 48, 0, 0, 0,
+        1, 0, 28, 0, 40, 0, 0, 0,
+        1, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 32, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 1, 0, 0x94, 0x5e, 0, 0, 0, 0,
+    };
+}
+
+/// @brief APK fixture with two DEX units, a binary manifest and a text resource.
 std::filesystem::path writeFixtureApk()
 {
     const auto path = test::getTempOutPath("mjt_dex_fixture.apk");
     test::writeRawZip(path, {
         {"classes.dex", readBytes(dexResource("hello_refs.dex"))},
         {"classes2.dex", readBytes(dexResource("hello_extra.dex"))},
+        {"AndroidManifest.xml", binaryManifest()},
         {"res/values.txt", std::vector<ca::u8>({'m', 'j', 't', '-', 'd', 'e', 'x', '-'})},
     });
     return path;
@@ -145,6 +159,51 @@ TEST(MjDexWorkspaceTest, OpensRawDexAndListsClassFacts)
     EXPECT_TRUE(hasStaticValue);
 }
 
+TEST(MjDexWorkspaceTest, ReadsUtf16AndroidManifestStringPool)
+{
+    auto xml = binaryManifest();
+    auto strings = androidManifestStringRecords(xml);
+    ASSERT_EQ(1u, strings.size());
+    EXPECT_EQ("\xe5\xba\x94", strings.front().to_std_string());
+    xml.pop_back();
+    EXPECT_TRUE(androidManifestStringRecords(xml).empty());
+}
+
+TEST(MjDexWorkspaceTest, ReassemblesOneClassWithoutChangingTheOriginalDex)
+{
+    WorkspaceBase workspace;
+    ASSERT_FALSE(workspace.open(refOf(dexResource("hello_refs.dex").string())).is_err());
+    const auto* dex = workspace.dexDomain();
+    ASSERT_NE(nullptr, dex);
+    const std::string name = "com/mjt/dexfix/Base";
+    auto disassembled = dex->smaliText(name);
+    ASSERT_FALSE(disassembled.is_err());
+    const auto original = std::move(disassembled).unwrap();
+    auto edited = original;
+    const auto pos = edited.find("dexfix-base");
+    ASSERT_NE(std::string::npos, pos);
+    edited.replace(pos, std::string_view("dexfix-base").size(), "edited-base");
+    auto rebuilt = dex->assembleSmali(name, edited);
+    ASSERT_FALSE(rebuilt.is_err()) << rebuilt.unwrap_err().message;
+    const auto bytes = std::move(rebuilt).unwrap();
+    const auto path = test::getTempOutPath("mjt_reassembled.dex");
+    std::error_code cleanup;
+    std::filesystem::remove(path, cleanup);
+    const auto written = writeDerivedDex(workspace.sourcePath().to_std_string(), path.u8string(),
+                                         bytes);
+    ASSERT_FALSE(written.is_err()) << written.message;
+    EXPECT_TRUE(writeDerivedDex(workspace.sourcePath().to_std_string(), path.u8string(),
+                                bytes).is_err());
+    WorkspaceBase reopened;
+    ASSERT_FALSE(reopened.open(refOf(path.u8string())).is_err());
+    const auto* output = reopened.dexDomain();
+    ASSERT_NE(nullptr, output);
+    EXPECT_EQ(dex->classCount(), output->classCount());
+    EXPECT_EQ(edited, output->smaliText(name).unwrap());
+    EXPECT_EQ(original, dex->smaliText(name).unwrap());
+    EXPECT_TRUE(dex->assembleSmali("com/mjt/dexfix/Subject", edited).is_err());
+}
+
 TEST(MjDexWorkspaceTest, OpensApkAndIngestsIntoAnalysisDb)
 {
     const auto apkPath = writeFixtureApk();
@@ -162,6 +221,13 @@ TEST(MjDexWorkspaceTest, OpensApkAndIngestsIntoAnalysisDb)
     ASSERT_FALSE(ingested.is_err()) << ingested.unwrap_err().message;
     const auto stats = std::move(ingested).unwrap();
     EXPECT_EQ(4u, stats.classes);
+    auto manifestStrings = db.searchResourceStringsPaged(
+        {Utf8String::from_cstr("\xe5\xba\x94"), mjbase::project::DbTextMatchKind::Exact, true},
+        10, 0);
+    ASSERT_FALSE(manifestStrings.is_err());
+    const auto manifestPage = std::move(manifestStrings).unwrap();
+    ASSERT_EQ(1u, manifestPage.total);
+    EXPECT_EQ("AndroidManifest.xml", manifestPage.rows.front().entryPath.to_std_string());
 
     // 类事实：层次闭包（Subject → Base → Object；Hook 实现者含 Subject）。
     auto found = db.findClass(refOf("com/mjt/dexfix/Subject"));
@@ -240,8 +306,9 @@ TEST(MjDexWorkspaceTest, AnswersEngineXrefAndHierarchySurfaces)
     auto relations = workspace.classRelations(refOf("com/mjt/dexfix/Subject"));
     ASSERT_FALSE(relations.is_err());
     const auto closure = std::move(relations).unwrap();
-    ASSERT_EQ(1u, closure.superclasses.size());
+    ASSERT_EQ(2u, closure.superclasses.size());
     EXPECT_EQ("com/mjt/dexfix/Base", closure.superclasses[0].to_std_string());
+    EXPECT_EQ("java/lang/Object", closure.superclasses[1].to_std_string());
     ASSERT_EQ(1u, closure.interfaces.size());
     EXPECT_EQ("com/mjt/dexfix/Hook", closure.interfaces[0].to_std_string());
     // Subject 是叶：无子类、无人实现它。
@@ -342,11 +409,10 @@ TEST(MjDexWorkspaceTest, GuardsWriteAndUnsupportedSurfaces)
     auto exported = workspace.exportArtifact(refOf(test::getTempOutPath("mjt_dex_out.apk").string()));
     EXPECT_TRUE(exported.is_err());
     EXPECT_FALSE(exported.unwrap_err().message.empty());
-    //addSupportingRole 无 dex 守卫：apk 按 jar 导入可成功挂在册（角色标签
-    //只是记录），但 dex 域查询面不并入支撑容器——挂在册、事实不并（只读
-    //原型边界，PR follow-up 处置）。
+    // APK support mounts retain their DEX domain. The primary class wins on duplicates.
     auto supporting = workspace.addSupportingRole(refOf(apkPath.string()), refOf("support"));
     ASSERT_FALSE(supporting.is_err()) << supporting.unwrap_err().message;
+    EXPECT_EQ(4u, std::move(supporting).unwrap().classCount);
     EXPECT_EQ(1u, workspace.supportingResources().size());
     EXPECT_EQ(4u, workspace.dexDomain()->classCount());
     //readClassBytes 只认 .class 条目：apk 容器的 dex 条目寻址自然 NotFound。

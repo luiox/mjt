@@ -49,6 +49,10 @@ ca::Status parseDecompilerOptions(const Json& arguments,
                                   DecompilerOptions& options);
 Json decompilerSettingsJson(const DecompilerSessionSettings& settings);
 Json decompilerAvailabilityList(const DecompilerSessionSettings& settings);
+
+ca::StatusOr<std::filesystem::path> snapshotDecompilerInput(
+    mjt::workspace::WorkspaceBase& workspace, const std::filesystem::path& directory,
+    const std::string& internalName);
 ca::StatusOr<DecompiledSource> decompileSnapshotClass(
     const std::filesystem::path& snapshot,
     const std::string& internalName,

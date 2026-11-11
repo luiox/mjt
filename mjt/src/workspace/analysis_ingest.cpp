@@ -162,8 +162,11 @@ ca::Result<AnalysisIngestStats, AnalysisIngestError> ingestIntoAnalysisDb(
         // 容器，run 扫描是噪声）。entry_id 在登记后回填。
         if (resource.type.to_std_string() != "class" &&
             resource.type.to_std_string() != "dex") {
-            resourceValues.emplace(resource.uri.to_std_string(),
-                                   resourceStringRecords(bytes));
+            auto uri = resource.uri.to_std_string();
+            auto strings = workspace.format() == ContainerFormat::Apk && uri == "AndroidManifest.xml"
+                               ? androidManifestStringRecords(bytes)
+                               : resourceStringRecords(bytes);
+            resourceValues.emplace(std::move(uri), std::move(strings));
         }
     }
 

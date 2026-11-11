@@ -583,6 +583,66 @@ ImportedArtifact::ImportedArtifact()                        = default;
 ImportedArtifact::ImportedArtifact(ImportedArtifact&&)      = default;
 ImportedArtifact& ImportedArtifact::operator=(ImportedArtifact&&) = default;
 
+WorkspaceResult<ImportedArtifact> importSupportingContainer(const std::string& path)
+{
+    const auto format = formatForPath(path);
+    if (format == ContainerFormat::Apk || format == ContainerFormat::Dex) {
+        const auto* entry = ContainerIoRegistry::instance().find(format);
+        if (!entry || !entry->import)
+            return ca::core::Err(error(WorkspaceError::Unimplemented, "mount container",
+                                       "no importer for this format"));
+        return entry->import(path, utf8Ref(path), {});
+    }
+    ImportedArtifact artifact;
+    artifact.working = std::make_unique<model::ResourceContainer>();
+    auto imported = model::ResourceHelper::importFromJar(*artifact.working, path);
+    if (imported.is_err())
+        return ca::core::Err(modelFailure("mount container", std::move(imported).unwrap_err()));
+    return ca::core::Ok(std::move(artifact));
+}
+
+WorkspaceErrorInfo writeDerivedDex(const std::string& sourcePath, const std::string& outputPath,
+                                   const std::vector<ca::u8>& bytes)
+{
+    namespace fs = std::filesystem;
+    constexpr const char* operation = "write DEX";
+    if (formatForPath(outputPath) != ContainerFormat::Dex)
+        return error(WorkspaceError::InvalidArgument, operation, "output path must end in .dex");
+    auto output = validateExportDestination(sourcePath, outputPath, operation, "input artifact");
+    if (output.is_err()) return std::move(output).unwrap_err();
+    const auto destination = std::move(output).unwrap();
+    auto staging = destination;
+    staging += ".mjt-tmp";
+    std::error_code ec;
+    if (!fs::create_directory(staging, ec))
+        return error(WorkspaceError::Internal, operation,
+                     ec ? ec.message() : "output is already being written");
+
+    const auto temporary = staging / "output.dex";
+    const auto cleanup = [&] {
+        std::error_code ignored;
+        fs::remove(temporary, ignored);
+        fs::remove(staging, ignored);
+    };
+    std::ofstream stream(temporary, std::ios::binary);
+    stream.write(reinterpret_cast<const char*>(bytes.data()),
+                 static_cast<std::streamsize>(bytes.size()));
+    stream.close();
+    if (!stream) {
+        cleanup();
+        return error(WorkspaceError::Internal, operation, "could not write temporary DEX");
+    }
+    // A hard link publishes the completed file atomically and fails if another writer won.
+    fs::create_hard_link(temporary, destination, ec);
+    cleanup();
+    if (ec)
+        return error(ec == std::errc::file_exists ? WorkspaceError::AlreadyExists
+                                                   : WorkspaceError::Internal,
+                     operation, ec.message());
+    return WorkspaceErrorInfo{};
+}
+
+
 ContainerIoRegistry& ContainerIoRegistry::instance()
 {
     static ContainerIoRegistry registry;

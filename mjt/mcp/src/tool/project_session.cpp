@@ -5,13 +5,10 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
-#include <map>
 #include <system_error>
 #include <vector>
 
 #include "libca/str/utf8_string.hpp"
-
-#include "jbc/core/reader.hpp"
 
 #include "mjbase/mapping/shadow_alias_format.hpp"
 #include "mjbase/project/analysis_db.hpp"
@@ -537,30 +534,6 @@ const ProjectSession::MountedContainerRecord* findMountedContainer(
         if (record.id == id) return &record;
     }
     return nullptr;
-}
-
-std::map<std::string, std::string> mountedClassInventory(const ProjectSession&    session,
-                                                         mjbase::model::ContainerRole role)
-{
-    std::map<std::string, std::string> inventory;
-    if (!session.containerStack) return inventory;
-    //直接遍历挂载记录（visitRole 的访问器首参是条目 URI，不带容器 id）。
-    for (const auto& mounted : session.containerStack->containers()) {
-        if (mounted.role != role) continue;
-        const std::string containerId = mounted.id.to_std_string();
-        mounted.container->visitResources(
-            [&](std::string_view, const mjbase::model::IResource& resource) {
-                const auto* classResource = ca::core::tag_cast::dyn_cast<
-                    const mjbase::model::ClassResource>(&resource);
-                if (classResource == nullptr) return;
-                const auto& bytes = classResource->get();
-                auto parsed = jbc::core::readClass(jbc::core::ByteView(bytes));
-                if (parsed.is_err()) return;
-                const auto name = std::string{std::move(parsed).unwrap().file->thisName()};
-                if (!name.empty()) inventory.emplace(name, containerId);
-            });
-    }
-    return inventory;
 }
 
 }   //namespace mjt::mcp

@@ -1,7 +1,7 @@
 # APK/DEX 输入支持（原型）——实施计划
 
-状态：原型实施中（分支 `feat/apk-dex-support`，基于工作区重构后的 main——
-PR #99 的 ContainerIoRegistry 格式注册表架构）。本文档是实施计划与设计裁决记录。
+本文记录 PR #100 的只读原型设计和后续接口。原型基于 PR #99 的
+ContainerIoRegistry 格式注册表。
 
 ## 1. 背景与目标
 
@@ -42,13 +42,31 @@ mjt 的主制品打开面（`WorkspaceBase::open`）按扩展名路由 Container
   桥与 MCP class_list/class_get 走 `dexDomain()`。
 - 常量事实面：const-string → cp_strings；const 字面量 + 静态初值 → number_literals。
 
-不做（follow-up 清单）：
+原型范围之外：
 
 - dex 编辑（smali apply / edit_apply 对 dex 会话明确报错）、decompile 对 dex 类报错。
 - apk 导出（`project_export` 对 dex 会话报错——避免产出破坏 v2+ 签名的 zip）。
 - AXML 资源串（AndroidManifest.xml 二进制解析）、pysdk apk/dex 入口、
   jar+apk 混合挂载（`container_mount` 对 dex 会话报错）。
 - invoke-custom/call_site/method_handle 引用建模（refs 扫描跳过，计为未建模）。
+
+### 2.1 Follow-up 接口
+
+- `edit_apply kind=smali` 接收类内部名 `class`、完整 Smali `source` 和新的
+  `.dex` 输出 `path`。`dry_run=true` 只汇编并返回字节数。APK 中的类会输出
+  其所在的 DEX 单元。用 `project_open` 打开产物可继续查询。
+- APK/DEX 项目的 MCP `decompile` 默认选择 JADX，支持同步和异步调用。传入 JADX
+  CLI 的可执行 fat JAR 路径 `decompiler_jar`，或设置 `MJT_JADX_JAR`。JADX
+  用于生成 Dalvik 类的 Java 源码，构建 mjt 时无需安装。反编译使用目标类所在的
+  DEX 单元。
+- APK 的 `AndroidManifest.xml` 二进制字符串池按 UTF-8 或 UTF-16 解码，结果可用
+  `search kind=strings` 查询。
+- Python SDK 提供 `open_apk(path)` 和 `open_dex(path)`。可查询类、成员、
+  Smali 文本及分析库。
+- `container_mount` 接受 JAR、APK 和 DEX。按 `library` 或 `runtime` 角色可
+  查询挂载内容，传入引用查询的 `role` 可筛选来源。引擎层次图包含挂载类，
+  DEX 的超类链保留首个未登记的超类。
+- libdex 定版后，再将锁定版本追加到 luiox-repo 并迁移包声明。
 
 ## 3. 架构
 
@@ -98,16 +116,15 @@ dex 文件一个）+ 类索引（internal_name → {dexIdx, classDefIdx}）+ 引
   `dexImport`：`dex\n` magic 前置定性 → 容器单条目（uri = 文件路径）+ DexDomain。
   两个 importer 产物经 `ImportedArtifact.dexDomain` 槽上抛，`open` 尾部采纳进
   `dexDomain_`（jvm 格式恒空）。
-- WorkspaceBase 仍保留的查询成员前置分支（`dexDomain_` 非空走 DexDomain）：
+- WorkspaceBase 查询成员的 DEX 分支：
   fieldInfo/constantPool/methodInstructions/searchInstructions/xrefsTo*/
-  calleesOfMethod/classRelations/overridesOfMethod/referenceScan。
+  calleesOfMethod/overridesOfMethod/referenceScan。classRelations 使用 JVM 与 DEX
+  共用的层次图。
 - 类事实面已退役为 analysis_ops 自由函数（listClasses/classInfo 只认 jbc 条目），
   调用侧分支：ingest 桥与 MCP class_list/class_get 走 `dexDomain()->listClasses()/
   classInfo()`。
-- 守卫面：apk/dex 格式无导出行——`exportArtifact` 对空 exportFn 报错（注册表
-  既有路径）；编辑族（EditCommand/applyEdit 单入口）与 decompile、container_mount
-  由 MCP 层 `isDexBacked()` 守卫给人读错误；jbc-only 面（class bytes、
-  method_jasm）对 dex 类名自然 NotFound。
+- APK/DEX 的 `exportArtifact` 仍无注册表导出行。Smali 写入使用专用的 DEX 输出
+  接口（见 §2.1）。class bytes、method_jasm 等操作要求 JVM 类。
 
 ### 3.4 ingest 桥 dex 分支（`analysis_ingest.cpp`）
 
@@ -127,8 +144,7 @@ dex 文件一个）+ 类索引（internal_name → {dexIdx, classDefIdx}）+ 引
   `dex_units`（dex 条目 uri 清单）与 `dex_version`。
 - `class_query kind=list/class`：dex 会话走 `dexDomain()`；`kind=jasm`：dex 类走
   `smaliText`，响应附 `format:"smali"`。
-- `decompile` / `edit_apply` / `container_mount`：dex 会话明确报错（xref_query 折叠
-  的只读分支 references/relations/overrides 放行）。
+- MCP 的 DEX 反编译、Smali 写入和混合挂载见 §2.1。
 - CLI：`open` 扩展名路由天然接受 apk/dex，info/classes/xref/subs 直接可用；
   strings/disasm/decompile/jar fix 对 dex 输入给出明确错误或空结果
   （jbc 解码零命中，语义为「无 class」）。
@@ -145,7 +161,7 @@ dex 文件一个）+ 类索引（internal_name → {dexIdx, classDefIdx}）+ 引
 | refs | insn 扫描（§3.2 语义表）；文本分支直接灌（未登记目标走 target_class/name/desc 文本列） |
 | cp_strings | string_ids（facet：Name/Descriptor/ClassRef 预分同 JVM 口径） |
 | number_literals | 静态初值（member_id=0 哨兵）+ const 字面量（逐方法切片） |
-| resources | apk 非 dex 条目可打印串（constant_scan 同款规则；dex 条目跳过） |
+| resources | APK 的 AXML 字符串池及其他资源的可打印串（DEX 条目跳过） |
 
 ## 5. 测试策略
 

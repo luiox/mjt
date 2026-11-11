@@ -264,9 +264,12 @@ InstructionDetailInfo renderInstruction(const jbc::core::ClassFile& cf,
         }
         break;
     }
-    case jbc::core::Shape::None:
     case jbc::core::Shape::Branch2:
-    case jbc::core::Shape::Branch4: break;
+    case jbc::core::Shape::Branch4:
+        info.branchTargetPc = static_cast<ca::i32>(insn.pc + static_cast<ca::u32>(insn.t));
+        info.operandText = utf8(std::to_string(info.branchTargetPc));
+        break;
+    case jbc::core::Shape::None: break;
     }
     return info;
 }
@@ -491,11 +494,10 @@ WorkspaceResult<SupportingResourceInfo> WorkspaceBase::addSupportingRole(
         }
     }
     try {
-        auto container = std::make_shared<model::ResourceContainer>();
-        auto imported  = model::ResourceHelper::importFromJar(*container, normalPath);
-        if (imported.is_err())
-            return ca::core::Err(
-                modelFailure("add supporting JAR", std::move(imported).unwrap_err()));
+        auto imported = importSupportingContainer(normalPath);
+        if (imported.is_err()) return ca::core::Err(std::move(imported).unwrap_err());
+        auto artifact = std::move(imported).unwrap();
+        auto& container = artifact.working;
         auto fingerprint = fingerprintContainer(*container);
         if (fingerprint.is_err()) return ca::core::Err(std::move(fingerprint).unwrap_err());
         const auto fingerprintText = std::move(fingerprint).unwrap();
@@ -515,6 +517,7 @@ WorkspaceResult<SupportingResourceInfo> WorkspaceBase::addSupportingRole(
         container->visitResources([&](std::string_view, const model::IResource& resource) {
             if (resource.getType() == model::ResourceType::Class) ++info.classCount;
         });
+        if (artifact.dexDomain) info.classCount = artifact.dexDomain->classCount();
         ContainerRecord record;
         record.id          = normalPath;
         record.supportId   = info.id.to_std_string();
@@ -524,6 +527,7 @@ WorkspaceResult<SupportingResourceInfo> WorkspaceBase::addSupportingRole(
                                                     : model::ContainerRole::Library;
         record.roleLabel   = roleLabel;
         record.container   = std::move(container);
+        record.dexDomain   = std::move(artifact.dexDomain);
         registry_->records().push_back(std::move(record));
         return ca::core::Ok(std::move(info));
     }
@@ -557,6 +561,7 @@ WorkspaceResult<SupportingResourceInfo> WorkspaceBase::removeSupporting(
     found->container->visitResources([&](std::string_view, const model::IResource& resource) {
         if (resource.getType() == model::ResourceType::Class) ++info.classCount;
     });
+    if (found->dexDomain) info.classCount = found->dexDomain->classCount();
     registry_->detachBySupportId(id);
     return ca::core::Ok(std::move(info));
 }
@@ -687,11 +692,14 @@ std::unique_ptr<model::ResourceContainer> WorkspaceBase::cloneOriginal() const
 std::unique_ptr<model::ResourceContainer> WorkspaceBase::analysisScanContainer() const
 {
     auto merged = std::make_unique<model::ResourceContainer>();
-    working_->visitResources([&](std::string_view uri, const model::IResource& resource) {
-        auto copied = cloneResource(resource);
-        if (copied) merged->addResource(uri, std::move(copied));
-    });
+    if (!dexDomain_) {
+        working_->visitResources([&](std::string_view uri, const model::IResource& resource) {
+            auto copied = cloneResource(resource);
+            if (copied) merged->addResource(uri, std::move(copied));
+        });
+    }
     for (const auto& support : registry_->records()) {
+        if (support.dexDomain) continue;
         support.container->visitResources(
             [&](std::string_view uri, const model::IResource& resource) {
                 if (merged->getResource(uri) != nullptr) return;   // 主容器 URI 优先
@@ -704,17 +712,31 @@ std::unique_ptr<model::ResourceContainer> WorkspaceBase::analysisScanContainer()
 
 std::unordered_map<std::string, std::string> WorkspaceBase::supportingClassIds() const
 {
+    if (registry_->records().empty()) return {};
+
     std::unordered_set<std::string> primary;
-    working_->visitResources([&](std::string_view, const model::IResource& resource) {
-        const auto* classResource =
-            ca::core::tag_cast::dyn_cast<const model::ClassResource>(&resource);
-        if (classResource == nullptr) return;
-        const auto name = internalNameOfBytes(classResource->get());
-        if (!name.empty()) primary.insert(name);
-    });
+    if (dexDomain_) {
+        const auto& names = dexDomain_->classNames();
+        primary.insert(names.begin(), names.end());
+    }
+    else {
+        working_->visitResources([&](std::string_view, const model::IResource& resource) {
+            const auto* classResource =
+                ca::core::tag_cast::dyn_cast<const model::ClassResource>(&resource);
+            if (classResource == nullptr) return;
+            const auto name = internalNameOfBytes(classResource->get());
+            if (!name.empty()) primary.insert(name);
+        });
+    }
 
     std::unordered_map<std::string, std::string> result;
     for (const auto& support : registry_->records()) {
+        if (support.dexDomain) {
+            for (const auto& name : support.dexDomain->classNames()) {
+                if (primary.count(name) == 0) result.emplace(name, support.supportId);
+            }
+            continue;
+        }
         support.container->visitResources([&](std::string_view, const model::IResource& resource) {
             const auto* classResource =
                 ca::core::tag_cast::dyn_cast<const model::ClassResource>(&resource);
@@ -761,12 +783,54 @@ WorkspaceResult<WorkspaceBase::AnalysisGraph> WorkspaceBase::analysisGraph() con
                 auto session = sessionOf(classResource->get(), "build analysis classpath");
                 if (session.is_err()) return;   // 畸形支撑类不供层次事实（照旧容忍）
                 auto summary = hierarchy::fillSummary(*std::move(session).unwrap(), *graph.pool);
-                if (primaryOwner || registered.insert(summary.self.id).second)
+                const bool first = registered.insert(summary.self.id).second;
+                if (primaryOwner || first)
                     pending.push_back(std::move(summary));
             });
         };
-        appendClasses(*working_, true);
-        for (const auto& support : registry_->records()) appendClasses(*support.container, false);
+        const auto appendDexClasses = [&](const DexDomain& dex) {
+            auto classes = dex.listClasses(false);
+            if (classes.is_err())
+                return std::move(classes).unwrap_err();
+            for (const auto& cls : std::move(classes).unwrap()) {
+                hierarchy::ClassSummary summary;
+                summary.self = mjbase::classKeyOf(*graph.pool, cls.internalName.to_std_string());
+                if (!registered.insert(summary.self.id).second) continue;
+                if (!cls.superName.is_empty())
+                    summary.super = mjbase::classKeyOf(*graph.pool, cls.superName.to_std_string());
+                summary.access = cls.access;
+                for (const auto& iface : cls.interfaces)
+                    summary.interfaces.push_back(mjbase::classKeyOf(*graph.pool, iface.to_std_string()));
+                const auto appendMembers = [&](const auto& members, auto& output) {
+                    for (const auto& member : members) {
+                        const auto access = static_cast<ca::u32>(member.access);
+                        output.push_back({graph.pool->intern(member.name.to_std_string()),
+                                          graph.pool->intern(member.descriptor.to_std_string()),
+                                          (access & hierarchy::kAccStatic) != 0, access});
+                    }
+                };
+                appendMembers(cls.methods, summary.methods);
+                appendMembers(cls.fields, summary.fields);
+                pending.push_back(std::move(summary));
+            }
+            return WorkspaceErrorInfo{};
+        };
+        if (dexDomain_) {
+            auto appended = appendDexClasses(*dexDomain_);
+            if (appended.is_err()) return ca::core::Err(std::move(appended));
+        }
+        else {
+            appendClasses(*working_, true);
+        }
+        for (const auto& support : registry_->records()) {
+            if (support.dexDomain) {
+                auto appended = appendDexClasses(*support.dexDomain);
+                if (appended.is_err()) return ca::core::Err(std::move(appended));
+            }
+            else {
+                appendClasses(*support.container, false);
+            }
+        }
 
         // 未登记超类型物化为合成节点（java/lang/Object 等；无成员、access 0）。
         std::unordered_set<ca::u32> known;
@@ -1035,6 +1099,52 @@ WorkspaceResult<std::vector<SearchHit>> WorkspaceBase::searchInstructions(
 
 // ── 引用 / 层次分析面 ───────────────────────────────────────────────────
 
+namespace {
+
+template <typename Query>
+WorkspaceResult<std::vector<ReferenceInfo>> mergeDexXrefs(
+    std::vector<ReferenceInfo> result, const DexDomain* primary, const ContainerRegistry& registry,
+    const std::unordered_map<std::string, std::string>& owners, Query query)
+{
+    result.erase(std::remove_if(result.begin(), result.end(), [&](const ReferenceInfo& item) {
+        const auto name = item.sourceClass.to_std_string();
+        if (primary && primary->containsClass(name)) return true;
+        const auto owner = owners.find(name);
+        if (owner == owners.end()) return false;
+        const auto* support = registry.findBySupportId(owner->second);
+        return support && support->dexDomain;
+    }), result.end());
+    for (auto& item : result) {
+        const auto owner = owners.find(item.sourceClass.to_std_string());
+        if (owner == owners.end()) continue;
+        item.supporting = true;
+        item.supportId = utf8(owner->second);
+    }
+
+    if (primary) {
+        auto references = query(*primary);
+        if (references.is_err()) return ca::core::Err(std::move(references).unwrap_err());
+        for (auto& item : std::move(references).unwrap())
+            result.push_back(std::move(item));
+    }
+    for (const auto& support : registry.records()) {
+        if (!support.dexDomain) continue;
+        auto references = query(*support.dexDomain);
+        if (references.is_err()) return ca::core::Err(std::move(references).unwrap_err());
+        for (auto& item : std::move(references).unwrap()) {
+            const auto owner = owners.find(item.sourceClass.to_std_string());
+            if (owner == owners.end() || owner->second != support.supportId) continue;
+            item.supporting = true;
+            item.supportId = utf8(support.supportId);
+            result.push_back(std::move(item));
+        }
+    }
+    sortReferences(result);
+    return ca::core::Ok(std::move(result));
+}
+
+}   // namespace
+
 WorkspaceResult<std::vector<ReferenceInfo>> WorkspaceBase::xrefsToMethod(
     ca::str::Utf8StringRef ownerRef, ca::str::Utf8StringRef nameRef,
     ca::str::Utf8StringRef descriptorRef) const
@@ -1048,9 +1158,7 @@ WorkspaceResult<std::vector<ReferenceInfo>> WorkspaceBase::xrefsToMethod(
         return ca::core::Err(error(WorkspaceError::InvalidArgument, "xref method",
                                    "owner, name and descriptor are required"));
     }
-    // dex 会话：引用面走 dex 域扫描（无 supporting 合并面——dex 会话不挂
-    // 支撑容器）。
-    if (dexDomain_ != nullptr)
+    if (dexDomain_ != nullptr && registry_->records().empty())
         return dexDomain_->xrefsToMethod(owner, name, descriptor);
     try {
         ReferenceScan scan;
@@ -1065,9 +1173,10 @@ WorkspaceResult<std::vector<ReferenceInfo>> WorkspaceBase::xrefsToMethod(
                     reference.target.descriptor.to_std_string(),
                 "direct"));
         }
-        annotateSupportingSources(result);
-        sortReferences(result);
-        return ca::core::Ok(std::move(result));
+        return mergeDexXrefs(std::move(result), dexDomain_.get(), *registry_,
+                            supportingClassIds(), [&](const DexDomain& dex) {
+            return dex.xrefsToMethod(owner, name, descriptor);
+        });
     }
     catch (const std::exception& exception) {
         return ca::core::Err(error(WorkspaceError::Internal, "xref method", exception.what()));
@@ -1087,8 +1196,7 @@ WorkspaceResult<std::vector<ReferenceInfo>> WorkspaceBase::xrefsToField(
         return ca::core::Err(error(WorkspaceError::InvalidArgument, "xref field",
                                    "owner, name and descriptor are required"));
     }
-    // dex 会话：引用面走 dex 域扫描。
-    if (dexDomain_ != nullptr)
+    if (dexDomain_ != nullptr && registry_->records().empty())
         return dexDomain_->xrefsToField(owner, name, descriptor);
     try {
         ReferenceScan scan;
@@ -1103,9 +1211,10 @@ WorkspaceResult<std::vector<ReferenceInfo>> WorkspaceBase::xrefsToField(
                     reference.target.descriptor.to_std_string(),
                 "direct"));
         }
-        annotateSupportingSources(result);
-        sortReferences(result);
-        return ca::core::Ok(std::move(result));
+        return mergeDexXrefs(std::move(result), dexDomain_.get(), *registry_,
+                            supportingClassIds(), [&](const DexDomain& dex) {
+            return dex.xrefsToField(owner, name, descriptor);
+        });
     }
     catch (const std::exception& exception) {
         return ca::core::Err(error(WorkspaceError::Internal, "xref field", exception.what()));
@@ -1121,8 +1230,8 @@ WorkspaceResult<std::vector<ReferenceInfo>> WorkspaceBase::xrefsToClass(
     if (internalName.empty())
         return ca::core::Err(
             error(WorkspaceError::InvalidArgument, "xref class", "class is empty"));
-    // dex 会话：类型引用面走 dex 域扫描。
-    if (dexDomain_ != nullptr) return dexDomain_->xrefsToClass(internalName);
+    if (dexDomain_ != nullptr && registry_->records().empty())
+        return dexDomain_->xrefsToClass(internalName);
     try {
         ReferenceScan scan;
         scan.build(*analysisScanContainer());
@@ -1130,9 +1239,10 @@ WorkspaceResult<std::vector<ReferenceInfo>> WorkspaceBase::xrefsToClass(
         for (const auto& reference : scan.typeReferencesTo(utf8Ref(internalName))) {
             result.push_back(referenceInfo(reference.site, reference.targetType.ref(), "type"));
         }
-        annotateSupportingSources(result);
-        sortReferences(result);
-        return ca::core::Ok(std::move(result));
+        return mergeDexXrefs(std::move(result), dexDomain_.get(), *registry_,
+                            supportingClassIds(), [&](const DexDomain& dex) {
+            return dex.xrefsToClass(internalName);
+        });
     }
     catch (const std::exception& exception) {
         return ca::core::Err(error(WorkspaceError::Internal, "xref class", exception.what()));
@@ -1168,10 +1278,25 @@ WorkspaceResult<std::vector<ReferenceInfo>> WorkspaceBase::calleesOfMethod(
         return ca::core::Err(error(WorkspaceError::InvalidArgument, "list callees",
                                    "owner, name and descriptor are required"));
     }
-    // dex 会话：直接调用目标 + resolved 的域内 CHA 展开都走 dex 域。
-    if (dexDomain_ != nullptr)
+    if (dexDomain_ && (registry_->records().empty() || dexDomain_->containsClass(owner)))
         return dexDomain_->calleesOfMethod(owner, name, descriptor, resolved);
     try {
+        const auto supportingClasses = supportingClassIds();
+        const auto source = supportingClasses.find(owner);
+        const auto* mounted = source == supportingClasses.end()
+                                  ? nullptr
+                                  : registry_->findBySupportId(source->second);
+        if (mounted && mounted->dexDomain) {
+            auto callees = mounted->dexDomain->calleesOfMethod(owner, name, descriptor, resolved);
+            if (callees.is_err()) return ca::core::Err(std::move(callees).unwrap_err());
+            auto result = std::move(callees).unwrap();
+            for (auto& reference : result) {
+                reference.supporting = true;
+                reference.supportId = utf8(mounted->supportId);
+            }
+            return ca::core::Ok(std::move(result));
+        }
+
         std::vector<ReferenceInfo> result;
         if (!resolved) {
             ReferenceScan scan;
@@ -1194,10 +1319,11 @@ WorkspaceResult<std::vector<ReferenceInfo>> WorkspaceBase::calleesOfMethod(
             auto graph = analysisGraph();
             if (graph.is_err()) return ca::core::Err(std::move(graph).unwrap_err());
             auto           analysis = std::move(graph).unwrap();
-            auto           uri      = resolveClassUri(*working_, owner);
+            const auto& sourceContainer = mounted ? *mounted->container : *working_;
+            auto           uri      = resolveClassUri(sourceContainer, owner);
             if (uri.is_err()) return ca::core::Err(std::move(uri).unwrap_err());
             const auto* resource = ca::core::tag_cast::dyn_cast<const model::ClassResource>(
-                working_->getResource(uri.unwrap()));
+                sourceContainer.getResource(uri.unwrap()));
             if (resource == nullptr)
                 return ca::core::Err(error(WorkspaceError::NotFound, "list callees", owner));
             auto session = sessionOf(resource->get(), "list callees");
@@ -1261,7 +1387,12 @@ WorkspaceResult<std::vector<ReferenceInfo>> WorkspaceBase::calleesOfMethod(
                 break;
             }
         }
-        annotateSupportingSources(result);
+        if (mounted) {
+            for (auto& reference : result) {
+                reference.supporting = true;
+                reference.supportId = utf8(mounted->supportId);
+            }
+        }
         sortReferences(result);
         return ca::core::Ok(std::move(result));
     }
@@ -1280,8 +1411,8 @@ WorkspaceResult<ClassRelations> WorkspaceBase::classRelations(
         return ca::core::Err(
             error(WorkspaceError::InvalidArgument, "get class relations", "class is empty"));
     }
-    // dex 会话：层次闭包走 dex 域反向索引（域外超类截断，与容器类同口径）。
-    if (dexDomain_ != nullptr) return dexDomain_->classRelations(internalName);
+    if (dexDomain_ && registry_->records().empty() && !dexDomain_->containsClass(internalName))
+        return ca::core::Err(error(WorkspaceError::NotFound, "get class relations", internalName));
     try {
         auto graph = analysisGraph();
         if (graph.is_err()) return ca::core::Err(std::move(graph).unwrap_err());
@@ -1321,7 +1452,7 @@ WorkspaceResult<ClassRelations> WorkspaceBase::classRelations(
                 }
             }
         }
-        sortUnique(result.superclasses);
+        if (!dexDomain_) sortUnique(result.superclasses);
         sortUnique(result.interfaces);
         sortUnique(result.directSubclasses);
         sortUnique(result.allSubclasses);
@@ -1366,7 +1497,7 @@ WorkspaceResult<std::vector<MethodOverrideInfo>> WorkspaceBase::overridesOfMetho
                                    "owner, name and descriptor are required"));
     }
     // dex 会话：super 链同名同描述符声明走 dex 域。
-    if (dexDomain_ != nullptr)
+    if (dexDomain_ != nullptr && registry_->records().empty())
         return dexDomain_->overridesOfMethod(owner, name, descriptor);
     try {
         auto graph = analysisGraph();
@@ -2404,6 +2535,7 @@ std::vector<SupportingResourceInfo> WorkspaceBase::supportingResources() const
         support.container->visitResources([&](std::string_view, const model::IResource& resource) {
             if (resource.getType() == model::ResourceType::Class) ++info.classCount;
         });
+        if (support.dexDomain) info.classCount = support.dexDomain->classCount();
         result.push_back(std::move(info));
     }
     return result;

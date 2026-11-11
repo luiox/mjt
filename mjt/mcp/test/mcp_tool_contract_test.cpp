@@ -133,7 +133,7 @@ TEST(McpServerTest, ShapesCoarseToolSelectors)
     EXPECT_EQ(Json::array({"project_id", "kind"}), editApply.at("required"));
     EXPECT_EQ(Json::array({"structured", "jasm", "jasm_diff", "method_jasm",
                            "method_jasm_diff", "class_bytes", "pipeline", "rename",
-                           "mapping"}),
+                           "mapping", "smali"}),
               editApply.at("properties").at("kind").at("enum"));
     EXPECT_EQ(Json::array({"change_class_access", "set_field_access", "set_method_access",
                            "add_field", "remove_field", "add_method", "remove_method",

@@ -9,6 +9,7 @@
 #include "shared/shadow_display.hpp"
 
 #include "workspace/analysis_ops.hpp"
+#include "workspace/dex_domain.hpp"
 #include "tool/json.hpp"
 
 #include "mjbase/mapping/shadow_alias_format.hpp"
@@ -43,6 +44,16 @@ ca::str::Utf8String utf8Str(std::string_view value)
 {
     return ca::str::Utf8String::from_data_unchecked(
         reinterpret_cast<const ca::u8*>(value.data()), value.size());
+}
+
+mjt::workspace::WorkspaceResult<mjt::workspace::ClassInfo> primaryClassInfo(
+    const mjt::workspace::WorkspaceBase& workspace, const std::string& name)
+{
+    if (const auto* dex = workspace.dexDomain()) return dex->classInfo(name);
+    if (const auto* container = workspace.workingContainer())
+        return mjt::workspace::classInfo(*container, utf8Ref(name), workspace.lvtJarFallbackFlag());
+    return ca::core::Err(mjt::workspace::WorkspaceErrorInfo{
+        mjt::workspace::WorkspaceError::FailedPrecondition, "get class info: workspace is not loaded"});
 }
 
 }   //namespace
@@ -225,17 +236,17 @@ bool backfillMemberDescriptor(mjt::workspace::WorkspaceBase& workspace,
     //保持为空，由下游查询给出 canonical 错误/空集。
     //查询算子（analysis_ops）只读消费工作容器；未加载按旧 ensureLoaded
     //口径物化同形错误（下游 is_err 分支零改动）。
-    const auto* shadowWorking = workspace.workingContainer();
-    mjt::workspace::WorkspaceErrorInfo unloaded;
-    unloaded.code    = mjt::workspace::WorkspaceError::FailedPrecondition;
-    unloaded.message = "get class info: workspace is not loaded";
-    mjt::workspace::WorkspaceResult<mjt::workspace::ClassInfo> info =
-        ca::core::Err(std::move(unloaded));
-    if (shadowWorking != nullptr)
-        info = mjt::workspace::classInfo(
-            *shadowWorking, utf8Ref(ownerRaw), workspace.lvtJarFallbackFlag());
+    auto info = primaryClassInfo(workspace, ownerRaw);
     if (info.is_err()) return true;
-    const auto& clazz = std::move(info).unwrap();
+    return backfillMemberDescriptor(std::move(info).unwrap(), ownerRaw, memberName,
+                                    field, descriptor, error);
+}
+
+bool backfillMemberDescriptor(const mjt::workspace::ClassInfo& clazz,
+                              const std::string& ownerRaw, const std::string& memberName,
+                              bool field, std::string& descriptor, Json& error)
+{
+    if (memberName.empty()) return true;
     //候选枚举机（同源复用）：该名字在目标池的全部去重描述符；另一池的同名
     //命中用于零命中提示（方法/字段名互串是高频笔误）。DTO 文本字段为
     //Utf8String：visit 以借用视图收参，候选表落 std::string。
@@ -299,15 +310,7 @@ bool memberDescriptorMismatch(mjt::workspace::WorkspaceBase& workspace,
     if (memberName.empty() || descriptor.empty()) return true;
     //查询算子（analysis_ops）只读消费工作容器；未加载按旧 ensureLoaded
     //口径物化同形错误（下游 is_err 分支零改动）。
-    const auto* shadowWorking = workspace.workingContainer();
-    mjt::workspace::WorkspaceErrorInfo unloaded;
-    unloaded.code    = mjt::workspace::WorkspaceError::FailedPrecondition;
-    unloaded.message = "get class info: workspace is not loaded";
-    mjt::workspace::WorkspaceResult<mjt::workspace::ClassInfo> info =
-        ca::core::Err(std::move(unloaded));
-    if (shadowWorking != nullptr)
-        info = mjt::workspace::classInfo(
-            *shadowWorking, utf8Ref(ownerRaw), workspace.lvtJarFallbackFlag());
+    auto info = primaryClassInfo(workspace, ownerRaw);
     if (info.is_err()) return true;
     const auto& clazz = std::move(info).unwrap();
     //同名候选枚举（与 backfill 同一收集面）；描述符命中其一说明失败另有

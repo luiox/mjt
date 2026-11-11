@@ -25,6 +25,7 @@
 #include "mjbase/project/edit_ledger.hpp"
 
 #include "workspace/analysis_ops.hpp"
+#include "workspace/dex_domain.hpp"
 #include "workspace/edit_command.hpp"
 #include "workspace/text_diff.hpp"
 
@@ -57,6 +58,27 @@ ca::str::Utf8String ownUtf8(const std::string& value)
         reinterpret_cast<const ca::u8*>(value.data()), value.size());
 }
 
+workspace::WorkspaceResult<workspace::ClassInfo> classInfoForReferences(
+    const ProjectSession& session, const mjbase::model::ResourceContainer& working,
+    const std::string& owner)
+{
+    const auto& current = *session.workspace;
+    const auto read = [&](const workspace::DexDomain* dex,
+                          const mjbase::model::ResourceContainer& container) {
+        return dex ? dex->classInfo(owner)
+                   : workspace::classInfo(container, utf8Ref(owner), current.lvtJarFallbackFlag());
+    };
+    auto primary = read(current.dexDomain(), working);
+    if (primary.is_ok() || primary.unwrap_err().code != workspace::WorkspaceError::NotFound)
+        return primary;
+    for (const auto& record : session.containerRegistry.records()) {
+        auto mounted = read(record.dexDomain.get(), *record.container);
+        if (mounted.is_ok() || mounted.unwrap_err().code != workspace::WorkspaceError::NotFound)
+            return mounted;
+    }
+    return primary;
+}
+
 }   //namespace
 
 std::optional<Json> McpToolService::callMutationTool(
@@ -72,14 +94,15 @@ std::optional<Json> McpToolService::callMutationTool(
                                           "workspace is not loaded");
         return toolError("workspace mutation failed", &status);
     }
-    //dex 会话守卫（apk/裸 dex 只读分析原型）：变更族一律拒绝，白名单只放行
-    //引用/层次关系的只读面（xref_query 入口与其内部翻译 op 都在表内）。
-    static const std::set<std::string> kDexSessionReadOps = {
+    // DEX sessions support queries, mounts and derived Smali output.
+    static const std::set<std::string> kDexSessionOps = {
         "xref_query", "xref_method", "xref_field", "xref_class",
-        "method_callees", "class_relations", "method_overrides"};
-    if (current->isDexBacked() && kDexSessionReadOps.count(name) == 0) {
+        "method_callees", "class_relations", "method_overrides", "container_mount"};
+    const bool smaliEdit = name == "edit_apply" &&
+                          arguments.value("kind", std::string{}) == "smali";
+    if (current->isDexBacked() && !smaliEdit && kDexSessionOps.count(name) == 0) {
         return toolError("mutation '" + name +
-                         "' is not supported for apk/dex input (read-only analysis prototype)");
+                         "' is not supported for apk/dex input");
     }
     //container_mount（RFC §8.1 #4 + P5 角色化容器栈）：support 遗留角色走
     //workspace 在册表（xref 跨容器参与面不变）；library/runtime 进会话
@@ -116,7 +139,10 @@ std::optional<Json> McpToolService::callMutationTool(
                 const auto registered = registerSupportInput(session.projectDir,
                                                              mounted.path.to_std_string(),
                                                              mounted.fingerprint.to_std_string());
-                if (registered.is_err()) return toolError("register container failed", &registered);
+                if (registered.is_err()) {
+                    session.containerRegistry.detachBySupportId(mounted.id.to_std_string());
+                    return toolError("register container failed", &registered);
+                }
                 return toolResult({{"action", action}, {"container", supportingResourceJson(mounted)}});
             }
 
@@ -136,11 +162,14 @@ std::optional<Json> McpToolService::callMutationTool(
             if (session.containerRegistry.findByFingerprint(fingerprint) != nullptr)
                 return toolError("supporting content is already attached");
 
-            auto container = std::make_shared<mjbase::model::ResourceContainer>();
-            auto imported = mjbase::model::ResourceHelper::importFromJar(*container, containerId);
-            if (imported.is_err())
-                return toolError(std::string("import container failed: ") +
-                                 mjbase::model::to_string(std::move(imported).unwrap_err()));
+            auto imported = mjt::workspace::importSupportingContainer(containerId);
+            if (imported.is_err()) {
+                const auto status = shared::toCaStatus(imported.unwrap_err());
+                return toolError("import container failed", &status);
+            }
+            auto artifact = std::move(imported).unwrap();
+            std::shared_ptr<mjbase::model::ResourceContainer> container =
+                std::move(artifact.working);
 
             //遮蔽快照（明文键集合；shadowedEntries 返回容器内引用，挂载重建
             //会原地清空重填，不能以引用跨 mount 持有）。
@@ -165,7 +194,10 @@ std::optional<Json> McpToolService::callMutationTool(
                                                           ? mjbase::project::AnalysisInputRole::Library
                                                           : mjbase::project::AnalysisInputRole::Runtime,
                                                       current->sourcePath().to_std_string());
-            if (registered.is_err()) return toolError("register container failed", &registered);
+            if (registered.is_err()) {
+                session.containerStack->unmount(containerId);
+                return toolError("register container failed", &registered);
+            }
 
             const auto supportId = session.containerRegistry.nextSupportId();
             ProjectSession::MountedContainerRecord record;
@@ -176,6 +208,7 @@ std::optional<Json> McpToolService::callMutationTool(
             record.roleLabel   = std::string{mjbase::model::to_string(*mountedRole)};
             record.supportId   = supportId;
             record.container   = container;
+            record.dexDomain   = std::move(artifact.dexDomain);
             session.containerRegistry.records().push_back(std::move(record));
 
             //新增遮蔽记录透传（挂载 = 重建；新 first-wins 输家逐对上报）。
@@ -209,15 +242,17 @@ std::optional<Json> McpToolService::callMutationTool(
         const auto supportId = arguments.value("support_id", std::string{});
         if (supportId.empty()) return toolError("support_id is required");
         if (!mountedRole.has_value()) {
+            const auto* record = session.containerRegistry.findBySupportId(supportId);
+            if (!record || record->roleLabel != "support")
+                return toolError("support container not found: " + supportId);
+            const auto deregistered = removeSupportInput(session.projectDir, record->path);
+            if (deregistered.is_err()) return toolError("deregister container failed", &deregistered);
             auto result = current->removeSupporting(utf8Ref(supportId));
             if (result.is_err())
                 { const auto err = shared::toCaStatus(result.unwrap_err()); return toolError("detach container failed", &err); }
             // SupportingResourceInfo 携 move-only Utf8String：unwrap 走移动
             // 重载，path 落 std::string（登记目录字节路径面）。
             const auto removed = std::move(result).unwrap();
-            const auto deregistered =
-                removeSupportInput(session.projectDir, removed.path.to_std_string());
-            if (deregistered.is_err()) return toolError("deregister container failed", &deregistered);
             return toolResult({{"action", action}, {"removed", supportingResourceJson(removed)}});
         }
 
@@ -226,16 +261,14 @@ std::optional<Json> McpToolService::callMutationTool(
         //遮蔽的副本浮现，逐对透传。记录字段先物化（record 指向会话在册表，
         //erase 期间会失效）。
         const auto* record = findMountedContainer(session, supportId);
-        if (record == nullptr || record->role != *mountedRole)
+        if (!record) record = session.containerRegistry.findBySupportId(supportId);
+        if (record == nullptr || record->roleLabel != role)
             return toolError("mounted container not found: " + supportId);
         const auto mountId          = record->id;
         const auto mountPath        = record->path;
         const auto mountRole        = record->role;
         const auto mountFingerprint = record->fingerprint;
         const auto supportRefId     = record->supportId;
-        if (session.containerRegistry.findBySupportId(supportRefId) == nullptr)
-            return toolError("detach container failed: support id not found");
-        session.containerRegistry.detachBySupportId(supportRefId);
         //卸载前遮蔽快照（同 mount 分支：引用不可跨 rebuild 持有）。
         std::vector<std::pair<std::string, std::string>> shadowedByMount;
         for (const auto& item : session.containerStack->shadowedEntries()) {
@@ -243,7 +276,6 @@ std::optional<Json> McpToolService::callMutationTool(
             shadowedByMount.emplace_back(item.uri.to_std_string(),
                                          item.shadowedId.to_std_string());
         }
-        session.containerStack->unmount(mountId);
         const auto deregistered = removeRoleInput(
             session.projectDir,
             mountPath,
@@ -251,6 +283,8 @@ std::optional<Json> McpToolService::callMutationTool(
                 ? mjbase::project::AnalysisInputRole::Library
                 : mjbase::project::AnalysisInputRole::Runtime);
         if (deregistered.is_err()) return toolError("deregister container failed", &deregistered);
+        session.containerStack->unmount(mountId);
+        session.containerRegistry.detachBySupportId(supportRefId);
         Json surfaced = Json::array();
         for (const auto& [uri, shadowedContainer] : shadowedByMount) {
             const auto stillShadowed =
@@ -360,6 +394,37 @@ std::optional<Json> McpToolService::callMutationTool(
         const bool dryRun = arguments.value("dry_run", false);
         auto request = mutationRequest(arguments);
         request.dryRun = dryRun || request.dryRun;
+
+        if (kind == "smali") {
+            const auto* dex = current->dexDomain();
+            if (!dex) return toolError("smali edits require an APK or DEX project");
+            if (request.expectedRevision != mjt::workspace::kAnyRevision &&
+                request.expectedRevision != current->revision())
+                return toolError("workspace revision has changed");
+            const auto className = arguments.value("class", std::string{});
+            const auto source = arguments.value("source", std::string{});
+            const auto output = arguments.value("path", std::string{});
+            if (className.empty() || source.empty() || (!request.dryRun && output.empty()))
+                return toolError("class and source are required, and writing also requires path");
+            auto assembled = dex->assembleSmali(className, source);
+            if (assembled.is_err()) {
+                const auto status = shared::toCaStatus(assembled.unwrap_err());
+                return toolError("assemble smali failed", &status);
+            }
+            const auto bytes = std::move(assembled).unwrap();
+            Json result = {{"class", className}, {"size", bytes.size()},
+                           {"dry_run", request.dryRun}};
+            if (!request.dryRun) {
+                const auto written = mjt::workspace::writeDerivedDex(
+                    current->sourcePath().to_std_string(), output, bytes);
+                if (written.is_err()) {
+                    const auto status = shared::toCaStatus(written);
+                    return toolError("write DEX failed", &status);
+                }
+                result["path"] = output;
+            }
+            return toolResult(std::move(result));
+        }
 
         if (kind == "jasm" || kind == "jasm_diff") {
             //name 槽：uri = Ref → 精确资源 URI；raw → 内部名核表后
@@ -851,14 +916,6 @@ std::optional<Json> McpToolService::callMutationTool(
         Json        slotError;
         if (!slot::resolveMethodSlots(slots, arguments, false, owner, member, descriptor, slotError))
             return slotError;
-        //descriptor 省略时按宿主类名称解析回填（target=field 走字段池，
-        //其余走方法池）——唯一命中即用；名字不存在报错（复用既有的候选枚举
-        //机）；真重载报歧义并列出全部候选（同一 diagnostics 格式）。显式
-        //传 descriptor 时行为零变化。
-        const bool fieldSelector = name == "xref_field";
-        if (descriptor.empty() &&
-            !slot::backfillMemberDescriptor(*current, owner, member, fieldSelector, descriptor, slotError))
-            return slotError;
         std::string className;
         if (name == "xref_class") {
             Json classError;
@@ -871,10 +928,15 @@ std::optional<Json> McpToolService::callMutationTool(
         //存在或名字不存在时不诊断（NOT_FOUND 一类错误本身已明确）。
         std::vector<std::string> descriptorCandidates;
         if (name != "xref_class") {
-            auto info = workspace::classInfo(*working, utf8Ref(owner), current->lvtJarFallbackFlag());
+            auto info = classInfoForReferences(session, *working, owner);
             if (info.is_ok()) {
                 // ClassInfo 携 move-only Utf8String：unwrap 走移动重载。
                 const auto& clazz = std::move(info).unwrap();
+                const bool field = name == "xref_field";
+                if (descriptor.empty() &&
+                    !slot::backfillMemberDescriptor(clazz, owner, member, field, descriptor,
+                                                    slotError))
+                    return slotError;
                 const auto addCandidate = [&](const ca::str::Utf8StringRef& candidate) {
                     const auto text = candidate.to_std_string();
                     if (std::find(descriptorCandidates.begin(),
@@ -1003,47 +1065,16 @@ std::optional<Json> McpToolService::callMutationTool(
             items = std::move(references).unwrap();
         }
 
-        //role 过滤（RFC 0001 P5）：站点归属按「primary = 非支撑站点；支撑站
-        //点 = workspace 在册 id → 挂载栈角色对号」判定，未挂载的支撑站点归
-        //support（遗留角色）。显式过滤值之外的请求在 schema 已被拒绝。
+        // Reference rows carry the source container's support ID.
         const auto roleFilter = arguments.value("role", std::string{});
-        if (!roleFilter.empty() && roleFilter != "primary" && roleFilter != "support") {
-            const auto wanted = roleFilter == "library" ? mjbase::model::ContainerRole::Library
-                                                        : mjbase::model::ContainerRole::Runtime;
-            const auto inventory = mountedClassInventory(session, wanted);
-            std::unordered_set<std::string> roleSupportIds;
-            for (const auto& record : session.containerRegistry.records())
-                if (record.role == wanted) roleSupportIds.insert(record.supportId);
+        if (!roleFilter.empty()) {
             items.erase(std::remove_if(items.begin(),
                                        items.end(),
                                        [&](const mjt::workspace::ReferenceInfo& item) {
-                                           //保留 = 站点在本角色容器内；其余全部剔除。
-                                           //DTO 文本字段换型 Utf8String：键比对显式
-                                           //to_std_string。
-                                           if (!item.supporting) return true;
-                                           if (roleSupportIds.count(item.supportId.to_std_string()) == 0)
-                                               return true;
-                                           return inventory.find(item.sourceClass.to_std_string()) ==
-                                                  inventory.end();
-                                       }),
-                        items.end());
-        }
-        else if (roleFilter == "primary") {
-            items.erase(std::remove_if(items.begin(),
-                                       items.end(),
-                                       [](const mjt::workspace::ReferenceInfo& item) {
-                                           return item.supporting;
-                                       }),
-                        items.end());
-        }
-        else if (roleFilter == "support") {
-            items.erase(std::remove_if(items.begin(),
-                                       items.end(),
-                                       [&](const mjt::workspace::ReferenceInfo& item) {
-                                           if (!item.supporting) return false;
-                                           return findMountedContainer(
-                                                      session, item.supportId.to_std_string()) ==
-                                                  nullptr;
+                                           if (!item.supporting) return roleFilter != "primary";
+                                           const auto* source = session.containerRegistry.findBySupportId(
+                                               item.supportId.to_std_string());
+                                           return !source || source->roleLabel != roleFilter;
                                        }),
                         items.end());
         }

@@ -239,14 +239,18 @@ TEST(McpDecompilerVersionTest, DiscoverySourceAndOverrideEnv)
 
 //后端 ID 稳定且第三后端可解析——缓存 produced_by、报告 backend 字段、CLI 旗标
 //三处共用同一条 ID（decompilerKindId / parseDecompilerKind）。
-TEST(McpDecompilerVersionTest, JcdcBackendIdParsesAndStaysStable)
+TEST(McpDecompilerVersionTest, JcdcAndJadxBackendIdsParseAndStayStable)
 {
     const auto kind = parseDecompilerKind("jcdc");
     ASSERT_TRUE(kind.is_ok());
     EXPECT_EQ(DecompilerKind::Jcdc, kind.unwrap());
     EXPECT_EQ("jcdc", decompilerKindId(kind.unwrap()));
+    const auto jadx = parseDecompilerKind("jadx");
+    ASSERT_TRUE(jadx.is_ok());
+    EXPECT_EQ(DecompilerKind::Jadx, jadx.unwrap());
+    EXPECT_EQ("jadx", decompilerKindId(jadx.unwrap()));
     //未知名仍报错（错误文案含期望列表，见 mjt.shared.err.unknown_decompiler）。
-    EXPECT_TRUE(parseDecompilerKind("jadx").is_err());
+    EXPECT_TRUE(parseDecompilerKind("unknown-backend").is_err());
 }
 
 //jcdc 无 MANIFEST 可读：版本走可执行文件名回退——`jcdc-<version>.exe` 取数字段；

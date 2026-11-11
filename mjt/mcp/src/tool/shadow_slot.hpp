@@ -110,6 +110,10 @@ bool backfillMemberDescriptor(mjt::workspace::WorkspaceBase& workspace,
                               std::string&                   descriptor,
                               Json&                          error);
 
+bool backfillMemberDescriptor(const mjt::workspace::ClassInfo& clazz,
+                              const std::string& ownerRaw, const std::string& memberName,
+                              bool field, std::string& descriptor, Json& error);
+
 ///@brief arguments 内 class 语义键（`class`）就地解析：Ref → 内部名；
 ///raw → verifyRaw 核表后原样。空值直通（workspace 既有 canonical 错误）。
 ///@return false 时 `error` 已填结构化 toolError。

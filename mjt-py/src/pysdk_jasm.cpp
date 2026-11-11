@@ -7,6 +7,7 @@
 #include "mjbase/jasm/jvm_jasm_service.hpp"
 #include "mjbase/jasm/resource_jasm_service.hpp"
 #include "mjbase/model/resource_model.hpp"
+#include "workspace/dex_domain.hpp"
 
 #include <charconv>
 #include <sstream>
@@ -534,6 +535,14 @@ JasmReport methodPatch(FacadeSession& s, const std::string& cls, const std::stri
 
 JasmClassText facadeClassJasm(FacadeSession& s, const std::string& name)
 {
+    if (const auto* dex = s.ws.dexDomain()) {
+        auto cls = dex->classInfo(name);
+        if (cls.is_err()) throw StaleRefError(cls.unwrap_err().message);
+        auto text = dex->smaliText(name);
+        if (text.is_err()) throw std::runtime_error(text.unwrap_err().message);
+        return {std::move(cls).unwrap().internalName.to_std_string(),
+                std::move(text).unwrap(), true};
+    }
     const auto*  resource = classResourceAt(s, jasmTargetUri(s, name));
     if (!resource) throw StaleRefError("not a class entry: " + name);
     JvmJasmService jasm;
