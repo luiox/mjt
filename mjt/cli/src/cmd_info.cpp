@@ -20,7 +20,9 @@
 #include "mjbase/project/library_origin.hpp"
 #include "shared/json_util.hpp"
 #include "shared/output_sink.hpp"
+#include "workspace/jar_ops.hpp"
 #include "workspace/workspace.hpp"
+#include "workspace/analysis_ops.hpp"
 
 namespace mjt::cli {
 namespace {
@@ -67,7 +69,7 @@ constexpr std::initializer_list<const char*> kOriginOrder = {"jdk", "known", "un
 ca::Result<InfoReport, workspace::WorkspaceErrorInfo> collectInfo(const std::string& jarPath)
 {
     workspace::WorkspaceBase ws;
-    auto opened = ws.openJar(refOf(jarPath));
+    auto opened = ws.open(refOf(jarPath));
     if (opened.is_err()) return ca::Err(std::move(opened).unwrap_err());
 
     TempDbGuard guard{tempDbPath()};
@@ -129,7 +131,7 @@ ca::Result<InfoReport, workspace::WorkspaceErrorInfo> collectInfo(const std::str
     }
 
     // 字节码版本分布：summary_scan 骨架；损坏类被跳过（不进分布，不判失败）。
-    auto summaries = ws.listClassSummaries();
+    auto summaries = workspace::listClassSummaries(*ws.workingContainer());
     if (summaries.is_err()) return ca::Err(std::move(summaries).unwrap_err());
     {
         std::map<ca::i32, ca::i64> versions;
@@ -139,7 +141,10 @@ ca::Result<InfoReport, workspace::WorkspaceErrorInfo> collectInfo(const std::str
         for (const auto& [major, count] : versions) report.versions.emplace_back(major, count);
     }
 
-    report.hasManifest = ws.manifestAttributes().is_ok();
+    const auto* workingForManifest = ws.workingContainer();
+    report.hasManifest =
+        workingForManifest != nullptr &&
+        workspace::manifestAttributes(*workingForManifest).is_ok();
     return ca::Ok(std::move(report));
 }
 

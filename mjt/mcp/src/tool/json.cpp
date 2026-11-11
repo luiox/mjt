@@ -18,14 +18,11 @@ using mjt::workspace::ClassInfo;
 using mjt::workspace::ClassSummary;
 using mjt::workspace::FieldInfo;
 using mjt::workspace::ImpactAnalysis;
-using mjt::workspace::JarRepairResult;
 using mjt::workspace::MethodInfo;
 using mjt::workspace::MutationResult;
 using mjt::workspace::SearchHit;
 using mjt::workspace::SupportingResourceInfo;
-using mjt::workspace::WorkflowReferenceKind;
-using mjt::workspace::WorkflowResult;
-using mjt::workspace::IWorkspace;
+using mjt::workspace::WorkspaceBase;
 
 ca::str::Utf16String utf16(const std::string& value)
 {
@@ -543,23 +540,6 @@ Json mutationJson(const MutationResult& mutation)
             {"analysis_sync", std::move(analysisSync)}};
 }
 
-Json jarRepairJson(const JarRepairResult& repair)
-{
-    Json result = mutationJson(repair.mutation);
-    Json issues = Json::array();
-    for (const auto& issue : repair.issues) {
-        issues.push_back({{"uri", issue.uri.to_std_string()},
-                          {"kind", issue.kind.to_std_string()},
-                          {"message", issue.message.to_std_string()},
-                          {"size", issue.size},
-                          {"selected_for_removal", issue.selectedForRemoval}});
-    }
-    result["resource_count"] = repair.resourceCount;
-    result["class_count"] = repair.classCount;
-    result["issues"] = std::move(issues);
-    return result;
-}
-
 Json referenceJson(const mjt::workspace::ReferenceInfo& reference)
 {
     return {{"source", {{"class", reference.sourceClass.to_std_string()},
@@ -570,44 +550,6 @@ Json referenceJson(const mjt::workspace::ReferenceInfo& reference)
                          {"support_id", reference.supportId.to_std_string()}}},
             {"target", reference.target.to_std_string()},
             {"kind", reference.kind.to_std_string()}};
-}
-
-const char* workflowReferenceKindName(WorkflowReferenceKind kind)
-{
-    switch (kind) {
-    case WorkflowReferenceKind::Class: return "class";
-    case WorkflowReferenceKind::Field: return "field";
-    case WorkflowReferenceKind::Method: return "method";
-    }
-    return "unknown";
-}
-
-Json workflowJson(const WorkflowResult& workflow)
-{
-    Json stages = Json::array();
-    Json references = Json::array();
-    for (const auto& stage : workflow.stages)
-        stages.push_back({{"name", stage.name.to_std_string()},
-                          {"status", statusJson(shared::toCaStatus(stage.status))}});
-    for (const auto& report : workflow.references) {
-        Json before = Json::array();
-        Json after = Json::array();
-        for (const auto& reference : report.before) before.push_back(referenceJson(reference));
-        for (const auto& reference : report.after) after.push_back(referenceJson(reference));
-        references.push_back({{"query", {{"kind", workflowReferenceKindName(report.query.kind)},
-                                            {"owner", report.query.owner.to_std_string()},
-                                            {"name", report.query.name.to_std_string()},
-                                            {"descriptor", report.query.descriptor.to_std_string()}}},
-                              {"before", std::move(before)},
-                              {"after", std::move(after)}});
-    }
-    return {{"mutation", mutationJson(workflow.mutation)},
-            {"input_fingerprint", workflow.inputFingerprint.to_std_string()},
-            {"candidate_fingerprint", workflow.candidateFingerprint.to_std_string()},
-            {"export_path", workflow.exportPath.to_std_string()},
-            {"exported", workflow.exported},
-            {"stages", std::move(stages)},
-            {"references", std::move(references)}};
 }
 
 Json toolResult(Json payload, bool isError)
@@ -946,7 +888,7 @@ Json impactJson(const ImpactAnalysis& impact)
 }
 
 Json normalizeToolError(const std::string& name, const Json& arguments, Json result,
-                        const IWorkspace* workspace)
+                        const WorkspaceBase* workspace)
 {
     if (!result.value("isError", false) || !result.contains("structuredContent")) return result;
     auto& payload = result["structuredContent"];

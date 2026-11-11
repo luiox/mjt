@@ -21,6 +21,7 @@
 #include "shared/output_sink.hpp"
 #include "shared/string_extractor.hpp"
 #include "workspace/workspace.hpp"
+#include "workspace/analysis_ops.hpp"
 
 namespace mjt::cli {
 namespace {
@@ -90,14 +91,14 @@ ca::Result<StringsReport, StringsError> collectStrings(const std::string& jarPat
                                     {std::to_string(minimumLen)}));
 
     workspace::WorkspaceBase ws;
-    auto opened = ws.openJar(refOf(jarPath));
+    auto opened = ws.open(refOf(jarPath));
     if (opened.is_err()) {
         workspace::WorkspaceErrorInfo info = std::move(opened).unwrap_err();
         return ca::Err(stringsError(StringsError::Kind::Runtime, "mjt.cli.strings.err.open_failed",
                                     {info.message}));
     }
 
-    auto summaries = ws.listClassSummaries();
+    auto summaries = workspace::listClassSummaries(*ws.workingContainer());
     if (summaries.is_err()) {
         workspace::WorkspaceErrorInfo info = std::move(summaries).unwrap_err();
         return ca::Err(stringsError(StringsError::Kind::Runtime, "mjt.cli.strings.err.open_failed",
@@ -134,7 +135,8 @@ ca::Result<StringsReport, StringsError> collectStrings(const std::string& jarPat
     std::map<std::string, ValueCount, std::less<>> unique;
     for (const auto& summary : classes) {
         const std::string internalName = summary.internalName.to_std_string();
-        auto content                   = ws.readResource(summary.resourceUri.ref());
+        auto content                   = workspace::readResource(
+        *ws.workingContainer(), summary.resourceUri.ref());
         if (content.is_err()) continue;   // 类级读取失败按畸形口径跳过
         const auto entries = extractor.extractAll(std::move(content).unwrap().bytes, internalName);
         for (auto& entry : entries) {

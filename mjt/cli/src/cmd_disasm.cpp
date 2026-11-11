@@ -14,6 +14,7 @@
 #include "shared/i18n_errors.hpp"
 #include "shared/output_sink.hpp"
 #include "workspace/workspace.hpp"
+#include "workspace/analysis_ops.hpp"
 #include "workspace/workspace_types.hpp"
 
 namespace mjt::cli {
@@ -42,7 +43,7 @@ ca::Result<DisasmReport, DisasmError> collectDisasm(const std::string& jarPath,
                                                     const std::string& internalName)
 {
     workspace::WorkspaceBase ws;
-    auto opened = ws.openJar(refOf(jarPath));
+    auto opened = ws.open(refOf(jarPath));
     if (opened.is_err()) {
         workspace::WorkspaceErrorInfo info = std::move(opened).unwrap_err();
         return ca::Err(disasmError(DisasmError::Kind::Runtime, "mjt.cli.disasm.err.open_failed",
@@ -50,7 +51,9 @@ ca::Result<DisasmReport, DisasmError> collectDisasm(const std::string& jarPath,
     }
 
     // 类选择器定位（URI / 内名双解析）：NotFound → 退出码 1，其余 → 退出码 2。
-    auto selected = ws.classInfo(refOf(internalName));
+    auto selected = workspace::classInfo(*ws.workingContainer(),
+                                               refOf(internalName),
+                                               ws.lvtJarFallbackFlag());
     if (selected.is_err()) {
         workspace::WorkspaceErrorInfo info = std::move(selected).unwrap_err();
         return ca::Err(info.code == workspace::WorkspaceError::NotFound
@@ -61,7 +64,8 @@ ca::Result<DisasmReport, DisasmError> collectDisasm(const std::string& jarPath,
                                          {info.message}));
     }
 
-    auto disassembled = ws.getJasm(std::move(selected).unwrap().resourceUri.ref());
+    auto disassembled = workspace::getJasm(*ws.workingContainer(),
+                                                 std::move(selected).unwrap().resourceUri.ref());
     if (!disassembled.isOk()) {
         // 诊断面聚合首条 Error 文案（与 MCP class_jasm diagnostics 同源）。
         std::string detail;

@@ -7,11 +7,13 @@
 #include <vector>
 
 #include "shared/shadow_display.hpp"
+
+#include "workspace/analysis_ops.hpp"
 #include "tool/json.hpp"
 
 #include "mjbase/mapping/shadow_alias_format.hpp"
 #include "mjbase/renamer/shadow_alias_store.hpp"
-#include "workspace/i_workspace.hpp"
+#include "workspace/workspace.hpp"
 
 namespace mjt::mcp::slot {
 
@@ -50,7 +52,7 @@ Json slotError(const std::string& message)
     return detail::toolError(message);
 }
 
-WorkspaceShadowTable loadWorkspaceShadowTable(mjt::workspace::IWorkspace& workspace,
+WorkspaceShadowTable loadWorkspaceShadowTable(mjt::workspace::WorkspaceBase& workspace,
                                               const std::string& file)
 {
     WorkspaceShadowTable slots;
@@ -116,12 +118,22 @@ bool resolveClassSlot(const WorkspaceShadowTable& slots,
     return true;
 }
 
-bool resourceUriOfResolved(mjt::workspace::IWorkspace& workspace,
+bool resourceUriOfResolved(mjt::workspace::WorkspaceBase& workspace,
                            const std::string&                    internalName,
                            std::string&                          uri,
                            Json&                                 error)
 {
-    auto info = workspace.classInfo(utf8Ref(internalName));
+    //查询算子（analysis_ops）只读消费工作容器；未加载按旧 ensureLoaded
+    //口径物化同形错误（下游 is_err 分支零改动）。
+    const auto* shadowWorking = workspace.workingContainer();
+    mjt::workspace::WorkspaceErrorInfo unloaded;
+    unloaded.code    = mjt::workspace::WorkspaceError::FailedPrecondition;
+    unloaded.message = "get class info: workspace is not loaded";
+    mjt::workspace::WorkspaceResult<mjt::workspace::ClassInfo> info =
+        ca::core::Err(std::move(unloaded));
+    if (shadowWorking != nullptr)
+        info = mjt::workspace::classInfo(
+            *shadowWorking, utf8Ref(internalName), workspace.lvtJarFallbackFlag());
     if (info.is_err()) {
         error = slotError("unknown-handle: reference resolved to " + internalName +
                           " but the class is not loadable in this workspace: " +
@@ -200,7 +212,7 @@ bool resolveMethodSlots(const WorkspaceShadowTable& slots,
     return true;
 }
 
-bool backfillMemberDescriptor(mjt::workspace::IWorkspace& workspace,
+bool backfillMemberDescriptor(mjt::workspace::WorkspaceBase& workspace,
                               const std::string&             ownerRaw,
                               const std::string&             memberName,
                               bool                           field,
@@ -211,7 +223,17 @@ bool backfillMemberDescriptor(mjt::workspace::IWorkspace& workspace,
     if (memberName.empty()) return true;
     //owner 类不可解析（表外类直通查询、类名拼错）：无操作放行，descriptor
     //保持为空，由下游查询给出 canonical 错误/空集。
-    auto info = workspace.classInfo(utf8Ref(ownerRaw));
+    //查询算子（analysis_ops）只读消费工作容器；未加载按旧 ensureLoaded
+    //口径物化同形错误（下游 is_err 分支零改动）。
+    const auto* shadowWorking = workspace.workingContainer();
+    mjt::workspace::WorkspaceErrorInfo unloaded;
+    unloaded.code    = mjt::workspace::WorkspaceError::FailedPrecondition;
+    unloaded.message = "get class info: workspace is not loaded";
+    mjt::workspace::WorkspaceResult<mjt::workspace::ClassInfo> info =
+        ca::core::Err(std::move(unloaded));
+    if (shadowWorking != nullptr)
+        info = mjt::workspace::classInfo(
+            *shadowWorking, utf8Ref(ownerRaw), workspace.lvtJarFallbackFlag());
     if (info.is_err()) return true;
     const auto& clazz = std::move(info).unwrap();
     //候选枚举机（同源复用）：该名字在目标池的全部去重描述符；另一池的同名
@@ -266,7 +288,7 @@ bool backfillMemberDescriptor(mjt::workspace::IWorkspace& workspace,
     return false;
 }
 
-bool memberDescriptorMismatch(mjt::workspace::IWorkspace& workspace,
+bool memberDescriptorMismatch(mjt::workspace::WorkspaceBase& workspace,
                               const std::string&             ownerRaw,
                               const std::string&             memberName,
                               const std::string&             descriptor,
@@ -275,7 +297,17 @@ bool memberDescriptorMismatch(mjt::workspace::IWorkspace& workspace,
 {
     //空名/空描述符不适配：canonical 错误面在下游。
     if (memberName.empty() || descriptor.empty()) return true;
-    auto info = workspace.classInfo(utf8Ref(ownerRaw));
+    //查询算子（analysis_ops）只读消费工作容器；未加载按旧 ensureLoaded
+    //口径物化同形错误（下游 is_err 分支零改动）。
+    const auto* shadowWorking = workspace.workingContainer();
+    mjt::workspace::WorkspaceErrorInfo unloaded;
+    unloaded.code    = mjt::workspace::WorkspaceError::FailedPrecondition;
+    unloaded.message = "get class info: workspace is not loaded";
+    mjt::workspace::WorkspaceResult<mjt::workspace::ClassInfo> info =
+        ca::core::Err(std::move(unloaded));
+    if (shadowWorking != nullptr)
+        info = mjt::workspace::classInfo(
+            *shadowWorking, utf8Ref(ownerRaw), workspace.lvtJarFallbackFlag());
     if (info.is_err()) return true;
     const auto& clazz = std::move(info).unwrap();
     //同名候选枚举（与 backfill 同一收集面）；描述符命中其一说明失败另有
@@ -307,7 +339,7 @@ bool memberDescriptorMismatch(mjt::workspace::IWorkspace& workspace,
     return false;
 }
 
-bool resolveClassArgument(mjt::workspace::IWorkspace& workspace,
+bool resolveClassArgument(mjt::workspace::WorkspaceBase& workspace,
                           const Json&                           arguments,
                           const std::string&                    key,
                           bool                                  verifyRaw,
@@ -326,7 +358,7 @@ bool resolveClassArgument(mjt::workspace::IWorkspace& workspace,
     return true;
 }
 
-bool resolveClassUriArgument(mjt::workspace::IWorkspace& workspace,
+bool resolveClassUriArgument(mjt::workspace::WorkspaceBase& workspace,
                              const Json&                           arguments,
                              const std::string&                    key,
                              std::string&                          out,

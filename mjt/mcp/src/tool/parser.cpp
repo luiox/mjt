@@ -21,8 +21,6 @@ using mjt::workspace::RenameKind;
 using mjt::workspace::RenameRequest;
 using mjt::workspace::SearchMatchMode;
 using mjt::workspace::SearchOptions;
-using mjt::workspace::WorkflowReferenceKind;
-using mjt::workspace::WorkflowReferenceQuery;
 
 /// @brief JSON 文本 → Utf8String：nlohmann 解析契约保证字符串是合法 UTF-8，
 ///        直接按字节收编（与 workspace 侧 analysis_ingest 的 utf8() 同口径）。
@@ -574,70 +572,6 @@ bool parsePipelineRequest(const Json& arguments, PipelineRequest& output, std::s
     if (!output.pipeline.is_empty() && !output.passNames.empty()) {
         error = "pipeline and passes are mutually exclusive";
         return false;
-    }
-    return true;
-}
-
-bool parseWorkflowReferences(const Json& arguments, std::vector<WorkflowReferenceQuery>& output,
-                             std::string& error)
-{
-    if (!arguments.contains("references")) return true;
-    const auto& values = arguments.at("references");
-    if (!values.is_array()) {
-        error = "references must be an array";
-        return false;
-    }
-    for (const auto& value : values) {
-        if (!value.is_object()) {
-            error = "each references item must be an object";
-            return false;
-        }
-        WorkflowReferenceQuery query;
-        const auto kind = value.value("kind", std::string{});
-        if (kind == "class") query.kind = WorkflowReferenceKind::Class;
-        else if (kind == "field") query.kind = WorkflowReferenceKind::Field;
-        else if (kind == "method") query.kind = WorkflowReferenceKind::Method;
-        else {
-            error = "unsupported workflow reference kind: " + kind;
-            return false;
-        }
-        query.owner = utf8(value.value("owner", std::string{}));
-        query.name = utf8(value.value("name", std::string{}));
-        query.descriptor = utf8(value.value("descriptor", std::string{}));
-        output.push_back(std::move(query));
-    }
-    return true;
-}
-
-bool parseWorkflowDecompileClasses(const Json& arguments, std::vector<std::string>& output,
-                                   bool& batch, std::string& error)
-{
-    const auto single = arguments.value("decompile_class", std::string{});
-    batch = arguments.contains("decompile_classes");
-    if (!batch) {
-        if (!single.empty()) output.push_back(single);
-        return true;
-    }
-    if (!single.empty()) {
-        error = "decompile_class and decompile_classes are mutually exclusive";
-        return false;
-    }
-    const auto& values = arguments.at("decompile_classes");
-    if (!values.is_array()) {
-        error = "decompile_classes must be an array";
-        return false;
-    }
-    if (values.empty() || values.size() > kMaximumWorkflowDecompileClasses) {
-        error = "decompile_classes must contain between 1 and " +
-                std::to_string(kMaximumWorkflowDecompileClasses) + " class names";
-        return false;
-    }
-    for (const auto& value : values) {
-        if (!value.is_string() || value.get<std::string>().empty()) {
-            error = "each decompile_classes item must be a non-empty string";
-            return false;
-        }
-        output.push_back(value.get<std::string>());
     }
     return true;
 }

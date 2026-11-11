@@ -3,12 +3,12 @@
 
 #include <gtest/gtest.h>
 
-#include "tool/diff.hpp"
+#include "workspace/text_diff.hpp"
 
-namespace mjt::mcp::detail {
+namespace mjt::workspace {
 namespace {
 
-TEST(McpJasmDiffTest, SplitAndJoinRoundTripsTrailingNewline)
+TEST(WorkspaceTextDiffTest, SplitAndJoinRoundTripsTrailingNewline)
 {
     EXPECT_EQ((std::vector<std::string>{"a", "b"}), splitLines("a\nb\n"));
     EXPECT_EQ((std::vector<std::string>{"a", "b"}), splitLines("a\nb"));
@@ -18,7 +18,7 @@ TEST(McpJasmDiffTest, SplitAndJoinRoundTripsTrailingNewline)
     EXPECT_EQ("", joinLines({}));
 }
 
-TEST(McpJasmDiffTest, ApplySimpleReplacementHunk)
+TEST(WorkspaceTextDiffTest, ApplySimpleReplacementHunk)
 {
     const std::string base = "line1\nline2\nline3\n";
     const std::string diff =
@@ -34,7 +34,7 @@ TEST(McpJasmDiffTest, ApplySimpleReplacementHunk)
     EXPECT_EQ("line1\nline-two\nline3\n", result.text);
 }
 
-TEST(McpJasmDiffTest, ApplyInsertionHunk)
+TEST(WorkspaceTextDiffTest, ApplyInsertionHunk)
 {
     const std::string base = "a\nb\n";
     const std::string diff =
@@ -47,7 +47,7 @@ TEST(McpJasmDiffTest, ApplyInsertionHunk)
     EXPECT_EQ("a\nmiddle\nb\n", result.text);
 }
 
-TEST(McpJasmDiffTest, ApplyRemovalHunk)
+TEST(WorkspaceTextDiffTest, ApplyRemovalHunk)
 {
     const std::string base = "a\nmiddle\nb\n";
     const std::string diff =
@@ -60,7 +60,7 @@ TEST(McpJasmDiffTest, ApplyRemovalHunk)
     EXPECT_EQ("a\nb\n", result.text);
 }
 
-TEST(McpJasmDiffTest, ApplyMultipleHunksInOrder)
+TEST(WorkspaceTextDiffTest, ApplyMultipleHunksInOrder)
 {
     const std::string base = "h1\nh2\nh3\nh4\nh5\n";
     const std::string diff =
@@ -75,7 +75,7 @@ TEST(McpJasmDiffTest, ApplyMultipleHunksInOrder)
     EXPECT_EQ("H1\nh2\nh3\nH4\nh5\n", result.text);
 }
 
-TEST(McpJasmDiffTest, InterleavedContextRemovedAddedPreservedInOrder)
+TEST(WorkspaceTextDiffTest, InterleavedContextRemovedAddedPreservedInOrder)
 {
     //context/-removed/+added 交错：验证解析保留顺序、applier 按序匹配。
     const std::string base = "x\nold1\ny\nold2\nz\n";
@@ -93,7 +93,7 @@ TEST(McpJasmDiffTest, InterleavedContextRemovedAddedPreservedInOrder)
     EXPECT_EQ("x\nnew1\ny\nnew2\nz\n", result.text);
 }
 
-TEST(McpJasmDiffTest, ContextMismatchReportsHunkAndLine)
+TEST(WorkspaceTextDiffTest, ContextMismatchReportsHunkAndLine)
 {
     const std::string base = "line1\nwrong\nline3\n";
     const std::string diff =
@@ -109,7 +109,7 @@ TEST(McpJasmDiffTest, ContextMismatchReportsHunkAndLine)
     EXPECT_NE(std::string::npos, result.error.find("line2"));
 }
 
-TEST(McpJasmDiffTest, OverlappingHunksRejected)
+TEST(WorkspaceTextDiffTest, OverlappingHunksRejected)
 {
     const std::string base = "a\nb\nc\n";
     //两个 hunk 都从 base line 1 开始，第二个会回退到已消费位置之前。
@@ -125,7 +125,7 @@ TEST(McpJasmDiffTest, OverlappingHunksRejected)
     EXPECT_EQ(2u, result.failedHunk);
 }
 
-TEST(McpJasmDiffTest, NoNewlineMarkerIsIgnored)
+TEST(WorkspaceTextDiffTest, NoNewlineMarkerIsIgnored)
 {
     const std::string base = "a\nb\n";
     const std::string diff =
@@ -138,7 +138,7 @@ TEST(McpJasmDiffTest, NoNewlineMarkerIsIgnored)
     EXPECT_EQ("A\nb\n", result.text);
 }
 
-TEST(McpJasmDiffTest, HeaderlessDiffAccepted)
+TEST(WorkspaceTextDiffTest, HeaderlessDiffAccepted)
 {
     //没有 --- / +++ 文件头，直接 @@ 开头也应被接受。
     const std::string base = "a\nb\n";
@@ -151,7 +151,7 @@ TEST(McpJasmDiffTest, HeaderlessDiffAccepted)
     EXPECT_EQ("A\nb\n", result.text);
 }
 
-TEST(McpJasmDiffTest, MissingCountDefaultsToOne)
+TEST(WorkspaceTextDiffTest, MissingCountDefaultsToOne)
 {
     //"@@ -1 +1 @@" 缺省 count=1。
     const std::string base = "a\nb\n";
@@ -164,7 +164,7 @@ TEST(McpJasmDiffTest, MissingCountDefaultsToOne)
     EXPECT_EQ("a\nB\n", result.text);
 }
 
-TEST(McpJasmDiffTest, EmptyContextLineHandled)
+TEST(WorkspaceTextDiffTest, EmptyContextLineHandled)
 {
     const std::string base = "a\n\nb\n";
     const std::string diff =
@@ -178,7 +178,7 @@ TEST(McpJasmDiffTest, EmptyContextLineHandled)
     EXPECT_EQ("a\n\nB\n", result.text);
 }
 
-TEST(McpJasmDiffTest, InvalidPrefixRejected)
+TEST(WorkspaceTextDiffTest, InvalidPrefixRejected)
 {
     const std::string base = "a\n";
     const std::string diff =
@@ -190,7 +190,7 @@ TEST(McpJasmDiffTest, InvalidPrefixRejected)
     EXPECT_FALSE(error.empty());
 }
 
-TEST(McpJasmDiffTest, HunkStartBeyondEndOfBaseRejected)
+TEST(WorkspaceTextDiffTest, HunkStartBeyondEndOfBaseRejected)
 {
     //hunk 起点超过 base 行数：必须在拷贝循环前报错，而不是越界读 baseLines。
     const std::string base = "a\nb\n";   //2 行
@@ -203,7 +203,7 @@ TEST(McpJasmDiffTest, HunkStartBeyondEndOfBaseRejected)
     EXPECT_NE(std::string::npos, result.error.find("only 2 lines are available"));
 }
 
-TEST(McpJasmDiffTest, CrlfDiffMatchesLfBase)
+TEST(WorkspaceTextDiffTest, CrlfDiffMatchesLfBase)
 {
     //CRLF diff（Windows 客户端常态）应能匹配 LF base；输出统一为 LF。
     const std::string base = "line1\nline2\nline3\n";
@@ -219,4 +219,4 @@ TEST(McpJasmDiffTest, CrlfDiffMatchesLfBase)
 }
 
 }   //namespace
-}   //namespace mjt::mcp::detail
+}   // namespace mjt::workspace

@@ -13,8 +13,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "workspace/i_workspace.hpp"
-#include "shared/jar_workspace.hpp"
+#include "workspace/workspace.hpp"
 #include "tool/project_session.hpp"
 
 namespace mjt::mcp {
@@ -60,7 +59,7 @@ struct DecompilerSessionSettings final
 ///session 工具（project_open / project_close、decompile 的 poll / cancel / release
 ///作业面）只持这把锁，临界区很短，不会被正在执行的长工具阻塞。
 ///- `executionMutex_`（执行锁）：同一 session 内非 session 工具的执行体串行化，
-///避免并发访问同一个 IWorkspace。`call` 先取执行锁，再短持状态锁解析
+///避免并发访问同一个 WorkspaceBase。`call` 先取执行锁，再短持状态锁解析
 ///ProjectSession 的 `shared_ptr`，随后在**不持状态锁**的情况下运行工具体——长工具
 ///（同步反编译）执行期间 session 工具与 job worker 的 commit 不被阻塞。
 ///- `sessions_` 持有 `shared_ptr<ProjectSession>`：工具执行期间 project_close 只是

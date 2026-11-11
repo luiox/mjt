@@ -329,8 +329,8 @@ ca::Status openProjectSession(const std::string&               jarPath,
     auto session = std::make_shared<ProjectSession>();
     session->projectDir = dirText;
     session->temporary  = projectDir.empty();
-    session->workspace  = std::make_unique<mjt::JarWorkspace>();
-    const auto opened = session->workspace->openJar(utf8Ref(jar.string()));
+    session->workspace  = std::make_unique<mjt::workspace::WorkspaceBase>();
+    const auto opened = session->workspace->open(utf8Ref(jar.string()));
     if (opened.is_err()) return shared::toCaStatus(opened.unwrap_err());
     //单写者锁与活动代装载在 bindLedgerStore 内完成；失败即锁被活进程持有或
     //台账损毁，会话不落半开状态。
@@ -415,8 +415,9 @@ ca::Status openProjectSession(const std::string&               jarPath,
         }
     }
     session->workspace->bindAnalysisDb(session->analysisDb.get());
-    //角色化容器栈：primary>library>runtime 解析序；容器对象借用自
-    //mountedContainers（所有权归会话）。
+    //W1：workspace 支撑面与会话挂载共用一张登记表（workspace 不再持第二套表）。
+    session->workspace->bindContainerRegistry(&session->containerRegistry);
+    //角色化容器栈：primary>library>runtime 解析序；容器对象借用自会话登记表。
     session->containerStack = std::make_unique<mjbase::model::MountedContainerSet>();
 
     outSession     = std::move(session);
@@ -533,7 +534,7 @@ ca::Status flushAnalysisCache(ProjectSession& session)
 const ProjectSession::MountedContainerRecord* findMountedContainer(
     const ProjectSession& session, const std::string& id)
 {
-    for (const auto& record : session.mountedContainers) {
+    for (const auto& record : session.containerRegistry.records()) {
         if (record.id == id) return &record;
     }
     return nullptr;

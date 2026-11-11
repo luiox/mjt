@@ -18,15 +18,14 @@
 #include "mjbase/project/analysis_cache.hpp"
 #include "mjbase/project/project_store.hpp"
 
+#include "workspace/analysis_ops.hpp"
+
 namespace mjt::mcp {
 
 using namespace detail;
 using mjt::workspace::MutationRequest;
 using mjt::workspace::PipelineRequest;
-using mjt::workspace::WorkflowCandidateCommitRequest;
-using mjt::workspace::WorkflowReferenceQuery;
-using mjt::workspace::WorkflowRequest;
-using mjt::workspace::IWorkspace;
+using mjt::workspace::WorkspaceBase;
 
 namespace fs = std::filesystem;
 
@@ -78,7 +77,9 @@ DecompileCacheLookup prepareDecompileCacheLookup(ProjectSession&    session,
     lookup.className = className;
     const auto digest = primaryFingerprint(session.projectDir);
     if (digest.empty() || !session.cacheStore) return lookup;
-    auto bytes = session.workspace->readClassBytes(utf8Ref(className));
+    const auto* cacheWorking = session.workspace->workingContainer();
+    if (cacheWorking == nullptr) return lookup;
+    auto bytes = workspace::readClassBytes(*cacheWorking, utf8Ref(className));
     if (bytes.is_err()) return lookup;
     // ClassBytesInfo 携 move-only Utf8String：unwrap 走移动重载。
     const auto& value = std::move(bytes).unwrap();
@@ -192,7 +193,15 @@ Json decompileTimeoutHints()
 std::optional<Json> McpToolService::callDecompilerTool(
     const std::string& name, const Json& arguments, ProjectSession& session)
 {
-    IWorkspace* current = session.workspace.get();
+    WorkspaceBase* current = session.workspace.get();
+    //查询算子面（analysis_ops 自由函数）只读消费工作容器；未加载按旧
+    //ensureLoaded 口径报 FailedPrecondition。
+    const auto* working = current != nullptr ? current->workingContainer() : nullptr;
+    if (working == nullptr) {
+        const auto status = ca::ErrStatus(ca::StatusCode::FAILED_PRECONDITION,
+                                          "workspace is not loaded");
+        return toolError("decompile failed", &status);
+    }
     if (name == "decompile") {
         //decompile 的执行体（action=decompile；poll/cancel/release 是 session
         //工具，见 session.cpp）：class 或方法三元组二选一寻址。
@@ -219,7 +228,7 @@ std::optional<Json> McpToolService::callDecompilerTool(
             std::string descriptor;
             if (!slot::resolveMethodSlots(slots, arguments, true, owner, member, descriptor, slotError))
                 return slotError;
-            auto methodInfo = current->methodInfo(utf8Ref(owner), utf8Ref(member), utf8Ref(descriptor));
+            auto methodInfo = workspace::methodInfo(*working, utf8Ref(owner), utf8Ref(member), utf8Ref(descriptor), current->lvtJarFallbackFlag());
             if (methodInfo.is_err()) {
                 const auto err = shared::toCaStatus(methodInfo.unwrap_err());
                 return toolError("get method source failed", &err);
@@ -245,7 +254,7 @@ std::optional<Json> McpToolService::callDecompilerTool(
                 if (jobs_.size() >= kMaximumRetainedJobs)
                     return toolError("too many retained jobs; release completed jobs before starting another");
             }
-            auto classInfo = current->classInfo(utf8Ref(className));
+            auto classInfo = workspace::classInfo(*working, utf8Ref(className), current->lvtJarFallbackFlag());
             if (classInfo.is_err()) {
                 const auto err = shared::toCaStatus(classInfo.unwrap_err());
                 return toolError("get decompile class failed", &err);
@@ -258,7 +267,7 @@ std::optional<Json> McpToolService::callDecompilerTool(
             if (temporary.is_err()) { const auto err = temporary.unwrap_err(); return toolError("create decompiler snapshot failed", &err); }
             const auto snapshotDirectory = std::move(temporary).unwrap();
             const auto snapshot = snapshotDirectory / "workspace.jar";
-            const auto exportStatus = current->exportJar(utf8Ref(snapshot.string()));
+            const auto exportStatus = current->exportArtifact(utf8Ref(snapshot.string()));
             if (exportStatus.is_err()) {
                 std::error_code cleanupError;
                 fs::remove_all(snapshotDirectory, cleanupError);
@@ -397,7 +406,7 @@ std::optional<Json> McpToolService::callDecompilerTool(
             const auto limit = checkCachedSourceLimit(options, cachedSource);
             if (limit.is_err())
                 return toolError("decompile class failed", &limit);
-            auto info = current->classInfo(utf8Ref(className));
+            auto info = workspace::classInfo(*working, utf8Ref(className), current->lvtJarFallbackFlag());
             if (info.is_err())
                 { const auto err = shared::toCaStatus(info.unwrap_err()); return toolError("get decompile class failed", &err); }
             detail::DecompiledSource result;

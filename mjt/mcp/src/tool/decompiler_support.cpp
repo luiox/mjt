@@ -9,11 +9,13 @@
 #include "limits.hpp"
 #include "shared/status_convert.hpp"
 
+#include "workspace/analysis_ops.hpp"
+
 namespace mjt::mcp::detail {
 
 namespace fs = std::filesystem;
 
-using mjt::workspace::IWorkspace;
+using mjt::workspace::WorkspaceBase;
 
 namespace {
 
@@ -297,11 +299,20 @@ ca::StatusOr<DecompiledSource> decompileSnapshotClass(
                                    std::move(source).unwrap()});
 }
 
-ca::StatusOr<DecompiledSource> decompileWorkspaceClass(IWorkspace& workspace,
+ca::StatusOr<DecompiledSource> decompileWorkspaceClass(WorkspaceBase& workspace,
                                                         const std::string& className,
                                                         const DecompilerOptions& options)
 {
-    auto info = workspace.classInfo(utf8Ref(className));
+    const auto* working = workspace.workingContainer();
+    if (working == nullptr) {
+        mjt::workspace::WorkspaceErrorInfo info;
+        info.code    = mjt::workspace::WorkspaceError::FailedPrecondition;
+        info.message = "get class info: workspace is not loaded";
+        const auto err = shared::toCaStatus(std::move(info));
+        return ca::Err(err);
+    }
+    auto info = mjt::workspace::classInfo(*working, utf8Ref(className),
+                                                         workspace.lvtJarFallbackFlag());
     if (info.is_err()) return ca::Err(shared::toCaStatus(info.unwrap_err()));
     // ClassInfo 携 move-only Utf8String：unwrap 走移动重载；内名落 std::string
     // 供快照反编译路径面（文件系统字节路径口径）。
@@ -312,7 +323,7 @@ ca::StatusOr<DecompiledSource> decompileWorkspaceClass(IWorkspace& workspace,
     ScopedTemporaryDirectory directory(std::move(temporary).unwrap());
 
     const auto snapshot = directory.path() / "workspace.jar";
-    auto exportStatus = workspace.exportJar(utf8Ref(snapshot.string()));
+    auto exportStatus = workspace.exportArtifact(utf8Ref(snapshot.string()));
     if (exportStatus.is_err()) return ca::Err(shared::toCaStatus(std::move(exportStatus).unwrap_err()));
     return decompileSnapshotClass(snapshot, internalName, options);
 }

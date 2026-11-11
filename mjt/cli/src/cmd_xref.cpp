@@ -19,6 +19,7 @@
 #include "shared/json_util.hpp"
 #include "shared/output_sink.hpp"
 #include "workspace/workspace.hpp"
+#include "workspace/analysis_ops.hpp"
 #include "workspace/workspace_types.hpp"
 
 namespace mjt::cli {
@@ -127,7 +128,7 @@ ca::Result<XrefReport, XrefError> collectXref(const std::string& jarPath,
                                  "mjt.cli.xref.err.invalid_member", {member}));
 
     workspace::WorkspaceBase ws;
-    auto opened = ws.openJar(refOf(jarPath));
+    auto opened = ws.open(refOf(jarPath));
     if (opened.is_err()) {
         workspace::WorkspaceErrorInfo info = std::move(opened).unwrap_err();
         return ca::Err(xrefError(XrefError::Kind::Runtime, "mjt.cli.xref.err.open_failed",
@@ -135,7 +136,7 @@ ca::Result<XrefReport, XrefError> collectXref(const std::string& jarPath,
     }
 
     // 类选择器存在性（骨架面）：xref 面向 jar 内类，错拼类名响亮失败。
-    auto summaries = ws.listClassSummaries();
+    auto summaries = workspace::listClassSummaries(*ws.workingContainer());
     if (summaries.is_err()) {
         workspace::WorkspaceErrorInfo info = std::move(summaries).unwrap_err();
         return ca::Err(xrefError(XrefError::Kind::Runtime, "mjt.cli.xref.err.open_failed",

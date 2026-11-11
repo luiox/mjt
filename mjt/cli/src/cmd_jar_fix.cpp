@@ -1,6 +1,6 @@
 /// @file        cmd_jar_fix.cpp
-/// @brief       `mjt jar fix` 命令核心：analyzeJarRepair 诊断 + applyJarRepair
-///              修复（workspace 既有事务面直连）+ exportJar 落盘。
+/// @brief       `mjt jar fix` 命令核心：jar_ops 扫描诊断 + applyEdit 修复
+///              （EditCommand::JarRepair 单入口）+ exportArtifact 落盘。
 ///
 /// 修复策略（v1 固定，与 workspace JarRepairRequest 两旗标对齐）：移除无法
 /// 解析/校验的 class 条目（invalid_class / invalid_class_entry）与已知损坏
@@ -16,6 +16,8 @@
 
 #include "shared/i18n_errors.hpp"
 #include "shared/output_sink.hpp"
+#include "workspace/edit_command.hpp"
+#include "workspace/jar_ops.hpp"
 #include "workspace/workspace.hpp"
 
 namespace mjt::cli {
@@ -44,21 +46,34 @@ ca::Result<FixReport, workspace::WorkspaceErrorInfo> fixJar(const std::string& i
     }
 
     workspace::WorkspaceBase ws;
-    auto opened = ws.openJar(refOf(inJar));
+    auto opened = ws.open(refOf(inJar));
     if (opened.is_err()) return ca::Err(std::move(opened).unwrap_err());
 
     workspace::JarRepairRequest repair;
     repair.removeInvalidClassEntries   = true;
     repair.removeCorruptOutputMarkers  = true;
-    auto applied = ws.applyJarRepair(repair);
-    if (applied.mutation.status.is_err())
-        return ca::Err(std::move(applied.mutation.status));
+
+    // 报告面 = jar_ops 扫描自由函数（无状态只读）；修复事务走 applyEdit
+    // 单入口（候选删除 → 门禁 → 台账落账一条管道）。扫描计数在事务前取定
+    // ——commit 会换底工作副本容器，applyEdit 后旧容器指针悬垂不可复用。
+    const auto* working = ws.workingContainer();
+    ca::usize   classCount = 0;
+    const auto  issues =
+        working != nullptr ? workspace::scanJarRepairIssues(*working, repair, classCount)
+                           : std::vector<workspace::JarRepairIssue>{};
+    const ca::usize scannedEntries = working != nullptr ? working->size() : 0;
+    if (workspace::hasSelectedRepairIssues(issues)) {
+        workspace::MutationRequest request;
+        const auto applied = workspace::applyEdit(
+            ws, workspace::EditCommand{workspace::EditCommand::JarRepair{repair}}, request);
+        if (applied.status.is_err()) return ca::Err(std::move(applied.status));
+    }
 
     FixReport report;
-    report.scannedEntries = applied.resourceCount;
-    report.scannedClasses = applied.classCount;
-    report.issues.reserve(applied.issues.size());
-    for (const auto& issue : applied.issues) {
+    report.scannedEntries = scannedEntries;
+    report.scannedClasses = classCount;
+    report.issues.reserve(issues.size());
+    for (const auto& issue : issues) {
         report.issues.push_back({issue.uri.to_std_string(), issue.kind.to_std_string(),
                                  issue.message.to_std_string(), issue.selectedForRemoval});
     }
@@ -68,8 +83,8 @@ ca::Result<FixReport, workspace::WorkspaceErrorInfo> fixJar(const std::string& i
                   return left.kind < right.kind;
               });
 
-    // 覆盖写（exportJar 契约是「此前不存在的输出」，删除失败按运行失败
-    // 处理）：删旧输出推迟到导出前一刻——输入打不开或修复失败时上一份
+    // 覆盖写（exportArtifact 契约是「此前不存在的输出」，删除失败按运行
+    // 失败处理）：删旧输出推迟到导出前一刻——输入打不开或修复失败时上一份
     // 有效产物原样保留。
     std::error_code fsEc;
     std::filesystem::remove(outJar, fsEc);
@@ -80,7 +95,7 @@ ca::Result<FixReport, workspace::WorkspaceErrorInfo> fixJar(const std::string& i
         return ca::Err(std::move(info));
     }
 
-    auto exported = ws.exportJar(refOf(outJar));
+    auto exported = ws.exportArtifact(refOf(outJar));
     if (exported.is_err()) return ca::Err(std::move(exported).unwrap_err());
     return ca::Ok(std::move(report));
 }

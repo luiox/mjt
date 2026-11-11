@@ -20,14 +20,6 @@ bool parseRename(const Json& arguments,
 bool parsePipelineRequest(const Json& arguments,
                           mjt::workspace::PipelineRequest& output,
                           std::string& error);
-bool parseWorkflowReferences(
-    const Json& arguments,
-    std::vector<mjt::workspace::WorkflowReferenceQuery>& output,
-    std::string& error);
-bool parseWorkflowDecompileClasses(const Json& arguments,
-                                   std::vector<std::string>& output,
-                                   bool& batch,
-                                   std::string& error);
 bool parseJarRepairRequest(const Json& arguments,
                            mjt::workspace::JarRepairRequest& output,
                            std::string& error);

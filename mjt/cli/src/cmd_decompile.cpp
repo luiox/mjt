@@ -31,6 +31,7 @@
 #include "shared/output_sink.hpp"
 #include "shared/text_codec.hpp"
 #include "workspace/workspace.hpp"
+#include "workspace/analysis_ops.hpp"
 
 namespace mjt::cli {
 namespace {
@@ -314,12 +315,13 @@ ca::Result<SingleDecompileReport, DecompileError> decompileSingleClass(
     //目标类字节：workspace readClassBytes（URI / 内名双解析语义与产品其余面
     //同源——精确 URI 命中、字节级 this_class 内名命中、Multi-Release 确定序）。
     workspace::WorkspaceBase ws;
-    auto opened = ws.openJar(refOf(jarPath));
+    auto opened = ws.open(refOf(jarPath));
     if (opened.is_err())
         return ca::Err(mapWorkspaceError(std::move(opened).unwrap_err(),
                                          "mjt.cli.decompile.err.class_not_found",
                                          "mjt.cli.decompile.err.open_failed", jarPath));
-    auto classBytes = ws.readClassBytes(refOf(internalName));
+    auto classBytes = workspace::readClassBytes(*ws.workingContainer(),
+                                                     refOf(internalName));
     if (classBytes.is_err())
         return ca::Err(mapWorkspaceError(std::move(classBytes).unwrap_err(),
                                          "mjt.cli.decompile.err.class_not_found",

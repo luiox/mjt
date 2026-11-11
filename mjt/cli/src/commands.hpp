@@ -147,9 +147,10 @@ struct FixReport
     std::vector<FixIssue> issues; ///< 按 (uri, kind) 稳定序
 };
 
-/// @brief 诊断 + 修复一个 jar 并导出：workspace applyJarRepair（移除无效
-///        class 条目与损坏输出标记条目）→ exportJar 落盘 @p outJar。
-/// @note @p outJar 已存在时在导出前删除（exportJar 只接受此前不存在的路径；
+/// @brief 诊断 + 修复一个 jar 并导出：workspace applyEdit（EditCommand::
+///        JarRepair，移除无效 class 条目与损坏输出标记条目）→ exportArtifact
+///        落盘 @p outJar。
+/// @note @p outJar 已存在时在导出前删除（exportArtifact 只接受此前不存在的路径；
 ///        删除推迟到修复成功之后，坏输入不毁已有产物）；删除失败、打不开
 ///        jar、修复提交或导出失败走错误通道（退出码 2）。
 ca::Result<FixReport, workspace::WorkspaceErrorInfo> fixJar(const std::string& inJar,

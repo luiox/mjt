@@ -1,13 +1,15 @@
 #include "service.hpp"
 
 #include <algorithm>
+#include <functional>
 #include <optional>
+#include <set>
+#include <unordered_map>
 #include <string>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
-#include "diff.hpp"
 #include "json.hpp"
 #include "parser.hpp"
 #include "shared/jar_remapper.hpp"
@@ -22,13 +24,21 @@
 #include "mjbase/project/analysis_db.hpp"
 #include "mjbase/project/edit_ledger.hpp"
 
+#include "workspace/analysis_ops.hpp"
+#include "workspace/edit_command.hpp"
+#include "workspace/text_diff.hpp"
+
 namespace mjt::mcp {
 
 using namespace detail;
 using mjt::workspace::ClassMutation;
+using mjt::workspace::EditCommand;
 using mjt::workspace::PipelineRequest;
 using mjt::workspace::RenameRequest;
-using mjt::workspace::IWorkspace;
+using mjt::workspace::WorkspaceBase;
+using mjt::workspace::applyEdit;
+using mjt::workspace::applyUnifiedDiff;
+using mjt::workspace::spliceMethodJasm;
 
 namespace {
 
@@ -40,12 +50,28 @@ ca::str::Utf8StringRef utf8Ref(const std::string& value) noexcept
         value.empty() ? nullptr : reinterpret_cast<const ca::u8*>(value.data()), value.size());
 }
 
+///std::string → owning Utf8String（EditCommand 载荷字段）。
+ca::str::Utf8String ownUtf8(const std::string& value)
+{
+    return ca::str::Utf8String::from_data_unchecked(
+        reinterpret_cast<const ca::u8*>(value.data()), value.size());
+}
+
 }   //namespace
 
 std::optional<Json> McpToolService::callMutationTool(
     const std::string& name, const Json& arguments, ProjectSession& session)
 {
-    IWorkspace* current = session.workspace.get();
+    WorkspaceBase* current = session.workspace.get();
+    //查询算子面（analysis_ops 自由函数）只读消费工作容器；未加载按旧
+    //ensureLoaded 口径报 FailedPrecondition（编辑面各分支本就以已开项目
+    //为前提）。
+    const auto* working = current != nullptr ? current->workingContainer() : nullptr;
+    if (working == nullptr) {
+        const auto status = ca::ErrStatus(ca::StatusCode::FAILED_PRECONDITION,
+                                          "workspace is not loaded");
+        return toolError("workspace mutation failed", &status);
+    }
     //container_mount（RFC §8.1 #4 + P5 角色化容器栈）：support 遗留角色走
     //workspace 在册表（xref 跨容器参与面不变）；library/runtime 进会话
     //MountedContainerSet（primary>library>runtime 解析序、shadowed 记录、
@@ -71,7 +97,8 @@ std::optional<Json> McpToolService::callMutationTool(
             if (!mountedRole.has_value()) {
                 if (role != "support")
                     return toolError("container role '" + role + "' is reserved for a later iteration");
-                auto result = current->addSupportingJar(utf8Ref(path));
+                auto result = current->addSupportingRole(
+                    utf8Ref(path), ca::str::Utf8StringRef::from_cstr("support"));
                 if (result.is_err())
                     { const auto err = shared::toCaStatus(result.unwrap_err()); return toolError("mount container failed", &err); }
                 // SupportingResourceInfo 携 move-only Utf8String：unwrap 走移动
@@ -97,6 +124,8 @@ std::optional<Json> McpToolService::callMutationTool(
             std::string fingerprint;
             const auto fingerprintStatus = containerFingerprint(containerId, fingerprint);
             if (fingerprintStatus.is_err()) return toolError("mount container failed", &fingerprintStatus);
+            if (session.containerRegistry.findByFingerprint(fingerprint) != nullptr)
+                return toolError("supporting content is already attached");
 
             auto container = std::make_shared<mjbase::model::ResourceContainer>();
             auto imported = mjbase::model::ResourceHelper::importFromJar(*container, containerId);
@@ -117,15 +146,7 @@ std::optional<Json> McpToolService::callMutationTool(
                 return toolError(std::string("mount container failed: ") +
                                  mjbase::model::to_string(std::move(mounted).unwrap_err()));
 
-            //workspace 支撑面附加（xref/关系跨容器参与）；失败回滚栈挂载。
-            //library/runtime 走角色化登记（一条在册记录，role 只是标签），
-            //不再经 addSupportingJar 产生第二套 support 记录。
-            auto support = current->addSupportingContainer(utf8Ref(containerId), *mountedRole);
-            if (support.is_err()) {
-                session.containerStack->unmount(containerId);
-                const auto err = shared::toCaStatus(support.unwrap_err());
-                return toolError("mount container failed", &err);
-            }
+            //容器只在此处导入一次：登记表与角色化容器栈共享同一字节视图。
 
             //工程登记（schema v2 role + parent = primary 登记 path）。
             const auto registered = registerRoleInput(session.projectDir,
@@ -137,16 +158,16 @@ std::optional<Json> McpToolService::callMutationTool(
                                                       current->sourcePath().to_std_string());
             if (registered.is_err()) return toolError("register container failed", &registered);
 
+            const auto supportId = session.containerRegistry.nextSupportId();
             ProjectSession::MountedContainerRecord record;
             record.id          = containerId;
             record.role        = *mountedRole;
             record.path        = containerId;
             record.fingerprint = fingerprint;
-            // SupportingResourceInfo 携 move-only Utf8String：unwrap 走移动
-            // 重载，id 落 std::string（会话登记面）。
-            record.supportId   = std::move(support).unwrap().id.to_std_string();
-            record.container   = std::move(container);
-            session.mountedContainers.push_back(std::move(record));
+            record.roleLabel   = std::string{mjbase::model::to_string(*mountedRole)};
+            record.supportId   = supportId;
+            record.container   = container;
+            session.containerRegistry.records().push_back(std::move(record));
 
             //新增遮蔽记录透传（挂载 = 重建；新 first-wins 输家逐对上报）。
             //shadowedEntries 重建序不稳定，按 uri 排序保证响应确定性。
@@ -172,14 +193,14 @@ std::optional<Json> McpToolService::callMutationTool(
                                              {"path", containerId},
                                              {"fingerprint", fingerprint},
                                              {"support_id",
-                                              std::move(support).unwrap().id.to_std_string()}}}};
+                                              supportId}}}};
             if (!shadowed.empty()) payload["shadowed"] = std::move(shadowed);
             return toolResult(std::move(payload));
         }
         const auto supportId = arguments.value("support_id", std::string{});
         if (supportId.empty()) return toolError("support_id is required");
         if (!mountedRole.has_value()) {
-            auto result = current->removeSupportingJar(utf8Ref(supportId));
+            auto result = current->removeSupporting(utf8Ref(supportId));
             if (result.is_err())
                 { const auto err = shared::toCaStatus(result.unwrap_err()); return toolError("detach container failed", &err); }
             // SupportingResourceInfo 携 move-only Utf8String：unwrap 走移动
@@ -203,9 +224,9 @@ std::optional<Json> McpToolService::callMutationTool(
         const auto mountRole        = record->role;
         const auto mountFingerprint = record->fingerprint;
         const auto supportRefId     = record->supportId;
-        const auto removed = current->removeSupportingJar(utf8Ref(supportRefId));
-        if (removed.is_err())
-            { const auto err = shared::toCaStatus(removed.unwrap_err()); return toolError("detach container failed", &err); }
+        if (session.containerRegistry.findBySupportId(supportRefId) == nullptr)
+            return toolError("detach container failed: support id not found");
+        session.containerRegistry.detachBySupportId(supportRefId);
         //卸载前遮蔽快照（同 mount 分支：引用不可跨 rebuild 持有）。
         std::vector<std::pair<std::string, std::string>> shadowedByMount;
         for (const auto& item : session.containerStack->shadowedEntries()) {
@@ -240,13 +261,6 @@ std::optional<Json> McpToolService::callMutationTool(
                       return a.at("uri").get_ref<const std::string&>() <
                              b.at("uri").get_ref<const std::string&>();
                   });
-        session.mountedContainers.erase(
-            std::remove_if(session.mountedContainers.begin(),
-                           session.mountedContainers.end(),
-                           [&](const ProjectSession::MountedContainerRecord& item) {
-                               return item.id == mountId;
-                           }),
-            session.mountedContainers.end());
         Json payload = {{"action", action},
                          {"removed", {{"role", role},
                                        {"id", mountId},
@@ -329,33 +343,189 @@ std::optional<Json> McpToolService::callMutationTool(
         return callMutationTool(op, arguments, session);
     }
     if (name == "edit_apply") {
-        const auto kind     = arguments.value("kind", std::string{});
-        const bool dryRun   = arguments.value("dry_run", false);
-        Json translatedArgs = arguments;
-        std::string op;
+        //编辑族单入口：kind 解析为 EditCommand 变体（槽解析后），统一走
+        // workspace::applyEdit（dryRun/expectedRevision/验证门/台账落账一条
+        // 管道）。rename/mapping 的 dry_run 是分析预览（查询语义，非 validate），
+        // 保持各自的预览 JSON 形状，不进编辑管道。
+        const auto kind   = arguments.value("kind", std::string{});
+        const bool dryRun = arguments.value("dry_run", false);
+        auto request = mutationRequest(arguments);
+        request.dryRun = dryRun || request.dryRun;
+
+        if (kind == "jasm" || kind == "jasm_diff") {
+            //name 槽：uri = Ref → 精确资源 URI；raw → 内部名核表后
+            //原样透传（URI 契约零漂移）。diff 形态先取整类 Jasm 作 base 展开。
+            std::string uri;
+            Json        slotError;
+            if (!slot::resolveClassUriArgument(*current, arguments, "uri", uri, slotError))
+                return slotError;
+            std::string source;
+            if (kind == "jasm") {
+                source = arguments.value("source", std::string{});
+            }
+            else {
+                const auto diffText = arguments.value("diff", std::string{});
+                auto jasm = workspace::getJasm(*current->workingContainer(), utf8Ref(uri));
+                if (!jasm.isOk()) {
+                    Json diagnostics = Json::array();
+                    for (const auto& item : jasm.diagnostics)
+                        diagnostics.push_back(diagnosticJson(item));
+                    return toolResult({{"diagnostics", std::move(diagnostics)}}, true);
+                }
+                auto applied = applyUnifiedDiff(utf8(jasm.value->source.ref()), diffText);
+                if (!applied.error.empty()) {
+                    Json payload = {
+                        {"status", statusJson(ca::ErrStatus(ca::StatusCode::INVALID_ARGUMENT,
+                                                             applied.error))},
+                        {"failed_hunk", applied.failedHunk}};
+                    return toolResult(std::move(payload), true);
+                }
+                source = std::move(applied.text);
+            }
+            EditCommand command;
+            command.op = EditCommand::Jasm{
+                ownUtf8(uri),
+                utf16(arguments.value("source_name", uri + ".jasm")),
+                utf16(source)};
+            const auto result = applyEdit(*current, command, request);
+            return toolResult(mutationJson(result), result.status.is_err());
+        }
+        if (kind == "method_jasm" || kind == "method_jasm_diff") {
+            //name 槽：owner/name 同 method 三元组口径（desc 自表回填）。
+            const auto slots = slot::loadWorkspaceShadowTable(*current);
+            std::string owner;
+            std::string mname;
+            std::string descriptor;
+            Json        slotError;
+            if (!slot::resolveMethodSlots(slots, arguments, true, owner, mname, descriptor, slotError))
+                return slotError;
+            //1. 单方法 Jasm 是 diff 的 base 与拼接的定位段。
+            auto method = workspace::getMethodJasm(*working, utf8Ref(owner), utf8Ref(mname), utf8Ref(descriptor));
+            if (!method.isOk()) {
+                Json diagnostics = Json::array();
+                for (const auto& item : method.diagnostics)
+                    diagnostics.push_back(diagnosticJson(item));
+                return toolResult({{"diagnostics", std::move(diagnostics)}}, true);
+            }
+            std::string newMethodSource;
+            if (kind == "method_jasm") {
+                newMethodSource = arguments.value("source", std::string{});
+            }
+            else {
+                auto applied = applyUnifiedDiff(utf8(method.value->source.ref()),
+                                                arguments.value("diff", std::string{}));
+                if (!applied.error.empty()) {
+                    Json payload = {
+                        {"status", statusJson(ca::ErrStatus(ca::StatusCode::INVALID_ARGUMENT,
+                                                             applied.error))},
+                        {"failed_hunk", applied.failedHunk}};
+                    return toolResult(std::move(payload), true);
+                }
+                newMethodSource = std::move(applied.text);
+            }
+            //2. 方法文本拼接进整类 Jasm（工作区共享预处理面）。
+            auto payload = spliceMethodJasm(*current,
+                                            utf8Ref(owner),
+                                            utf8Ref(mname),
+                                            utf8Ref(descriptor),
+                                            utf8Ref(newMethodSource),
+                                            utf8Ref(arguments.value("source_name", std::string{})));
+            if (payload.is_err()) {
+                const auto err = shared::toCaStatus(payload.unwrap_err());
+                return toolError("splice method jasm failed", &err);
+            }
+            EditCommand command;
+            command.op = std::move(payload).unwrap();
+            const auto result = applyEdit(*current, command, request);
+            return toolResult(mutationJson(result), result.status.is_err());
+        }
+        if (kind == "class_bytes") {
+            std::vector<ca::u8> bytes;
+            std::string parseError;
+            if (!decodeBase64(arguments.value("content_base64", std::string{}), bytes, parseError))
+                return toolError(parseError);
+            std::string classUri;
+            Json        slotError;
+            if (!slot::resolveClassUriArgument(*current, arguments, "class_uri", classUri, slotError))
+                return slotError;
+            EditCommand command;
+            command.op = EditCommand::ReplaceClassBytes{ownUtf8(classUri), std::move(bytes)};
+            const auto result = applyEdit(*current, command, request);
+            return toolResult(mutationJson(result), result.status.is_err());
+        }
         if (kind == "structured") {
-            op = "patch_apply";
-            //结构化 ClassMutation 的 15 种变更种类改名 mutation_kind：kind 槽
-            //已被 edit_apply 工具级选择器占用。
-            if (arguments.contains("mutation_kind"))
-                translatedArgs["kind"] = arguments.at("mutation_kind");
+            //name 槽：class_uri = Ref → 精确资源 URI / raw → 核表后原样；
+            //member_name = MemberRef → 真名（desc 与 member_descriptor 核对）。
+            //解析值写回参数副本，parseMutation 及下游零改动。
+            Json resolvedArgs = arguments;
+            {
+                std::string classUri;
+                Json        slotError;
+                if (!slot::resolveClassUriArgument(*current, arguments, "class_uri", classUri, slotError))
+                    return slotError;
+                resolvedArgs["class_uri"] = classUri;
+                const auto slots = slot::loadWorkspaceShadowTable(*current);
+                //结构化嵌套引用槽就地改写：member_descriptor（全 kind——add_field/
+                //add_method 的新成员类型描述符内嵌类名也是引用语义）、
+                //annotation_descriptor、exceptions、try_catch_blocks.type、
+                //field_value 常量树、instruction 族的 owner/name/descriptor、
+                //local_variables.descriptor（signature 泛型槽 v2 挂账不接）。
+                if (!slot::resolveStructuredMutationRefs(slots, resolvedArgs, slotError))
+                    return slotError;
+                //member_name 只在「寻址既有成员」的 kind 上做 name 槽解析
+                //（12 kind 全覆盖——5 访问/删除/换体 kind +
+                // rename_local / replace_try_catch_blocks / insert|replace|remove_
+                // instruction（findMethod 寻址）+ annotation 两 kind 在
+                // annotation_target=field|method 时经 findField/findMethod 寻址）；
+                //add_field/add_method 的 member_name 是新符号字面量（sidecar 先于
+                //它存在），与 rename 的 new_name 同性质：不核表、不解析；
+                //annotation_target=class 时 member 不参与寻址，同样不解析。
+                //mutation_kind 槽：kind 已被 edit_apply 工具级选择器占用。
+                const auto mutationKind = resolvedArgs.value("mutation_kind", std::string{});
+                resolvedArgs["kind"]   = mutationKind;
+                const bool annotationMemberIsReference =
+                    (mutationKind == "add_marker_annotation" ||
+                     mutationKind == "remove_annotation") &&
+                    (arguments.value("annotation_target", std::string{}) == "field" ||
+                     arguments.value("annotation_target", std::string{}) == "method");
+                const bool memberIsReference =
+                    mutationKind == "set_field_access" ||
+                    mutationKind == "set_method_access" ||
+                    mutationKind == "remove_field" ||
+                    mutationKind == "remove_method" ||
+                    mutationKind == "replace_method_body" ||
+                    mutationKind == "rename_local" ||
+                    mutationKind == "replace_try_catch_blocks" ||
+                    mutationKind == "insert_instruction" ||
+                    mutationKind == "replace_instruction" ||
+                    mutationKind == "remove_instruction" ||
+                    annotationMemberIsReference;
+                const auto memberName = arguments.value("member_name", std::string{});
+                if (memberIsReference && !memberName.empty()) {
+                    const auto ownerInternal = mjt::internalNameOfUri(classUri);
+                    //member_descriptor 已由结构化槽展开；展开值在此参与成员核对
+                    //（handle 字面量不落下游）。
+                    slot::SlotName memberSlot;
+                    if (!slot::resolveMemberSlot(slots,
+                                                 ownerInternal,
+                                                 memberName,
+                                                 resolvedArgs.value("member_descriptor", std::string{}),
+                                                 true,
+                                                 memberSlot,
+                                                 slotError))
+                        return slotError;
+                    resolvedArgs["member_name"] = memberSlot.raw;
+                }
+            }
+            ClassMutation mutation;
+            std::string   parseError;
+            if (!parseMutation(resolvedArgs, mutation, parseError)) return toolError(parseError);
+            EditCommand command;
+            command.op = EditCommand::ClassMutation{std::move(mutation)};
+            const auto result = applyEdit(*current, command, request);
+            return toolResult(mutationJson(result), result.status.is_err());
         }
-        else if (kind == "jasm") {
-            op = dryRun ? "patch_validate_jasm" : "patch_apply_jasm";
-        }
-        else if (kind == "jasm_diff") {
-            op = dryRun ? "patch_validate_jasm_diff" : "patch_apply_jasm_diff";
-        }
-        else if (kind == "method_jasm") {
-            op = dryRun ? "method_validate_jasm" : "method_apply_jasm";
-        }
-        else if (kind == "method_jasm_diff") {
-            op = dryRun ? "method_validate_jasm_diff" : "method_apply_jasm_diff";
-        }
-        else if (kind == "class_bytes") {
-            op = "patch_replace_class_bytes";
-        }
-        else if (kind == "pipeline") {
+        if (kind == "pipeline") {
             //opt_preview/opt_apply 的合并面（pass_run 随旧工具一并收敛）：
             //空 pipeline/passes 兜底 default-optimize；dry_run 即 preview。
             PipelineRequest pipeline;
@@ -363,24 +533,121 @@ std::optional<Json> McpToolService::callMutationTool(
             if (!parsePipelineRequest(arguments, pipeline, parseError)) return toolError(parseError);
             if (pipeline.pipeline.is_empty() && pipeline.passNames.empty())
                 pipeline.pipeline = ca::str::Utf8String::from_cstr("default-optimize");
-            auto request = mutationRequest(arguments);
-            request.dryRun = dryRun || request.dryRun;
-            const auto result = current->applyPipeline(pipeline, request);
+            EditCommand command;
+            command.op = EditCommand::Pipeline{std::move(pipeline)};
+            const auto result = applyEdit(*current, command, request);
             return toolResult(mutationJson(result), result.status.is_err());
         }
-        else if (kind == "rename") {
-            op = dryRun ? "rename_analyze" : "rename_apply";
-            //rename 目标种类改名 rename_kind（同 mutation_kind 的占位冲突处理）。
-            if (arguments.contains("rename_kind"))
-                translatedArgs["kind"] = arguments.at("rename_kind");
+        if (kind == "rename") {
+            //name 槽：kind=class → owner；kind=field/method →
+            //owner+name+descriptor；kind=local → owner+method_name（name 是局部
+            //变量名，非类/成员引用，不接线）。kind=package 的 owner 是包前缀
+            //（非类引用），不核表直通；new_name 恒不碰（新名字面量）。
+            //rename_kind 槽：kind 已被 edit_apply 工具级选择器占用。
+            Json resolvedArgs = arguments;
+            {
+                const auto kind = resolvedArgs.value("rename_kind", std::string{});
+                resolvedArgs["kind"] = kind;
+                const bool classShapedOwner =
+                    kind == "class" || kind == "field" || kind == "method" || kind == "local";
+                std::string owner;
+                Json        slotError;
+                if (classShapedOwner) {
+                    const auto slots = slot::loadWorkspaceShadowTable(*current);
+                    if (!slot::resolveClassArgument(*current, arguments, "owner", true, owner, slotError))
+                        return slotError;
+                    resolvedArgs["owner"] = owner;
+                }
+                if (kind == "field" || kind == "method") {
+                    const auto slots = slot::loadWorkspaceShadowTable(*current);
+                    std::string member;
+                    std::string descriptor;
+                    if (!slot::resolveMethodSlots(slots, arguments, true, owner, member, descriptor, slotError))
+                        return slotError;
+                    resolvedArgs["owner"]      = owner;
+                    resolvedArgs["name"]       = member;
+                    resolvedArgs["descriptor"] = descriptor;
+                }
+                else if (kind == "local") {
+                    //method_name 是成员槽；name/descriptor 保持调用方原值（局部
+                    //变量名与其类型描述符不是类/成员引用）。
+                    const auto slots = slot::loadWorkspaceShadowTable(*current);
+                    const auto methodName = arguments.value("method_name", std::string{});
+                    slot::SlotName methodSlot;
+                    if (!slot::resolveMemberSlot(slots,
+                                                 owner,
+                                                 methodName,
+                                                 arguments.value("descriptor", std::string{}),
+                                                 true,
+                                                 methodSlot,
+                                                 slotError))
+                        return slotError;
+                    resolvedArgs["method_name"] = methodSlot.raw;
+                }
+            }
+            RenameRequest rename;
+            std::string   parseError;
+            if (!parseRename(resolvedArgs, rename, parseError)) return toolError(parseError);
+            if (request.dryRun) {
+                //dry = 分析预览（查询语义）：映射表 + override 组件 + 影响。
+                const auto analysis = current->analyzeRename(rename);
+                Json mappings = Json::array();
+                Json overrides = Json::array();
+                //RenameAnalysis 文本字段换型 Utf8String：投影显式 to_std_string
+                //（nlohmann 会把带 begin/end 的类型吃成码点数组，禁止隐式直通）。
+                for (const auto& item : analysis.mappings)
+                    mappings.push_back({{"kind", item.kind.to_std_string()},
+                                        {"before", item.before.to_std_string()},
+                                        {"after", item.after.to_std_string()}});
+                for (const auto& item : analysis.overrideComponent)
+                    overrides.push_back({{"owner", item.owner.to_std_string()},
+                                         {"name", item.name.to_std_string()},
+                                         {"descriptor", item.descriptor.to_std_string()},
+                                         {"primary", item.primary},
+                                         {"supporting", item.supporting},
+                                         {"support_id", item.supportId.to_std_string()}});
+                return toolResult(
+                    {{"status", statusJson(shared::toCaStatus(analysis.status))},
+                     {"ready_to_apply", analysis.readyToApply},
+                     {"requires_override_review", analysis.requiresOverrideReview},
+                     {"mappings", std::move(mappings)},
+                     {"overrides", std::move(overrides)},
+                     {"impact", impactJson(analysis.impact)}},
+                    analysis.status.is_err());
+            }
+            EditCommand command;
+            command.op = EditCommand::Rename{std::move(rename)};
+            const auto result = applyEdit(*current, command, request);
+            return toolResult(mutationJson(result), result.status.is_err());
         }
-        else if (kind == "mapping") {
-            op = dryRun ? "mapping_analyze" : "mapping_apply";
+        if (kind == "mapping") {
+            WorkspaceRemapRequest remap;
+            remap.format      = arguments.value("format", std::string{});
+            remap.mappingText = arguments.value("mapping_text", std::string{});
+            remap.policy      = arguments.value("policy", std::string{"bytecode-only"});
+            if (request.dryRun) {
+                const auto analysis = analyzeWorkspaceRemap(*current, remap);
+                return toolResult(impactJson(analysis), analysis.status.is_err());
+            }
+            //apply 走 plan 先行（单次解析）：applyWorkspaceRemap 的内部构建面在
+            //此展开，避免二次解析 mapping 文本。
+            mjbase::asm_remapper::MemberRemapPlan plan;
+            mjbase::asm_remapper::RemapPolicy     policy;
+            const auto buildStatus = buildWorkspaceRemapPlan(*current, remap, plan, policy, nullptr);
+            if (buildStatus.is_err()) {
+                mjt::workspace::MutationResult result;
+                result.status     = buildStatus;
+                result.revision   = current->revision();
+                result.exportable = current->canExport();
+                return toolResult(mutationJson(result), true);
+            }
+            EditCommand command;
+            command.op = EditCommand::RemapPlan{&plan, std::move(policy)};
+            //shadow 落分析库：身份迁移在管道内完成，identity 统计随 mutationJson 回显。
+            const auto result = applyEdit(*current, command, request);
+            return toolResult(mutationJson(result), result.status.is_err());
         }
-        else {
-            return toolError("unknown edit_apply kind: " + kind);
-        }
-        return callMutationTool(op, translatedArgs, session);
+        return toolError("unknown edit_apply kind: " + kind);
     }
     if (name == "edit_history") {
         const auto action = arguments.value("action", std::string{});
@@ -595,7 +862,7 @@ std::optional<Json> McpToolService::callMutationTool(
         //存在或名字不存在时不诊断（NOT_FOUND 一类错误本身已明确）。
         std::vector<std::string> descriptorCandidates;
         if (name != "xref_class") {
-            auto info = current->classInfo(utf8Ref(owner));
+            auto info = workspace::classInfo(*working, utf8Ref(owner), current->lvtJarFallbackFlag());
             if (info.is_ok()) {
                 // ClassInfo 携 move-only Utf8String：unwrap 走移动重载。
                 const auto& clazz = std::move(info).unwrap();
@@ -736,7 +1003,7 @@ std::optional<Json> McpToolService::callMutationTool(
                                                         : mjbase::model::ContainerRole::Runtime;
             const auto inventory = mountedClassInventory(session, wanted);
             std::unordered_set<std::string> roleSupportIds;
-            for (const auto& record : session.mountedContainers)
+            for (const auto& record : session.containerRegistry.records())
                 if (record.role == wanted) roleSupportIds.insert(record.supportId);
             items.erase(std::remove_if(items.begin(),
                                        items.end(),
@@ -799,7 +1066,172 @@ std::optional<Json> McpToolService::callMutationTool(
         Json        slotError;
         if (!slot::resolveClassArgument(*current, arguments, "class", true, className, slotError))
             return slotError;
-        auto value = current->classRelations(utf8Ref(className));
+        // DB-first（与 xref 分支同款守卫）：支撑容器只登记输入行、事实未入
+        // 库——有挂载即回退引擎扫描，行序/来源标注零漂移。
+        const bool relationsFromDb =
+            session.analysisDb != nullptr && current->supportingResources().empty();
+        mjt::workspace::WorkspaceResult<mjt::workspace::ClassRelations> value =
+            ca::core::Err(mjt::workspace::WorkspaceErrorInfo{});
+        if (relationsFromDb) {
+            mjbase::project::AnalysisDb& db = *session.analysisDb;
+            const auto dbFailure = [&](mjbase::project::AnalysisDbError&& failure) {
+                const auto code =
+                    failure.kind == mjbase::project::AnalysisDbErrorKind::Schema
+                        ? ca::StatusCode::FAILED_PRECONDITION
+                        : ca::StatusCode::INTERNAL;
+                const auto status =
+                    ca::ErrStatus(code, "analysis db class relations query failed: " +
+                                            failure.message.to_std_string());
+                return toolError("analysis db class relations query failed", &status);
+            };
+            // 起点门：未登记 → NotFound（引擎 findClass 无效同形）。
+            auto found = db.findClass(utf8Ref(className));
+            if (found.is_err()) return dbFailure(std::move(found).unwrap_err());
+            auto indexRow = std::move(found).unwrap();
+            if (!indexRow.has_value()) {
+                const auto err = shared::toCaStatus(mjt::workspace::WorkspaceErrorInfo{
+                    mjt::workspace::WorkspaceError::NotFound,
+                    "get class relations: " + className});
+                return toolError("get class relations failed", &err);
+            }
+            mjt::workspace::ClassRelations relations;
+            // super 链：含自身、未登记父类计入链尾（引擎合成 java/lang/Object
+            // 链尾同形）；superclasses = 链去自身。
+            auto chain = db.superChain(utf8Ref(className));
+            if (chain.is_err()) return dbFailure(std::move(chain).unwrap_err());
+            for (auto& ancestor : std::move(chain).unwrap()) {
+                if (ancestor.to_std_string() != className)
+                    relations.superclasses.push_back(std::move(ancestor));
+            }
+            // 接口闭包：super 链（含自身）各类的直接接口 + 各接口自身超链
+            // （传递超接口）；剔自身、剔非接口行（引擎 interfaceClosure∩
+            // interface − 自身 语义）。
+            const auto interfaceBit = [&](const std::string& class_) {
+                auto row = db.findClass(utf8Ref(class_));
+                if (row.is_err()) return -1;
+                auto resolved = std::move(row).unwrap();
+                return resolved.has_value() ? resolved->access : -1;
+            };
+            // 接口的父接口在 interfaces[] 列表里（classfile 语义），传递闭包
+            // 沿 interfaces[] BFS——superChain 只走 superName（extends 链），
+            // 不覆盖 interface extends。
+            std::set<std::string> interfaceSet;
+            std::function<void(const std::string&)> addInterfaceClosure =
+                [&](const std::string& iface) {
+                    if (!interfaceSet.insert(iface).second) return;
+                    auto row = db.findClass(utf8Ref(iface));
+                    if (row.is_err()) return;
+                    auto resolved = std::move(row).unwrap();
+                    if (!resolved.has_value()) return;
+                    for (const auto& up : resolved->interfaces)
+                        addInterfaceClosure(up.to_std_string());
+                };
+            const auto addDirectInterfaces = [&](const ca::str::Utf8StringRef class_) {
+                auto row = db.findClass(class_);
+                if (row.is_err()) return dbFailure(std::move(row).unwrap_err());
+                auto resolved = std::move(row).unwrap();
+                if (resolved.has_value()) {
+                    for (const auto& iface : resolved->interfaces)
+                        addInterfaceClosure(iface.to_std_string());
+                }
+                return Json{};
+            };
+            for (const auto& ancestor : relations.superclasses) {
+                const auto status = addDirectInterfaces(ancestor.ref());
+                if (!status.is_null()) return status;
+            }
+            {
+                const auto status = addDirectInterfaces(utf8Ref(className));
+                if (!status.is_null()) return status;
+            }
+            for (const auto& iface : interfaceSet) {
+                if (iface == className) continue;
+                const auto access = interfaceBit(iface);
+                if (access >= 0 && (access & 0x0200) != 0)
+                    relations.interfaces.push_back(ownUtf8(iface));
+            }
+            // 直接子类（extends 边）。
+            auto direct = db.directSubclasses(utf8Ref(className));
+            if (direct.is_err()) return dbFailure(std::move(direct).unwrap_err());
+            relations.directSubclasses = std::move(direct).unwrap();
+            // 后代分桶（引擎语义）：接口起点 → 实现者 = 非接口子型；类起点 →
+            // 全部后代，实现者空。实现者不走库 implementors 面——其递归 SQL
+            // 向上收起点的父接口（只实现 IFoo 的类会泄进 IBar 的实现者，与
+            // 引擎 isSubtype 严格向下语义相悖），这里取 listClasses 快照在
+            // 内存组合严格语义：C 实现 X ⟺ C 非接口 ∧ X ∈ 闭(C)，闭(C) =
+            // C 的 super 链各类直接接口及其传递超接口的并。
+            if ((indexRow->access & 0x0200) != 0) {
+                auto snapshot = db.listClasses();
+                if (snapshot.is_err()) return dbFailure(std::move(snapshot).unwrap_err());
+                const auto rows = std::move(snapshot).unwrap();
+                // 反向可达：C 实现 X ⟺ C 非接口 ∧ X ∈ 闭(C)（闭(C) = 自身与
+                // 祖先链各类直接接口及其传递超接口的并）。从起点接口反向走
+                // implements / 子接口 / 子类继承三类前驱边只触结果子图——
+                // 正向逐类计算闭包在大库（万级实现者接口）是 O(n·闭包) 放大。
+                std::unordered_map<std::string, std::vector<const mjbase::project::DbClassInfo*>>
+                    implementersOf;
+                std::unordered_map<std::string, std::vector<const mjbase::project::DbClassInfo*>>
+                    subclassesOf;
+                implementersOf.reserve(rows.size() * 2);
+                subclassesOf.reserve(rows.size() * 2);
+                for (const auto& row : rows) {
+                    for (const auto& iface : row.interfaces)
+                        implementersOf[iface.to_std_string()].push_back(&row);
+                    if (!row.superName.is_empty())
+                        subclassesOf[row.superName.to_std_string()].push_back(&row);
+                }
+                // BFS 节点 = （待下探的接口 | 已计入实现者的类）。
+                std::vector<std::string> implementors;
+                std::unordered_set<std::string> visited{className};
+                std::vector<std::pair<std::string, bool>> frontier{{className, false}};
+                while (!frontier.empty()) {
+                    const auto [name, isClass] = frontier.back();
+                    frontier.pop_back();
+                    const auto& index = isClass ? subclassesOf : implementersOf;
+                    const auto found = index.find(name);
+                    if (found == index.end()) continue;
+                    for (const auto* row : found->second) {
+                        // 接口行的 superName（java/lang/Object）不构成类继承边。
+                        if (isClass && (row->access & 0x0200) != 0) continue;
+                        auto rowName = row->internalName.to_std_string();
+                        if (!visited.insert(rowName).second) continue;
+                        if ((row->access & 0x0200) != 0)
+                            frontier.emplace_back(std::move(rowName), false);
+                        else {
+                            implementors.push_back(rowName);
+                            frontier.emplace_back(std::move(rowName), true);
+                        }
+                    }
+                }
+                // 行序 = listClasses 的 internal_name 升序（引擎侧
+                // registrationOrder 扫描后 sortUnique 同形）。
+                std::sort(implementors.begin(), implementors.end());
+                for (const auto& name : implementors)
+                    relations.implementors.push_back(ownUtf8(name));
+            }
+            else {
+                auto all = db.allSubclasses(utf8Ref(className));
+                if (all.is_err()) return dbFailure(std::move(all).unwrap_err());
+                relations.allSubclasses = std::move(all).unwrap();
+            }
+            // 来源行：关系名全序（引擎 std::set 同形）；守卫保证无支撑挂载，
+            // supporting 恒 false / supportId 恒空。
+            std::set<std::string> related{className};
+            const auto collect = [&related](const std::vector<ca::str::Utf8String>& names) {
+                for (const auto& item : names) related.insert(item.to_std_string());
+            };
+            collect(relations.superclasses);
+            collect(relations.interfaces);
+            collect(relations.directSubclasses);
+            collect(relations.allSubclasses);
+            collect(relations.implementors);
+            for (const auto& relatedName : related)
+                relations.sources.push_back({ownUtf8(relatedName), false, {}});
+            value = ca::core::Ok(std::move(relations));
+        }
+        else {
+            value = current->classRelations(utf8Ref(className));
+        }
         if (value.is_err()) {
             const auto err = shared::toCaStatus(value.unwrap_err());
             return toolError("get class relations failed", &err);
@@ -826,6 +1258,9 @@ std::optional<Json> McpToolService::callMutationTool(
                            {"sources", std::move(sources)}});
     }
     if (name == "method_overrides") {
+        //引擎保留面（W3 裁决）：覆盖组件要并查集 + 子型闭包 + supporting
+        //标注，analysis.db 无等价面，组合重实现的成本高于收益——与
+        //searchInstructions/xref 支撑回退同为活扫描面，不迁 analysis_ops。
         const auto slots = slot::loadWorkspaceShadowTable(*current);
         std::string owner;
         std::string member;
@@ -850,326 +1285,11 @@ std::optional<Json> McpToolService::callMutationTool(
                               {"support_id", item.supportId.to_std_string()}});
         return toolResult({{"overrides", std::move(values)}});
     }
-    if (name == "patch_validate_jasm" || name == "patch_apply_jasm") {
-        //name 槽：uri = Ref → 精确资源 URI；raw → 内部名核表后
-        //原样透传（URI 契约零漂移）。
-        std::string uri;
-        Json        slotError;
-        if (!slot::resolveClassUriArgument(*current, arguments, "uri", uri, slotError))
-            return slotError;
-        const auto source = arguments.value("source", std::string{});
-        const auto sourceName = arguments.value("source_name", uri + ".jasm");
-        const auto result = name == "patch_validate_jasm"
-                                ? current->validateJasm(utf8Ref(uri),
-                                                        utf16(sourceName).ref(),
-                                                        utf16(source).ref(),
-                                                        mutationRequest(arguments))
-                                : current->applyJasm(utf8Ref(uri),
-                                                     utf16(sourceName).ref(),
-                                                     utf16(source).ref(),
-                                                     mutationRequest(arguments));
-        return toolResult(mutationJson(result), result.status.is_err());
-    }
-    if (name == "patch_validate_jasm_diff" || name == "patch_apply_jasm_diff") {
-        std::string uri;
-        Json        slotError;
-        if (!slot::resolveClassUriArgument(*current, arguments, "uri", uri, slotError))
-            return slotError;
-        const auto diffText   = arguments.value("diff", std::string{});
-        const auto sourceName = arguments.value("source_name", uri + ".jasm");
-        auto jasm = current->getJasm(utf8Ref(uri));
-        if (!jasm.isOk()) {
-            Json diagnostics = Json::array();
-            for (const auto& item : jasm.diagnostics) diagnostics.push_back(diagnosticJson(item));
-            return toolResult({{"diagnostics", std::move(diagnostics)}}, true);
-        }
-        const auto base = utf8(jasm.value->source.ref());
-        auto applied = applyUnifiedDiff(base, diffText);
-        if (!applied.error.empty()) {
-            Json payload = {{"status", statusJson(ca::ErrStatus(ca::StatusCode::INVALID_ARGUMENT,
-                                                                 applied.error))},
-                            {"failed_hunk", applied.failedHunk}};
-            return toolResult(std::move(payload), true);
-        }
-        const auto result = name == "patch_validate_jasm_diff"
-                                ? current->validateJasm(utf8Ref(uri),
-                                                        utf16(sourceName).ref(),
-                                                        utf16(applied.text).ref(),
-                                                        mutationRequest(arguments))
-                                : current->applyJasm(utf8Ref(uri),
-                                                     utf16(sourceName).ref(),
-                                                     utf16(applied.text).ref(),
-                                                     mutationRequest(arguments));
-        return toolResult(mutationJson(result), result.status.is_err());
-    }
-    if (name == "method_validate_jasm" || name == "method_apply_jasm" ||
-        name == "method_validate_jasm_diff" || name == "method_apply_jasm_diff") {
-        //name 槽：owner/name 同 method 三元组口径（desc 自表回填），
-        //后续 source_name 拼装与 classInfo 都用解析后的 raw 名。
-        const auto slots = slot::loadWorkspaceShadowTable(*current);
-        std::string owner;
-        std::string mname;
-        std::string descriptor;
-        Json        slotError;
-        if (!slot::resolveMethodSlots(slots, arguments, true, owner, mname, descriptor, slotError))
-            return slotError;
-        const auto sourceName = arguments.value("source_name", owner + "." + mname + ".jasm");
-        //1. 取单方法规范 Jasm（与 class Jasm 内方法段逐字节一致）。
-        auto method = current->getMethodJasm(utf8Ref(owner), utf8Ref(mname), utf8Ref(descriptor));
-        if (!method.isOk()) {
-            Json diagnostics = Json::array();
-            for (const auto& item : method.diagnostics) diagnostics.push_back(diagnosticJson(item));
-            return toolResult({{"diagnostics", std::move(diagnostics)}}, true);
-        }
-        const auto oldMethodSource = utf8(method.value->source.ref());
-        //2. 解析最终的新方法文本：全量直接用 source；diff 先应用到 oldMethodSource。
-        std::string newMethodSource;
-        if (name == "method_validate_jasm" || name == "method_apply_jasm") {
-            newMethodSource = arguments.value("source", std::string{});
-        } else {
-            const auto diffText = arguments.value("diff", std::string{});
-            auto applied = applyUnifiedDiff(oldMethodSource, diffText);
-            if (!applied.error.empty()) {
-                Json payload = {{"status", statusJson(ca::ErrStatus(ca::StatusCode::INVALID_ARGUMENT,
-                                                                     applied.error))},
-                                {"failed_hunk", applied.failedHunk}};
-                return toolResult(std::move(payload), true);
-            }
-            newMethodSource = applied.text;
-        }
-        //3. 取整 class Jasm 作 base，把旧方法文本精确替换为新方法文本。
-        auto classInfo = current->classInfo(utf8Ref(owner));
-        if (classInfo.is_err()) {
-            const auto err = shared::toCaStatus(classInfo.unwrap_err());
-            return toolError("select class for method jasm failed", &err);
-        }
-        const std::string classUri = std::move(classInfo).unwrap().resourceUri.to_std_string();
-        auto jasm = current->getJasm(utf8Ref(classUri));
-        if (!jasm.isOk()) {
-            Json diagnostics = Json::array();
-            for (const auto& item : jasm.diagnostics) diagnostics.push_back(diagnosticJson(item));
-            return toolResult({{"diagnostics", std::move(diagnostics)}}, true);
-        }
-        const auto classSource = utf8(jasm.value->source.ref());
-        const auto first = classSource.find(oldMethodSource);
-        if (first == std::string::npos) {
-            return toolResult({{"status", statusJson(ca::ErrStatus(ca::StatusCode::INTERNAL,
-                                                                   "method source not found in class Jasm"))}},
-                              true);
-        }
-        const auto second = classSource.find(oldMethodSource, first + 1);
-        if (second != std::string::npos) {
-            return toolResult({{"status", statusJson(ca::ErrStatus(ca::StatusCode::INTERNAL,
-                                                                   "method source is ambiguous in class Jasm"))}},
-                              true);
-        }
-        std::string newClassSource = classSource;
-        newClassSource.replace(first, oldMethodSource.size(), newMethodSource);
-        const auto result =
-            name == "method_validate_jasm" || name == "method_validate_jasm_diff"
-                ? current->validateJasm(utf8Ref(classUri),
-                                        utf16(sourceName).ref(),
-                                        utf16(newClassSource).ref(),
-                                        mutationRequest(arguments))
-                : current->applyJasm(utf8Ref(classUri),
-                                     utf16(sourceName).ref(),
-                                     utf16(newClassSource).ref(),
-                                     mutationRequest(arguments));
-        return toolResult(mutationJson(result), result.status.is_err());
-    }
-    if (name == "patch_replace_class_bytes") {
-        std::vector<ca::u8> bytes;
-        std::string parseError;
-        if (!decodeBase64(arguments.value("content_base64", std::string{}), bytes, parseError))
-            return toolError(parseError);
-        std::string classUri;
-        Json        slotError;
-        if (!slot::resolveClassUriArgument(*current, arguments, "class_uri", classUri, slotError))
-            return slotError;
-        const auto result = current->replaceClassBytes(utf8Ref(classUri), bytes, mutationRequest(arguments));
-        return toolResult(mutationJson(result), result.status.is_err());
-    }
-    if (name == "patch_apply") {
-        //name 槽：class_uri = Ref → 精确资源 URI / raw → 核表后
-        //原样；member_name = MemberRef → 真名（desc 与 member_descriptor 核对）。
-        //解析值写回参数副本，parseMutation 及下游零改动。
-        Json resolvedArgs = arguments;
-        {
-            std::string classUri;
-            Json        slotError;
-            if (!slot::resolveClassUriArgument(*current, arguments, "class_uri", classUri, slotError))
-                return slotError;
-            resolvedArgs["class_uri"] = classUri;
-            const auto slots = slot::loadWorkspaceShadowTable(*current);
-            //结构化嵌套引用槽就地改写：member_descriptor（全 kind——add_field/
-            //add_method 的新成员类型描述符内嵌类名也是引用语义）、
-            //annotation_descriptor、exceptions、try_catch_blocks.type、
-            //field_value 常量树、instruction 族的 owner/name/descriptor、
-            //local_variables.descriptor（signature 泛型槽 v2 挂账不接）。
-            if (!slot::resolveStructuredMutationRefs(slots, resolvedArgs, slotError))
-                return slotError;
-            //member_name 只在「寻址既有成员」的 kind 上做 name 槽解析
-            //（12 kind 全覆盖——5 访问/删除/换体 kind +
-            //rename_local / replace_try_catch_blocks / insert|replace|remove_
-            //instruction（findMethod 寻址）+ annotation 两 kind 在
-            //annotation_target=field|method 时经 findField/findMethod 寻址）；
-            //add_field/add_method 的 member_name 是新符号字面量（sidecar 先于
-            //它存在），与 rename 的 new_name 同性质：不核表、不解析；
-            //annotation_target=class 时 member 不参与寻址，同样不解析。
-            const auto mutationKind = arguments.value("kind", std::string{});
-            const bool annotationMemberIsReference =
-                (mutationKind == "add_marker_annotation" ||
-                 mutationKind == "remove_annotation") &&
-                (arguments.value("annotation_target", std::string{}) == "field" ||
-                 arguments.value("annotation_target", std::string{}) == "method");
-            const bool memberIsReference =
-                mutationKind == "set_field_access" ||
-                mutationKind == "set_method_access" ||
-                mutationKind == "remove_field" ||
-                mutationKind == "remove_method" ||
-                mutationKind == "replace_method_body" ||
-                mutationKind == "rename_local" ||
-                mutationKind == "replace_try_catch_blocks" ||
-                mutationKind == "insert_instruction" ||
-                mutationKind == "replace_instruction" ||
-                mutationKind == "remove_instruction" ||
-                annotationMemberIsReference;
-            const auto memberName = arguments.value("member_name", std::string{});
-            if (memberIsReference && !memberName.empty()) {
-                const auto ownerInternal =
-                    mjt::internalNameOfUri(classUri);
-                //member_descriptor 已由结构化槽展开；展开值在此参与成员核对
-                //（handle 字面量不落下游）。
-                slot::SlotName memberSlot;
-                if (!slot::resolveMemberSlot(slots,
-                                             ownerInternal,
-                                             memberName,
-                                             resolvedArgs.value("member_descriptor", std::string{}),
-                                             true,
-                                             memberSlot,
-                                             slotError))
-                    return slotError;
-                resolvedArgs["member_name"] = memberSlot.raw;
-            }
-        }
-        ClassMutation mutation;
-        std::string   parseError;
-        if (!parseMutation(resolvedArgs, mutation, parseError)) return toolError(parseError);
-        const auto result = current->applyClassMutation(mutation, mutationRequest(arguments));
-        return toolResult(mutationJson(result), result.status.is_err());
-    }
-    if (name == "rename_analyze" || name == "rename_apply") {
-        //name 槽：kind=class → owner；kind=field/method →
-        //owner+name+descriptor；kind=local → owner+method_name（name 是局部
-        //变量名，非类/成员引用，不接线）。kind=package 的 owner 是包前缀
-        //（非类引用），不核表直通；new_name 恒不碰（新名字面量）。
-        Json resolvedArgs = arguments;
-        {
-            const auto kind = arguments.value("kind", std::string{});
-            const bool classShapedOwner =
-                kind == "class" || kind == "field" || kind == "method" || kind == "local";
-            std::string owner;
-            Json        slotError;
-            if (classShapedOwner) {
-                const auto slots = slot::loadWorkspaceShadowTable(*current);
-                if (!slot::resolveClassArgument(*current, arguments, "owner", true, owner, slotError))
-                    return slotError;
-                resolvedArgs["owner"] = owner;
-            }
-            if (kind == "field" || kind == "method") {
-                const auto     slots = slot::loadWorkspaceShadowTable(*current);
-                std::string    member;
-                std::string    descriptor;
-                if (!slot::resolveMethodSlots(slots, arguments, true, owner, member, descriptor, slotError))
-                    return slotError;
-                resolvedArgs["owner"]      = owner;
-                resolvedArgs["name"]       = member;
-                resolvedArgs["descriptor"] = descriptor;
-            }
-            else if (kind == "local") {
-                //method_name 是成员槽；name/descriptor 保持调用方原值（局部
-                //变量名与其类型描述符不是类/成员引用）。
-                const auto     slots = slot::loadWorkspaceShadowTable(*current);
-                const auto     methodName = arguments.value("method_name", std::string{});
-                slot::SlotName methodSlot;
-                if (!slot::resolveMemberSlot(slots,
-                                             owner,
-                                             methodName,
-                                             arguments.value("descriptor", std::string{}),
-                                             true,
-                                             methodSlot,
-                                             slotError))
-                    return slotError;
-                resolvedArgs["method_name"] = methodSlot.raw;
-            }
-        }
-        RenameRequest rename;
-        std::string   parseError;
-        if (!parseRename(resolvedArgs, rename, parseError)) return toolError(parseError);
-        if (name == "rename_apply") {
-            const auto result = current->applyRename(rename, mutationRequest(arguments));
-            if (result.status.is_err()) return toolResult(mutationJson(result), true);
-            //shadow 落分析库：rename 经 applyRemap 漏斗在 workspace 层完成身份
-            //迁移（台账注记 + migrateIdentities；DB renames 覆盖层按稳定 ID
-            //键控，真改名后零补丁）。identity 统计随 mutationJson 回显。
-            return toolResult(mutationJson(result), false);
-        }
-        const auto analysis = current->analyzeRename(rename);
-        Json mappings = Json::array();
-        Json overrides = Json::array();
-        //RenameAnalysis 文本字段换型 Utf8String：投影显式 to_std_string
-        //（nlohmann 会把带 begin/end 的类型吃成码点数组，禁止隐式直通）。
-        for (const auto& item : analysis.mappings)
-            mappings.push_back({{"kind", item.kind.to_std_string()},
-                                {"before", item.before.to_std_string()},
-                                {"after", item.after.to_std_string()}});
-        for (const auto& item : analysis.overrideComponent)
-            overrides.push_back({{"owner", item.owner.to_std_string()},
-                                 {"name", item.name.to_std_string()},
-                                 {"descriptor", item.descriptor.to_std_string()},
-                                 {"primary", item.primary},
-                                 {"supporting", item.supporting},
-                                 {"support_id", item.supportId.to_std_string()}});
-        return toolResult({{"status", statusJson(shared::toCaStatus(analysis.status))},
-                           {"ready_to_apply", analysis.readyToApply},
-                           {"requires_override_review", analysis.requiresOverrideReview},
-                           {"mappings", std::move(mappings)},
-                           {"overrides", std::move(overrides)},
-                           {"impact", impactJson(analysis.impact)}},
-                          analysis.status.is_err());
-    }
-    if (name == "mapping_analyze" || name == "mapping_apply") {
-        WorkspaceRemapRequest remap;
-        remap.format      = arguments.value("format", std::string{});
-        remap.mappingText = arguments.value("mapping_text", std::string{});
-        remap.policy      = arguments.value("policy", std::string{"bytecode-only"});
-        if (name == "mapping_analyze") {
-            const auto analysis = analyzeWorkspaceRemap(*current, remap);
-            return toolResult(impactJson(analysis), analysis.status.is_err());
-        }
-        //apply 走 plan 先行（单次解析）：applyWorkspaceRemap 的内部构建面在
-        //此展开，避免二次解析 mapping 文本。
-        mjbase::asm_remapper::MemberRemapPlan plan;
-        mjbase::asm_remapper::RemapPolicy     policy;
-        const auto buildStatus = buildWorkspaceRemapPlan(*current, remap, plan, policy, nullptr);
-        if (buildStatus.is_err()) {
-            mjt::workspace::MutationResult result;
-            result.status     = buildStatus;
-            result.revision   = current->revision();
-            result.exportable = current->canExport();
-            return toolResult(mutationJson(result), true);
-        }
-        const auto result = current->applyRemap(plan, policy, mutationRequest(arguments));
-        if (result.status.is_err()) return toolResult(mutationJson(result), true);
-        //shadow 落分析库：同 rename_apply——身份迁移在 applyRemap 漏斗完成，
-        //identity 统计随 mutationJson 回显。
-        return toolResult(mutationJson(result), false);
-    }
     if (name == "project_export") {
         //导出前 flush 挂点：台账与分析缓存与 close 同点落盘（同一崩溃窗语义）。
         const auto cacheFlushed = flushAnalysisCache(session);
         if (cacheFlushed.is_err()) return toolError("flush analysis cache failed", &cacheFlushed);
-        const auto status = current->exportJar(utf8Ref(arguments.value("path", std::string{})));
+        const auto status = current->exportArtifact(utf8Ref(arguments.value("path", std::string{})));
         if (status.is_err()) {
             const auto err = shared::toCaStatus(status.unwrap_err());
             return toolError("export project failed", &err);

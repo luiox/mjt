@@ -15,7 +15,8 @@
 #include "mjbase/project/edit_ledger.hpp"
 #include "mjbase/project/project_store.hpp"
 
-#include "shared/jar_workspace.hpp"
+#include "workspace/workspace.hpp"
+#include "workspace/container_registry.hpp"
 
 namespace mjbase::project {
 class AnalysisDb;   ///< 分析数据库连接（analysis_db.hpp；此处仅前置声明）
@@ -46,7 +47,7 @@ struct ProjectSession final
     ProjectSession(const ProjectSession&)            = delete;
     ProjectSession& operator=(const ProjectSession&) = delete;
 
-    std::unique_ptr<mjt::JarWorkspace> workspace;
+    std::unique_ptr<mjt::workspace::WorkspaceBase> workspace;
     ///bundle 目录（绝对路径）；store.lock/project.json/store.json 都在其下。
     std::string projectDir;
     ///临时工程（调用方未给工程目录）：析构时随会话整体删除，对齐旧"无工程
@@ -71,19 +72,10 @@ struct ProjectSession final
     ca::u64 cacheHits = 0;
     ca::u64 cacheMisses = 0;
 
-    ///挂载的 library/runtime 容器（RFC 0001 P5 角色化容器栈；容器对象所有权
-    ///归会话，containerStack 只借用）。support 遗留角色仍走 workspace 在册
-    ///表，不入本栈。
-    struct MountedContainerRecord final
-    {
-        std::string id;            ///< 工程内唯一（登记 path 的规范化绝对路径）
-        mjbase::model::ContainerRole role = mjbase::model::ContainerRole::Library;
-        std::string path;          ///< 登记 path（= id）
-        std::string fingerprint;   ///< 登记指纹（"sha256:"+64hex，文件字节口径）
-        std::string supportId;     ///< workspace 侧在册 id（xref 跨容器参与面）
-        std::shared_ptr<mjbase::model::ResourceContainer> container;  ///< 挂载内容
-    };
-    std::vector<MountedContainerRecord> mountedContainers;
+    ///会话级容器登记表：workspace 支撑面、角色化容器栈与工程登记共用同一
+    ///事实源；容器对象由登记表持有，containerStack 只借用。
+    using MountedContainerRecord = mjt::workspace::ContainerRecord;
+    mjt::workspace::ContainerRegistry containerRegistry;
     ///角色化容器栈（primary>library>runtime 解析序、shadowed 记录、角色遍历）。
     std::unique_ptr<mjbase::model::MountedContainerSet> containerStack;
 

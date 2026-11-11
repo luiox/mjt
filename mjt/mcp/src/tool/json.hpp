@@ -92,9 +92,7 @@ std::string selectorKeyError(const std::string& key,
 
 Json searchHitJson(const mjt::workspace::SearchHit& hit);
 Json mutationJson(const mjt::workspace::MutationResult& mutation);
-Json jarRepairJson(const mjt::workspace::JarRepairResult& repair);
 Json referenceJson(const mjt::workspace::ReferenceInfo& reference);
-Json workflowJson(const mjt::workspace::WorkflowResult& workflow);
 Json toolResult(Json payload, bool isError = false);
 Json toolError(const std::string& message, const ca::Status* status = nullptr);
 
@@ -145,6 +143,6 @@ Json impactJson(const mjt::workspace::ImpactAnalysis& impact);
 Json normalizeToolError(const std::string& name,
                         const Json& arguments,
                         Json result,
-                        const mjt::workspace::IWorkspace* workspace);
+                        const mjt::workspace::WorkspaceBase* workspace);
 
 }   //namespace mjt::mcp::detail

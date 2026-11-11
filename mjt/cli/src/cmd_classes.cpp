@@ -86,7 +86,7 @@ ca::Result<ClassesReport, ClassesError> collectClasses(const std::string& jarPat
                                     {std::to_string(limit)}));
 
     workspace::WorkspaceBase ws;
-    auto opened = ws.openJar(refOf(jarPath));
+    auto opened = ws.open(refOf(jarPath));
     if (opened.is_err()) {
         workspace::WorkspaceErrorInfo info = std::move(opened).unwrap_err();
         return ca::Err(classesError(ClassesError::Kind::Runtime, "mjt.cli.classes.err.open_failed",

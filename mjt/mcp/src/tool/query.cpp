@@ -32,6 +32,8 @@
 #include "mjbase/project/project_store.hpp"
 #include "mjbase/renamer/shadow_alias.hpp"
 #include "workspace/constant_scan.hpp"
+#include "workspace/analysis_ops.hpp"
+#include "workspace/jar_ops.hpp"
 #include "workspace/search_match.hpp"
 
 namespace mjt::mcp {
@@ -39,7 +41,7 @@ namespace mjt::mcp {
 using namespace detail;
 using mjt::workspace::SearchHit;
 using mjt::workspace::SearchOptions;
-using mjt::workspace::IWorkspace;
+using mjt::workspace::WorkspaceBase;
 
 namespace {
 
@@ -127,7 +129,15 @@ const std::vector<std::string>& searchRowKeys(const std::string& op)
 std::optional<Json> McpToolService::callWorkspaceQueryTool(
     const std::string& name, const Json& arguments, ProjectSession& session)
 {
-    IWorkspace* current = session.workspace.get();
+    WorkspaceBase* current = session.workspace.get();
+    //查询算子面（analysis_ops 自由函数）只读消费工作容器；未加载按旧
+    //ensureLoaded 口径报 FailedPrecondition（分支体不再各自守卫）。
+    const auto* working = current != nullptr ? current->workingContainer() : nullptr;
+    if (working == nullptr) {
+        const auto status = ca::ErrStatus(ca::StatusCode::FAILED_PRECONDITION,
+                                          "workspace is not loaded");
+        return toolError("workspace query failed", &status);
+    }
     //class_query / search 的 kind 选择器在入口翻译成内部分支名：分支体与响应
     //形状保持与旧细粒度工具逐字节一致，只有寻址面换名（RFC §8.2 折叠口径）。
     //分支定位键契约与参数键白名单在入口检查：用错键立即报
@@ -452,69 +462,8 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
                            }()},
                            {"store_lock", std::move(lockJson)}});
     }
-    if (name == "workspace_info") {
-        Json support = Json::array();
-        for (const auto& item : current->supportingResources())
-            support.push_back(supportingResourceJson(item));
-        return toolResult({{"workspace_id", arguments.at("workspace_id")},
-                           {"source_path", current->sourcePath().to_std_string()},
-                           {"revision", current->revision()},
-                           {"dirty", current->isDirty()},
-                           {"exportable", current->canExport()},
-                           {"supporting_resources", std::move(support)}});
-    }
-    if (name == "workspace_modified_classes") {
-        auto modified = current->modifiedClasses();
-        if (modified.is_err())
-            { const auto err = shared::toCaStatus(modified.unwrap_err()); return toolError("list modified classes failed", &err); }
-        Json values = Json::array();
-        // ModifiedClassInfo 携 move-only Utf8String：unwrap 走移动重载，投影
-        // 显式 to_std_string（nlohmann 码点数组陷阱）。
-        for (const auto& item : std::move(modified).unwrap()) {
-            values.push_back({{"resource_uri", item.resourceUri.to_std_string()},
-                              {"original_internal_name",
-                               item.originalInternalName.to_std_string()},
-                              {"current_internal_name",
-                               item.currentInternalName.to_std_string()},
-                              {"original_fingerprint", item.originalFingerprint.to_std_string()},
-                              {"current_fingerprint", item.currentFingerprint.to_std_string()},
-                              {"original_size", item.originalSize},
-                              {"current_size", item.currentSize}});
-        }
-        Json paged;
-        std::string pageError;
-        if (!page(std::move(values), arguments, paged, pageError,
-                  {"current_fingerprint", "current_internal_name", "current_size",
-                   "original_fingerprint", "original_internal_name", "original_size",
-                   "resource_uri"}))
-            return toolError(pageError);
-        return toolResult(std::move(paged));
-    }
-    if (name == "workspace_add_support") {
-        auto result = current->addSupportingJar(utf8Ref(arguments.value("path", std::string{})));
-        if (result.is_err()) { const auto err = shared::toCaStatus(result.unwrap_err()); return toolError("add supporting resource failed", &err); }
-        // SupportingResourceInfo 携 move-only Utf8String：unwrap 走移动重载。
-        return toolResult({{"supporting_resource", supportingResourceJson(std::move(result).unwrap())}});
-    }
-    if (name == "workspace_list_support") {
-        Json values = Json::array();
-        for (const auto& item : current->supportingResources())
-            values.push_back(supportingResourceJson(item));
-        Json paged;
-        std::string pageError;
-        if (!page(std::move(values), arguments, paged, pageError,
-                  {"class_count", "fingerprint", "id", "path", "resource_count", "role"}))
-            return toolError(pageError);
-        return toolResult(std::move(paged));
-    }
-    if (name == "workspace_remove_support") {
-        auto result = current->removeSupportingJar(utf8Ref(arguments.value("support_id", std::string{})));
-        if (result.is_err()) { const auto err = shared::toCaStatus(result.unwrap_err()); return toolError("remove supporting resource failed", &err); }
-        // SupportingResourceInfo 携 move-only Utf8String：unwrap 走移动重载。
-        return toolResult({{"removed", supportingResourceJson(std::move(result).unwrap())}});
-    }
     if (op == "workspace_resources") {
-        auto resources = current->listResources(arguments.value("include_classes", true));
+        auto resources = workspace::listResources(*working, arguments.value("include_classes", true));
         if (resources.is_err()) { const auto err = shared::toCaStatus(resources.unwrap_err()); return toolError("list resources failed", &err); }
         //query/match_mode 在主路径生效（与 role 过滤路径同一语义），
         //不再静默丢弃。
@@ -537,7 +486,7 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         return toolResult(std::move(paged));
     }
     if (op == "resource_read") {
-        auto content = current->readResource(utf8Ref(arguments.value("uri", std::string{})));
+        auto content = workspace::readResource(*working, utf8Ref(arguments.value("uri", std::string{})));
         if (content.is_err()) { const auto err = shared::toCaStatus(content.unwrap_err()); return toolError("read resource failed", &err); }
         auto value = std::move(content).unwrap();
         auto offset = arguments.value("offset", static_cast<ca::usize>(0));
@@ -573,7 +522,9 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         return toolResult(std::move(result));
     }
     if (op == "resource_manifest") {
-        auto attributes = current->manifestAttributes();
+        const auto* workingForManifest = current->workingContainer();
+        if (workingForManifest == nullptr) { const auto err = shared::toCaStatus(mjt::workspace::WorkspaceErrorInfo{mjt::workspace::WorkspaceError::FailedPrecondition, "read manifest: workspace not loaded"}); return toolError("read manifest failed", &err); }
+        auto attributes = mjt::workspace::manifestAttributes(*workingForManifest);
         if (attributes.is_err()) { const auto err = shared::toCaStatus(attributes.unwrap_err()); return toolError("read manifest failed", &err); }
         Json values = Json::array();
         // ManifestAttribute 携 move-only Utf8String：unwrap 走移动重载。
@@ -1063,7 +1014,7 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         return toolResult(std::move(paged));
     }
     if (op == "class_list") {
-        auto classes = current->listClassSummaries();
+        auto classes = workspace::listClassSummaries(*working);
         if (classes.is_err()) { const auto err = shared::toCaStatus(classes.unwrap_err()); return toolError("list classes failed", &err); }
         Json paged;
         std::string pageError;
@@ -1080,7 +1031,7 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         Json        slotError;
         if (!slot::resolveClassArgument(*current, arguments, "class", true, className, slotError))
             return slotError;
-        auto value = current->classInfo(utf8Ref(className));
+        auto value = workspace::classInfo(*working, utf8Ref(className), current->lvtJarFallbackFlag());
         if (value.is_err()) { const auto err = shared::toCaStatus(value.unwrap_err()); return toolError("get class failed", &err); }
         // ClassInfo 携 move-only Utf8String：unwrap 走移动重载。
         return toolResult(classJson(std::move(value).unwrap()));
@@ -1090,7 +1041,7 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         Json        slotError;
         if (!slot::resolveClassArgument(*current, arguments, "class", true, className, slotError))
             return slotError;
-        auto content = current->readClassBytes(utf8Ref(className));
+        auto content = workspace::readClassBytes(*working, utf8Ref(className));
         if (content.is_err()) { const auto err = shared::toCaStatus(content.unwrap_err()); return toolError("read class bytes failed", &err); }
         auto value = std::move(content).unwrap();
         auto offset = arguments.value("offset", static_cast<ca::usize>(0));
@@ -1128,11 +1079,11 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         Json        slotError;
         if (!slot::resolveClassArgument(*current, arguments, "class", true, className, slotError))
             return slotError;
-        auto selected = current->classInfo(utf8Ref(className));
+        auto selected = workspace::classInfo(*working, utf8Ref(className), current->lvtJarFallbackFlag());
         if (selected.is_err())
             { const auto err = shared::toCaStatus(selected.unwrap_err()); return toolError("select class for Jasm failed", &err); }
         const std::string classUri = std::move(selected).unwrap().resourceUri.to_std_string();
-        auto value = current->getJasm(utf8Ref(classUri));
+        auto value = workspace::getJasm(*current->workingContainer(), utf8Ref(classUri));
         if (!value.isOk()) {
             Json diagnostics = Json::array();
             for (const auto& item : value.diagnostics) diagnostics.push_back(diagnosticJson(item));
@@ -1165,13 +1116,13 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
                                             false, mismatchError))
             return mismatchError;
         if (op == "method_get") {
-            auto value = current->methodInfo(utf8Ref(ownerRaw), utf8Ref(memberName), utf8Ref(descriptor));
+            auto value = workspace::methodInfo(*working, utf8Ref(ownerRaw), utf8Ref(memberName), utf8Ref(descriptor), current->lvtJarFallbackFlag());
             if (value.is_err()) { const auto err = shared::toCaStatus(value.unwrap_err()); return toolError("get method failed", &err); }
             // MethodInfo 携 move-only Utf8String：unwrap 走移动重载。
             return toolResult(methodJson(std::move(value).unwrap()));
         }
         if (op == "method_bytecode") {
-            auto value = current->methodBytecode(utf8Ref(ownerRaw), utf8Ref(memberName), utf8Ref(descriptor));
+            auto value = workspace::methodBytecode(*working, utf8Ref(ownerRaw), utf8Ref(memberName), utf8Ref(descriptor), current->lvtJarFallbackFlag());
             if (value.is_err()) { const auto err = shared::toCaStatus(value.unwrap_err()); return toolError("get method bytecode failed", &err); }
             // MethodBytecode 携 move-only Utf8String：unwrap 走移动重载。
             auto info = std::move(value).unwrap();
@@ -1188,7 +1139,7 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
             //jasm 全文;两份一次取齐,调用方不必退回自写解析器。
             Json payload{{"method", methodJson(std::move(info.method))},
                          {"instructions", std::move(instructions)}};
-            auto jasm = current->getMethodJasm(utf8Ref(ownerRaw), utf8Ref(memberName), utf8Ref(descriptor));
+            auto jasm = workspace::getMethodJasm(*working, utf8Ref(ownerRaw), utf8Ref(memberName), utf8Ref(descriptor));
             if (jasm.isOk()) {
                 payload["jasm"] = utf8(jasm.value->source.ref());
             } else {
@@ -1198,7 +1149,7 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
             }
             return toolResult(std::move(payload));
         }
-        auto value = current->getMethodJasm(utf8Ref(ownerRaw), utf8Ref(memberName), utf8Ref(descriptor));
+        auto value = workspace::getMethodJasm(*working, utf8Ref(ownerRaw), utf8Ref(memberName), utf8Ref(descriptor));
         if (!value.isOk()) {
             Json diagnostics = Json::array();
             for (const auto& item : value.diagnostics) diagnostics.push_back(diagnosticJson(item));

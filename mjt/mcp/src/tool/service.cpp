@@ -13,7 +13,7 @@ namespace mjt::mcp {
 
 using namespace detail;
 
-using mjt::workspace::IWorkspace;
+using mjt::workspace::WorkspaceBase;
 
 std::string McpToolService::nextWorkspaceId()
 {
@@ -162,7 +162,7 @@ Json McpToolService::call(const std::string& name, const Json& arguments)
         }
 
         //其余工具：执行体在 executionMutex_ 下串行（同一 session 内工具不会并发访问同一个
-        //IWorkspace），仅短持状态锁解析会话的 shared_ptr；工具执行期间不持状态锁，
+        //WorkspaceBase），仅短持状态锁解析会话的 shared_ptr；工具执行期间不持状态锁，
         //同步反编译等长工具不再阻塞 job_get/job_cancel 与 job worker 的 commit。
         std::lock_guard<std::mutex> executionLock(executionMutex_);
         {

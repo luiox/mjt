@@ -13,7 +13,7 @@
 namespace mjt::mcp {
 
 using namespace detail;
-using mjt::workspace::IWorkspace;
+using mjt::workspace::WorkspaceBase;
 
 Json jobStateJson(const std::shared_ptr<JobState>& job)
 {

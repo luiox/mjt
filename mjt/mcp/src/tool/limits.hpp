@@ -28,9 +28,8 @@ inline constexpr ca::i32   kMaximumDecompilerMemoryMiB           = 4096;
 inline constexpr ca::i64 kDefaultToolTimeoutMilliseconds = 180000;
 inline constexpr ca::i64 kMaximumToolTimeoutMilliseconds = 300000;
 
-///异步 job 保留上限（含 method_source 与 workflow 两条路径）。
-inline constexpr ca::usize kMaximumRetainedJobs             = 64;
-inline constexpr ca::usize kMaximumWorkflowDecompileClasses = 64;
+///异步 job 保留上限（method_source 路径）。
+inline constexpr ca::usize kMaximumRetainedJobs = 64;
 
 ///常驻 workspace 数量上限：每个 workspace 持有完整 ResourceContainer，
 ///无上限会让长会话内存无界增长。超限时要求先 workspace_close。
