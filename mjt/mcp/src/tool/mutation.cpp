@@ -72,6 +72,15 @@ std::optional<Json> McpToolService::callMutationTool(
                                           "workspace is not loaded");
         return toolError("workspace mutation failed", &status);
     }
+    //dex 会话守卫（apk/裸 dex 只读分析原型）：变更族一律拒绝，白名单只放行
+    //引用/层次关系的只读面（xref_query 入口与其内部翻译 op 都在表内）。
+    static const std::set<std::string> kDexSessionReadOps = {
+        "xref_query", "xref_method", "xref_field", "xref_class",
+        "method_callees", "class_relations", "method_overrides"};
+    if (current->isDexBacked() && kDexSessionReadOps.count(name) == 0) {
+        return toolError("mutation '" + name +
+                         "' is not supported for apk/dex input (read-only analysis prototype)");
+    }
     //container_mount（RFC §8.1 #4 + P5 角色化容器栈）：support 遗留角色走
     //workspace 在册表（xref 跨容器参与面不变）；library/runtime 进会话
     //MountedContainerSet（primary>library>runtime 解析序、shadowed 记录、

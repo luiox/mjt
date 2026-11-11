@@ -203,6 +203,12 @@ std::optional<Json> McpToolService::callDecompilerTool(
         return toolError("decompile failed", &status);
     }
     if (name == "decompile") {
+        //dex 会话守卫：decompile 管线按 JVM class 字节建面（apk/dex 只读
+        //分析原型），先于寻址/缓存/异步面给人读错误。
+        if (session.workspace->isDexBacked()) {
+            return toolError(
+                "decompile is not supported for apk/dex input (read-only analysis prototype)");
+        }
         //decompile 的执行体（action=decompile；poll/cancel/release 是 session
         //工具，见 session.cpp）：class 或方法三元组二选一寻址。
         const auto action = arguments.value("action", std::string{"decompile"});

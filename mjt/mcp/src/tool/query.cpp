@@ -32,6 +32,8 @@
 #include "mjbase/renamer/shadow_alias.hpp"
 #include "workspace/constant_scan.hpp"
 #include "workspace/analysis_ops.hpp"
+#include "workspace/container_io.hpp"
+#include "workspace/dex_domain.hpp"
 #include "workspace/jar_ops.hpp"
 #include "workspace/search_match.hpp"
 
@@ -428,6 +430,24 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
             cacheJson["session_misses"]    = session.cacheMisses;
         }
 
+        //容器形态投影（container_io 格式口径）+ dex 会话披露面：artifact_kind
+        //按主制品格式命名；dex 会话附 dex 单元清单与版本（只读分析原型的
+        //会话事实，非 dex 会话空清单/0）。
+        const char* artifactKind = "none";
+        switch (current->format()) {
+            case workspace::ContainerFormat::Jar:       artifactKind = "jar";   break;
+            case workspace::ContainerFormat::ClassFile: artifactKind = "class"; break;
+            case workspace::ContainerFormat::Apk:       artifactKind = "apk";   break;
+            case workspace::ContainerFormat::Dex:       artifactKind = "dex";   break;
+            case workspace::ContainerFormat::None:      artifactKind = "none";  break;
+        }
+        Json dexUnits = Json::array();
+        ca::u32 dexVersion = 0;
+        if (current->isDexBacked()) {
+            for (const auto& unit : current->dexDomain()->dexUris()) dexUnits.push_back(unit);
+            dexVersion = current->dexDomain()->dexVersion();
+        }
+
         return toolResult({{"project_id", arguments.at("project_id")},
                            {"project_dir", session.projectDir},
                            {"persistence", session.temporary ? "temporary" : "project"},
@@ -435,6 +455,9 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
                            {"revision", current->revision()},
                            {"dirty", current->isDirty()},
                            {"exportable", current->canExport()},
+                           {"artifact_kind", artifactKind},
+                           {"dex_units", std::move(dexUnits)},
+                           {"dex_version", dexVersion},
                            {"containers", std::move(containers)},
                            {"ledger", std::move(ledgerJson)},
                            {"cache", std::move(cacheJson)},
@@ -998,12 +1021,36 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         return toolResult(std::move(paged));
     }
     if (op == "class_list") {
-        auto classes = workspace::listClassSummaries(*working);
-        if (classes.is_err()) { const auto err = shared::toCaStatus(classes.unwrap_err()); return toolError("list classes failed", &err); }
+        //dex 会话：类清单走 dex 域（ClassInfo 行折算 ClassSummary 摘要，
+        //resource_uri 取 ClassInfo.resourceUri，响应键与 jar 路径零漂移）。
+        std::vector<workspace::ClassSummary> summaries;
+        if (current->isDexBacked()) {
+            auto classes = current->dexDomain()->listClasses();
+            if (classes.is_err()) { const auto err = shared::toCaStatus(classes.unwrap_err()); return toolError("list classes failed", &err); }
+            auto list = std::move(classes).unwrap();
+            summaries.reserve(list.size());
+            for (auto& clazz : list) {
+                workspace::ClassSummary summary;
+                summary.resourceUri    = std::move(clazz.resourceUri);
+                summary.internalName   = std::move(clazz.internalName);
+                summary.superName      = std::move(clazz.superName);
+                summary.access         = clazz.access;
+                summary.version        = clazz.version;
+                summary.interfaceCount = clazz.interfaces.size();
+                summary.fieldCount     = clazz.fields.size();
+                summary.methodCount    = clazz.methods.size();
+                summaries.push_back(std::move(summary));
+            }
+        }
+        else {
+            auto classes = workspace::listClassSummaries(*working);
+            if (classes.is_err()) { const auto err = shared::toCaStatus(classes.unwrap_err()); return toolError("list classes failed", &err); }
+            summaries = std::move(classes).unwrap();
+        }
         Json paged;
         std::string pageError;
         // ClassSummary 携 move-only Utf8String：unwrap 走移动重载。
-        if (!classSummaryPage(std::move(classes).unwrap(), arguments, paged, pageError))
+        if (!classSummaryPage(std::move(summaries), arguments, paged, pageError))
             return toolError(pageError);
         return toolResult(std::move(paged));
     }
@@ -1015,6 +1062,12 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         Json        slotError;
         if (!slot::resolveClassArgument(*current, arguments, "class", true, className, slotError))
             return slotError;
+        //dex 会话：类详情走 dex 域（lvt 显示名策略是 JVM 面概念，不适用）。
+        if (current->isDexBacked()) {
+            auto value = current->dexDomain()->classInfo(className);
+            if (value.is_err()) { const auto err = shared::toCaStatus(value.unwrap_err()); return toolError("get class failed", &err); }
+            return toolResult(classJson(std::move(value).unwrap()));
+        }
         auto value = workspace::classInfo(*working, utf8Ref(className), current->lvtJarFallbackFlag());
         if (value.is_err()) { const auto err = shared::toCaStatus(value.unwrap_err()); return toolError("get class failed", &err); }
         // ClassInfo 携 move-only Utf8String：unwrap 走移动重载。
@@ -1063,6 +1116,16 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         Json        slotError;
         if (!slot::resolveClassArgument(*current, arguments, "class", true, className, slotError))
             return slotError;
+        //dex 会话：文本视图走 smali 反汇编（format 投影标注；按内名直取，
+        //不经 resolveClassUri 的 .class 条目面——dex 条目不是类资源）。
+        if (current->isDexBacked()) {
+            auto smali = current->dexDomain()->smaliText(className);
+            if (smali.is_err())
+                { const auto err = shared::toCaStatus(smali.unwrap_err()); return toolError("get smali text failed", &err); }
+            return toolResult({{"class", className},
+                               {"format", "smali"},
+                               {"jasm", std::move(smali).unwrap()}});
+        }
         auto selected = workspace::classInfo(*working, utf8Ref(className), current->lvtJarFallbackFlag());
         if (selected.is_err())
             { const auto err = shared::toCaStatus(selected.unwrap_err()); return toolError("select class for Jasm failed", &err); }
