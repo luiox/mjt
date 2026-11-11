@@ -1,5 +1,7 @@
 ﻿#include "pysdk_jasm.hpp"
 
+#include "pysdk_facade.hpp"
+
 // pysdk_jasm.cpp — Jasm 文本面实现（libjhasm 消费；无 pybind，绑定在 bind_facade）。
 
 #include "mjbase/jasm/jvm_jasm_service.hpp"
@@ -91,7 +93,7 @@ std::string jasmTargetUri(const FacadeSession& s, const std::string& name)
 
 const ClassResource* classResourceAt(const FacadeSession& s, const std::string& uri)
 {
-    const auto* resource = s.container->getResource(uri);
+    const auto* resource = facadeContainer(s).getResource(uri);
     if (!resource || !ca::core::tag_cast::isa<ClassResource>(resource)) return nullptr;
     return ca::core::tag_cast::cast<const ClassResource>(resource);
 }
@@ -158,7 +160,7 @@ JasmReport validateOnClone(FacadeSession& s, const std::string& uri, const std::
 {
     JvmJasmContext context;
     context.validationMode = validation;
-    ResourceContainer  scratch   = cloneContainer(*s.container);
+    ResourceContainer  scratch   = cloneContainer(facadeContainer(s));
     const auto         assembled = mjbase::jasm::ResourceJasmService(scratch)
                                     .assemble(uri, toUtf16(defaultSourceName(name, sourceName))
                                                        .ref(),
@@ -172,8 +174,8 @@ JasmReport validateOnClone(FacadeSession& s, const std::string& uri, const std::
     return report;
 }
 
-/// apply = 事务式替换 ClassResource（内部校验全过才 set）；成功后该类缓存树
-/// 作废（外部改字节同款纪律——脏树未 write_back 的编辑就此让位）。
+/// apply = 事务式替换 ClassResource（候选容器汇编 + 门禁全过才提交）；成功后
+/// 该类缓存树作废（外部改字节同款纪律——脏树未 write_back 的编辑就此让位）。
 /// frameMode（mjbase#190）：preserve 档保留原类 StackMapTable——坏帧类
 /// validation=off 的逃生门；边界申报（指令面改动/新方法体等）逐条落 Error
 /// 诊断，事务不落改动。
@@ -181,17 +183,29 @@ JasmReport applyInPlace(FacadeSession& s, const std::string& uri, const std::str
                         const std::string& sourceName, const std::string& source,
                         ValidationMode validation, FrameMode frameMode)
 {
-    JvmJasmContext context;
-    context.validationMode = validation;
-    const auto assembled = mjbase::jasm::ResourceJasmService(*s.container)
-                               .assemble(uri,
-                                         toUtf16(defaultSourceName(name, sourceName)).ref(),
-                                         toUtf16(source).ref(), context, frameMode);
+    // W4c：落容器走 applyEdit 单管道（Jasm 变体，frameMode 随载荷；候选构建、
+    // 门禁、台账落账在管道内，装配诊断随 MutationResult 返回）。
+    mjt::workspace::MutationRequest request;
+    request.validationMode = validation;
+    mjt::workspace::EditCommand::Jasm payload;
+    payload.uri        = mjt::workspace::utf8(uri);
+    payload.sourceName = toUtf16(defaultSourceName(name, sourceName));
+    payload.source     = toUtf16(source);
+    payload.frameMode  = frameMode;
+    const auto applied = mjt::workspace::applyEdit(
+        s.ws, mjt::workspace::EditCommand{std::move(payload)}, request);
     JasmReport report;
-    report.diagnostics = toJasmDiagnostics(assembled.diagnostics);
-    if (assembled.isOk()) {
-        report.internalName = assembled.value->internalName.to_std_string();
-        report.written      = assembled.value->bytes.size();
+    report.diagnostics = toJasmDiagnostics(applied.diagnostics);
+    if (applied.status.is_ok()) {
+        // written/internal_name 从落账字节回读（装配产物即新条目字节；
+        // probe 拿声明内名，与旧 assembled.value 口径一致）。
+        if (const auto* resource = facadeContainer(s).getResource(uri)) {
+            if (const auto* cr = ca::core::tag_cast::dyn_cast<const ClassResource>(resource)) {
+                report.written = cr->get().size();
+                if (auto probed = facadeProbeClassName(cr->get()))
+                    report.internalName = std::move(*probed);
+            }
+        }
         s.trees.erase(name);
         // 内容编辑边界（class 级 jasm 落账，方法级 apply 拼回 class 面同走
         // 此处）：容器字节已换 → 会话库增量同步该类（成员键漂移由同步的

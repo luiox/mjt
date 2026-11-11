@@ -31,6 +31,9 @@
 
 #include "libca/core/any.hpp"
 #include "libca/str/utf8_string_arena.hpp"
+
+#include "workspace/edit_support.hpp"
+#include "workspace/workspace.hpp"
 #include "mjbase/asm/remapper/member_remap_plan.hpp"
 #include "mjbase/mapping/intermediate_mapping.hpp"
 #include "mjbase/model/resource_container.hpp"
@@ -118,8 +121,9 @@ public:
     std::string sourcePath;
     std::shared_ptr<ca::str::Utf8StringArena> arena =
         std::make_shared<ca::str::Utf8StringArena>();
-    std::unique_ptr<mjbase::model::ResourceContainer> container =
-        std::make_unique<mjbase::model::ResourceContainer>();
+    /// 会话级工作区（W4 统一：容器持有换 WorkspaceBase——open 后
+    /// workingContainer() 即会话容器本体，读写面经 facadeContainer()）。
+    mjt::workspace::WorkspaceBase ws;
 
     /// name↔URI 索引（first-wins，#962；导入/add/load/remove 时维护）。
     std::map<std::string, std::string> nameToUri;
@@ -158,6 +162,11 @@ public:
     /// pysdk_facade.cpp 落位）。
     ~FacadeSession();
 
+    /// 出生即空容器会话（new_container 契约：不开源文件、纯 add_entry 填充
+    /// ——ws.openEmpty() 建立 loaded 空态；后续 import_jar 的 ws.open 带全套
+    /// 重置原样接管）。
+    FacadeSession();
+
     /// 全会话缓存作废（管线直驱容器字节 / rename 提交后调用；lazy 下零成本）。
     void clearTrees() { trees.clear(); }
 
@@ -185,6 +194,11 @@ private:
 };
 
 // ── 会话级操作（B1：容器/条目面） ─────────────────────────────────────────
+
+/// 会话容器本体（WorkspaceBase 工作副本；未 open → StaleRefError）。
+/// W4 迁移期：读面一律经此；写面自 W4b 起逐族收敛 applyEdit 单入口。
+mjbase::model::ResourceContainer&       facadeContainer(FacadeSession& s);
+const mjbase::model::ResourceContainer& facadeContainer(const FacadeSession& s);
 
 /// 从 jar 导入全部资源 + 重建索引（open_jar 的实质）。
 void facadeImportJar(FacadeSession& session, const std::string& path);
@@ -495,10 +509,6 @@ void facadeTokenCommit(FacadeSession& s, bool reflectionStrings, bool annotation
 void facadeMappingDump(FacadeSession& s, const std::string& path, const std::string& fmt);
 /// (class, method, field) 计数。
 std::tuple<ca::usize, ca::usize, ca::usize> facadeMappingCounts(FacadeSession& s);
-
-/// 记录一次管线/pass 运行报告（run_pass 出口调用；私有侧 run_pipeline 复用同槽）。
-void facadeRecordRun(FacadeSession& s, const std::string& name,
-                     const std::shared_ptr<PyRunStats>& stats);
 
 // ── 容器完整性 / 批量改名 / shadow 显示层（实测补刀批） ──────────────────
 

@@ -521,20 +521,28 @@ TEST(FacadeTree, EmitLabelJumpLdcChain)
     auto& s      = FacadeRegistry::instance().get(h);
     facadeParseClass(s, "me/demo/Util");
     facadeAddMethod(s, "me/demo/Util", "branchy", "(I)I", 0x0009, 2, 1);
-    // branchy: iload 0; ifeq L; iconst_1; goto Lend; L: iconst_0; Lend: ireturn
-    const auto load  = facadeEmitVar(s, "me/demo/Util", "branchy", "(I)I", 0x15 /*iload*/, 0, std::nullopt);
-    const auto label = facadeEmitLabel(s, "me/demo/Util", "branchy", "(I)I", std::nullopt);
-    facadeEmitJump(s, "me/demo/Util", "branchy", "(I)I", 0x99 /*ifeq*/, label, std::nullopt);
+    // branchy: iload 0; ifeq L; iconst_1; goto Lend; L: iconst_0; Lend: ireturn。
+    // 跳转目标 label 必须先在（uid 无前向引用），真目标以 set_target 改指：
+    // 占位 label 落点不进边，帧计算按改指后的真目标求深度（Lend 两前驱
+    // 深度均 1，L 前驱深度均 0——迁移期版本把 L 发射在 iload 之后，L 的
+    // 落入边与直落边深度 0/1 相撞，write_back 恒炸且从未被 CI 拦下）。
+    const auto load = facadeEmitVar(s, "me/demo/Util", "branchy", "(I)I", 0x15 /*iload*/, 0, std::nullopt);
+    const auto lDum = facadeEmitLabel(s, "me/demo/Util", "branchy", "(I)I", std::nullopt);
+    const auto cond = facadeEmitJump(s, "me/demo/Util", "branchy", "(I)I", 0x99 /*ifeq*/, lDum, std::nullopt);
     facadeEmitInsn(s, "me/demo/Util", "branchy", "(I)I", 0x04 /*iconst_1*/, std::nullopt);
+    const auto gDum = facadeEmitLabel(s, "me/demo/Util", "branchy", "(I)I", std::nullopt);
+    const auto go   = facadeEmitJump(s, "me/demo/Util", "branchy", "(I)I", 0xA7 /*goto*/, gDum, std::nullopt);
+    const auto l1   = facadeEmitLabel(s, "me/demo/Util", "branchy", "(I)I", std::nullopt);
+    facadeEmitInsn(s, "me/demo/Util", "branchy", "(I)I", 0x03 /*iconst_0*/, std::nullopt);
     const auto lend = facadeEmitLabel(s, "me/demo/Util", "branchy", "(I)I", std::nullopt);
-    const auto go   = facadeEmitJump(s, "me/demo/Util", "branchy", "(I)I", 0xA7 /*goto*/, lend, std::nullopt);
-    const auto l1   = facadeEmitInsn(s, "me/demo/Util", "branchy", "(I)I", 0x03 /*iconst_0*/, lend);
     facadeEmitInsn(s, "me/demo/Util", "branchy", "(I)I", 0xAC /*ireturn*/, std::nullopt);
-    // 前向跳转目标 uid 可改指（set_target）。
+    // 前向跳转目标 uid 可改指（set_target）：两跳各自改指真 label。
+    facadeInsnSetTarget(s, "me/demo/Util", "branchy", "(I)I", cond, l1);
     facadeInsnSetTarget(s, "me/demo/Util", "branchy", "(I)I", go, lend);
     EXPECT_NO_THROW(facadeWriteBack(s, "me/demo/Util", true));
     (void)load;
-    (void)l1;
+    (void)lDum;
+    (void)gDum;
     FacadeRegistry::instance().close(h);
 }
 
@@ -828,8 +836,8 @@ TEST(FacadeTree, RenameSyncsEntryOnWriteBack)
     const auto probed = facadeProbeClassName(facadeClassBytes(s, "me/demo/Renamed"));
     ASSERT_TRUE(probed);
     EXPECT_EQ(*probed, "me/demo/Renamed");
-    EXPECT_NE(s.container->getResource("me/demo/Renamed.class"), nullptr);
-    EXPECT_EQ(s.container->getResource("me/demo/Util.class"), nullptr);
+    EXPECT_NE(facadeContainer(s).getResource("me/demo/Renamed.class"), nullptr);
+    EXPECT_EQ(facadeContainer(s).getResource("me/demo/Util.class"), nullptr);
     FacadeRegistry::instance().close(h);
 }
 

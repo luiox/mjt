@@ -289,7 +289,7 @@ std::shared_ptr<PyRunStats> runPass(ca::u64 h, const std::string& name,
     auto& session = FacadeRegistry::instance().get(h);
     auto  stats   = std::make_shared<PyRunStats>();
     stats->pipeline = name;
-    runPipelineOnContainer(*session.container, {name}, "", false, jdkPath, *stats,
+    runPipelineOnContainer(facadeContainer(session), {name}, "", false, jdkPath, *stats,
                            failSoft);
     session.clearTrees();   // 管线直驱容器字节 → 树缓存作废（lazy 重解析）
     // 管线面改写的类集合不可知（pass 批量直驱，无逐类落账清单）→ 内容编辑
@@ -311,7 +311,7 @@ std::shared_ptr<PyRunStats> runPipeline(ca::u64 h, std::vector<std::string> pass
     stats->pipeline =
         !pipeline.empty() ? pipeline
                           : (passNames.size() == 1 ? passNames.front() : "pass_names");
-    runPipelineOnContainer(*session.container, std::move(passNames), pipeline, false,
+    runPipelineOnContainer(facadeContainer(session), std::move(passNames), pipeline, false,
                            jdkPath, *stats, failSoft);
     session.clearTrees();
     // 管线直驱容器字节 → 会话库标 stale（runPass 同款粗粒度收口）。
@@ -330,7 +330,7 @@ py::dict optPreview(ca::u64 h, std::vector<std::string> passNames,
     auto  clone   = facadeCloneContainer(session);
     auto  stats   = std::make_shared<PyRunStats>();
     runPipelineOnContainer(*clone, passNames, pipeline, true, jdkPath, *stats, failSoft);
-    const auto diffs = facadeDiffContainers(*session.container, *clone);
+    const auto diffs = facadeDiffContainers(facadeContainer(session), *clone);
     py::dict   out;
     out["changed"] = !diffs.empty();
     py::list skipped;
@@ -375,7 +375,7 @@ std::shared_ptr<PyRunStats> optApply(ca::u64 h, std::vector<std::string> passNam
     stats->pipeline =
         !pipeline.empty() ? pipeline
                           : (passNames.size() == 1 ? passNames.front() : "default-optimize");
-    runPipelineOnContainer(*session.container, std::move(passNames), pipeline, true,
+    runPipelineOnContainer(facadeContainer(session), std::move(passNames), pipeline, true,
                            jdkPath, *stats, failSoft);
     session.clearTrees();
     session.lastStats    = stats;

@@ -56,12 +56,22 @@ namespace jan = jbc::analysis;
 
 // ── 会话 ─────────────────────────────────────────────────────────────────
 
+FacadeSession::FacadeSession()
+{
+    // 空容器出生（new_container 契约）：条目族写面走 applyEdit 管道，其
+    // ensureLoaded 对纯 new_container 会话（从不开源文件）也须直通——出生
+    // 即建立 loaded 空态。openEmpty 只含空态，失败即环境坏，抛构造期异常。
+    const auto born = ws.openEmpty();
+    if (born.is_err())
+        throw std::runtime_error("session: open empty: " + born.unwrap_err().message);
+}
+
 void FacadeSession::rebuildIndex()
 {
     nameToUri.clear();
     duplicateUris.clear();
     // mjbase visitResources 回调收 string_view（mbase 是 const string&）。
-    container->visitResources([&](std::string_view uriView, const IResource& resource) {
+    facadeContainer(*this).visitResources([&](std::string_view uriView, const IResource& resource) {
         const std::string uri(uriView);
         const auto* cr = ca::core::tag_cast::dyn_cast<const ClassResource>(&resource);
         if (!cr) return;
@@ -130,8 +140,6 @@ std::optional<std::string> facadeProbeClassName(const std::vector<ca::u8>& bytes
     const auto name = opened.file->thisName();
     if (name.empty()) return std::nullopt;
     return std::string(name);
-    if (name.empty()) return std::nullopt;
-    return std::string(name);
 }
 
 namespace {
@@ -183,7 +191,7 @@ std::optional<std::string> winnerNameFor(const FacadeSession& s, const std::stri
 
 const ClassResource* classResourceOf(const FacadeSession& s, const std::string& uri)
 {
-    const auto* r = s.container->getResource(uri);
+    const auto* r = facadeContainer(s).getResource(uri);
     if (!r) return nullptr;
     return ca::core::tag_cast::dyn_cast<const ClassResource>(r);
 }
@@ -191,6 +199,32 @@ const ClassResource* classResourceOf(const FacadeSession& s, const std::string& 
 }   // namespace
 
 // ── 容器/条目面 ──────────────────────────────────────────────────────────
+
+mjbase::model::ResourceContainer& facadeContainer(FacadeSession& s)
+{
+    auto* container = s.ws.workingContainer();
+    if (container == nullptr) throw StaleRefError("session is not open");
+    return *container;
+}
+
+const mjbase::model::ResourceContainer& facadeContainer(const FacadeSession& s)
+{
+    const auto* container = s.ws.workingContainer();
+    if (container == nullptr) throw StaleRefError("session is not open");
+    return *container;
+}
+
+/// @brief 条目族写边界（W4b）：applyEdit 单入口——ResourceBytes/
+///        RemoveResource 变体（字节面，无门禁，SDK 原语义原样）；失败抛
+///        runtime_error（SDK 错误面）。
+void applyEditEntry(FacadeSession& s, mjt::workspace::EditCommand::Op op)
+{
+    mjt::workspace::MutationRequest request;
+    const auto applied =
+        mjt::workspace::applyEdit(s.ws, mjt::workspace::EditCommand{std::move(op)}, request);
+    if (applied.status.is_err())
+        throw std::runtime_error("apply edit: " + applied.status.message);
+}
 
 void facadeImportJar(FacadeSession& session, const std::string& path)
 {
@@ -202,10 +236,12 @@ void facadeImportJar(FacadeSession& session, const std::string& path)
     // 协作层取消检查点：importFromJar 内部循环引擎私有，检查点只能落在入口
     // （逐条目粒度进不去，这是接受的成本，见 doc_ai/pysdk-script-limits.md）。
     deadlineCheck();
-    // mjbase importFromJar 返回 ModelResult<void>（不再抛异常）。
-    const auto imported = ResourceHelper::importFromJar(*session.container, path);
+    // W4 统一：open 走 container_io 注册表（jar 行 = importFromJar +
+    // 原始/工作双快照）；错误口径保持迁移前文案。
+    const auto imported = session.ws.open(mjt::workspace::utf8Ref(path));
     if (imported.is_err()) {
-        throw std::runtime_error("import: failed: " + path);
+        throw std::runtime_error("import: failed: " + path + ": " +
+                                 imported.unwrap_err().message);
     }
     session.sourcePath = path;
     session.rebuildIndex();
@@ -215,7 +251,7 @@ void facadeImportJar(FacadeSession& session, const std::string& path)
 std::vector<std::pair<std::string, std::string>> facadeListEntries(const FacadeSession& s)
 {
     std::vector<std::pair<std::string, std::string>> out;
-    s.container->visitResources([&](std::string_view uriView, const IResource& resource) {
+    facadeContainer(s).visitResources([&](std::string_view uriView, const IResource& resource) {
         out.emplace_back(std::string(uriView),
                          std::string(mjbase::model::to_string(resource.getType())));
     });
@@ -225,7 +261,7 @@ std::vector<std::pair<std::string, std::string>> facadeListEntries(const FacadeS
 
 std::vector<ca::u8> facadeGetEntryBytes(const FacadeSession& s, const std::string& uri)
 {
-    const auto* r = s.container->getResource(uri);
+    const auto* r = facadeContainer(s).getResource(uri);
     if (!r) throw StaleRefError("entry not found: " + uri);
     if (const auto* cr = ca::core::tag_cast::dyn_cast<const ClassResource>(r)) return cr->get();
     if (const auto* mr = ca::core::tag_cast::dyn_cast<const ManifestResource>(r))
@@ -236,45 +272,35 @@ std::vector<ca::u8> facadeGetEntryBytes(const FacadeSession& s, const std::strin
 
 void facadeSetEntryBytes(FacadeSession& s, const std::string& uri, std::vector<ca::u8> bytes)
 {
-    auto* r = s.container->getResource(uri);
+    const auto* r = facadeContainer(s).getResource(uri);
     if (!r) throw StaleRefError("entry not found: " + uri);
-    // 分支判定必须 isa（tag 受检）：cast 是不受检 static_cast，对任何
-    // Resource* 都非空——旧代码直接 cast 做判定，Manifest/Unknown 条目误入
-    // ClassResource 分支类型混淆写内存（实测 MSVC 下 SEH，pybind 兜底成
-    // 无信息 RuntimeError）。可变指针按 libca 约定 isa 守护后走 cast。
+    // W4b：字节置入走 applyEdit 单入口（ResourceBytes 保持原资源形态置
+    // 字节——Manifest 形按文本重析，畸形文本由 handler 抛 DataLoss；类形
+    // 原样置入，不设门禁）。
     // 原字节逃生门：字节形态不可预判（可能改名/畸形/换资源形态）→ 不走
     // 增量同步，库标 stale 下次查询重建（fail-open 到重建的粗粒度面）。
-    if (ca::core::tag_cast::isa<ClassResource>(r)) {
-        auto* cr = ca::core::tag_cast::cast<ClassResource>(r);
-        cr->set(std::move(bytes));
+    const bool wasClass = ca::core::tag_cast::isa<ClassResource>(r);
+    applyEditEntry(s, mjt::workspace::EditCommand::ResourceBytes{
+                          mjt::workspace::utf8(uri), std::move(bytes)});
+    if (wasClass) {
         // 外部改字节：作废该类缓存树（下次树操作按新字节重建）。
         if (auto name = winnerNameFor(s, uri)) s.trees.erase(*name);
-        facadeInvalidateAnalysisDb(s);
-        return;
     }
-    if (ca::core::tag_cast::isa<ManifestResource>(r)) {
-        ca::core::tag_cast::cast<ManifestResource>(r)->set(
-            mjbase::jar::Manifest::fromBytes(bytes));
-        facadeInvalidateAnalysisDb(s);   // 非类资源字节进资源串并集面 → 重建换快照
-        return;
-    }
-    if (ca::core::tag_cast::isa<UnknownResource>(r)) {
-        ca::core::tag_cast::cast<UnknownResource>(r)->set(std::move(bytes));
-        facadeInvalidateAnalysisDb(s);
-        return;
-    }
-    throw std::runtime_error("set entry bytes: unsupported resource type: " + uri);
+    facadeInvalidateAnalysisDb(s);   // 非类资源字节进资源串并集面 → 重建换快照
 }
 
 void facadeAddEntry(FacadeSession& s, const std::string& uri, std::vector<ca::u8> bytes)
 {
     if (uri.empty()) throw std::invalid_argument("add entry: uri is empty");
-    if (s.container->hasResource(uri)) {
+    if (facadeContainer(s).hasResource(uri)) {
         throw StaleRefError("entry already exists: " + uri);
     }
     auto name = facadeProbeClassName(bytes);
+    // W4b：条目落容器走 applyEdit（ResourceBytes 新增路径按骨架解析判形，
+    // 与本处 probe 同口径）；索引/树缓存照旧由 facade 层维护。
+    applyEditEntry(s, mjt::workspace::EditCommand::ResourceBytes{
+                          mjt::workspace::utf8(uri), std::move(bytes)});
     if (name && !name->empty()) {
-        s.container->addResource(uri, std::make_unique<ClassResource>(uri, std::move(bytes)));
         if (s.nameToUri.count(*name)) {
             s.duplicateUris.emplace(*name, uri);   // first-wins：后者落选
         }
@@ -284,13 +310,12 @@ void facadeAddEntry(FacadeSession& s, const std::string& uri, std::vector<ca::u8
         facadeInvalidateAnalysisDb(s);   // 条目集合变更（结构变更面）→ 重建
         return;
     }
-    s.container->addResource(uri, std::make_unique<UnknownResource>(uri, std::move(bytes)));
     facadeInvalidateAnalysisDb(s);
 }
 
 void facadeRemoveEntry(FacadeSession& s, const std::string& uri)
 {
-    if (!s.container->hasResource(uri)) throw StaleRefError("entry not found: " + uri);
+    if (!facadeContainer(s).hasResource(uri)) throw StaleRefError("entry not found: " + uri);
 
     // winner 移除：落选者按序晋升（JVM 语义下唯一条目即生效）。
     if (auto name = winnerNameFor(s, uri)) {
@@ -304,7 +329,9 @@ void facadeRemoveEntry(FacadeSession& s, const std::string& uri)
         }
         s.trees.erase(*name);   // winner/loser 字节可能不同，缓存一律作废
         facadeInvalidateAnalysisDb(s);   // 条目集合变更（结构变更面）→ 重建
-        return s.container->getResources().erase(uri), void();
+        applyEditEntry(s, mjt::workspace::EditCommand::RemoveResource{
+                              mjt::workspace::utf8(uri)});
+        return;
     }
 
     // 落选者移除：仅清落选登记。
@@ -314,7 +341,8 @@ void facadeRemoveEntry(FacadeSession& s, const std::string& uri)
             break;
         }
     }
-    s.container->getResources().erase(uri);
+    applyEditEntry(s, mjt::workspace::EditCommand::RemoveResource{
+                          mjt::workspace::utf8(uri)});
     facadeInvalidateAnalysisDb(s);
 }
 
@@ -335,7 +363,7 @@ void facadeLoadClassFile(FacadeSession& s, const std::string& path,
         throw std::runtime_error("load class file: not a class file: " + path);
     }
     if (!uri) uri = std::filesystem::u8path(path).filename().u8string();
-    if (s.container->hasResource(*uri)) {
+    if (facadeContainer(s).hasResource(*uri)) {
         if (!replace) throw StaleRefError("entry already exists: " + *uri);
         facadeRemoveEntry(s, *uri);
     }
@@ -406,12 +434,13 @@ void facadeSetClassBytes(FacadeSession& s, const std::string& name, std::vector<
     }
     auto it = s.nameToUri.find(name);
     if (it != s.nameToUri.end()) {
-        auto* r = s.container->getResource(it->second);
+        const auto* r = facadeContainer(s).getResource(it->second);
         if (!ca::core::tag_cast::isa<ClassResource>(r)) {
             throw std::runtime_error("not a class entry: " + name);
         }
-        auto* cr = ca::core::tag_cast::cast<ClassResource>(r);
-        cr->set(std::move(bytes));
+        // W4b：替换走 applyEdit（原条目为类形 → ResourceBytes 保持类形置入）。
+        applyEditEntry(s, mjt::workspace::EditCommand::ResourceBytes{
+                              mjt::workspace::utf8(it->second), std::move(bytes)});
         s.trees.erase(name);   // 外部改字节：作废缓存树
         // 内容编辑边界（既有类字节整体替换）：增量同步追平该类事实。
         facadeSyncAnalysisDbAfterEdit(s, name);
@@ -419,10 +448,11 @@ void facadeSetClassBytes(FacadeSession& s, const std::string& name, std::vector<
     }
     // 新增类（v2 缺口修复）：URI = name + ".class"。
     const std::string uri = name + ".class";
-    if (s.container->hasResource(uri)) {
+    if (facadeContainer(s).hasResource(uri)) {
         throw StaleRefError("entry already exists: " + uri);
     }
-    s.container->addResource(uri, std::make_unique<ClassResource>(uri, std::move(bytes)));
+    applyEditEntry(s, mjt::workspace::EditCommand::ResourceBytes{
+                          mjt::workspace::utf8(uri), std::move(bytes)});
     s.nameToUri[name] = uri;
     facadeInvalidateAnalysisDb(s);   // 条目集合变更（结构变更面）→ 重建
 }
@@ -436,13 +466,13 @@ void facadeExportJar(FacadeSession& s, const std::string& path,
     facadeFlush(s, true);
     facadeSyncEntries(s);
     if (uris.empty()) {
-        stagedExportJar(*s.container, path);
+        stagedExportJar(facadeContainer(s), path);
         return;
     }
     // 子集导出：Class/Manifest/Unknown 深拷贝入临时容器。
     ResourceContainer subset;
     for (const auto& uri : uris) {
-        const auto* r = s.container->getResource(uri);
+        const auto* r = facadeContainer(s).getResource(uri);
         if (!r) throw StaleRefError("entry not found: " + uri);
         if (const auto* cr = ca::core::tag_cast::dyn_cast<const ClassResource>(r)) {
             subset.addResource(uri, std::make_unique<ClassResource>(uri, cr->get()));
@@ -466,7 +496,7 @@ void facadeExportClass(FacadeSession& s, const std::string& name, const std::str
     auto it = s.trees.find(name);
     if (it != s.trees.end() && it->second.dirty) facadeWriteBack(s, name, true);
     facadeSyncEntries(s);
-    ResourceHelper::exportToClassFile(*s.container, path, facadeClassUri(s, name));
+    ResourceHelper::exportToClassFile(facadeContainer(s), path, facadeClassUri(s, name));
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -2131,13 +2161,13 @@ std::vector<std::string> facadeSyncEntries(FacadeSession& s)
 {
     std::vector<std::string> moved;
     for (const auto& [oldUri, newUri] : s.pendingEntryRenames) {
-        auto* r  = s.container->getResource(oldUri);
-        auto* cr = r ? ca::core::tag_cast::dyn_cast<ClassResource>(r) : nullptr;
+        const auto* r  = facadeContainer(s).getResource(oldUri);
+        const auto* cr = r ? ca::core::tag_cast::dyn_cast<const ClassResource>(r) : nullptr;
         if (!cr) continue;   // 条目已不在：挂账作废
-        std::vector<ca::u8> bytes = cr->get();   // 拷贝后再搬（同容器内 move 键）
-        s.container->getResources().erase(oldUri);
-        s.container->addResource(newUri,
-                                 std::make_unique<ClassResource>(newUri, std::move(bytes)));
+        // W4c：条目搬移走 applyEdit 单管道（RenameResource 变体：单事务原子，
+        // 资源对象原样搬移不碰字节；沿用挂账只对类条目生效的旧纪律）。
+        applyEditEntry(s, mjt::workspace::EditCommand::RenameResource{
+                              mjt::workspace::utf8(oldUri), mjt::workspace::utf8(newUri)});
         for (auto& [name, uri] : s.nameToUri) {
             if (uri == oldUri) uri = newUri;
         }
@@ -2255,12 +2285,14 @@ void facadeWriteBack(FacadeSession& s, const std::string& name, bool computeFram
     if (bytes.empty()) throw std::runtime_error("write_back: empty serialization for " + name);
     auto uriIt = s.nameToUri.find(name);
     if (uriIt == s.nameToUri.end()) throw StaleRefError("class not found: " + name);
-    auto* r = s.container->getResource(uriIt->second);
+    const auto* r = facadeContainer(s).getResource(uriIt->second);
     if (!ca::core::tag_cast::isa<ClassResource>(r)) {
         throw std::runtime_error("not a class entry: " + name);
     }
-    auto* cr = ca::core::tag_cast::cast<ClassResource>(r);
-    cr->set(std::move(bytes));
+    // W4b：写回字节走 applyEdit（原条目类形保持，无门禁——帧计算已在上
+    // 方按 compute_frames 完成，fail-loud 语义不变）。
+    applyEditEntry(s, mjt::workspace::EditCommand::ResourceBytes{
+                          mjt::workspace::utf8(uriIt->second), std::move(bytes)});
     te.dirty = false;
     facadeSyncEntries(s);   // 挂账的类改名条目搬移随写回落账（G2）
     // 内容编辑边界：落账字节增量同步进会话库（库未建 / 已 stale 直通；
@@ -2284,7 +2316,7 @@ void facadeSave(FacadeSession& s, const std::string& path, bool computeFrames)
 {
     facadeFlush(s, computeFrames);
     facadeSyncEntries(s);
-    stagedExportJar(*s.container, path);
+    stagedExportJar(facadeContainer(s), path);
 }
 
 // ── rename token 面（契约 §2.7） ─────────────────────────────────────────
@@ -2370,16 +2402,10 @@ void facadeTokenCommit(FacadeSession& s, bool reflectionStrings, bool annotation
     policy.annotations       = annotations;
     policy.signatures        = signatures;
     policy.resources         = resources;
-    // mjbase 不再收 arena（计划自驻留），返回 Result<bool, RemapError>。
-    const auto applied =
-        mjbase::asm_remapper::applyResourceRemapPlan(*s.container, t.plan, policy);
-    if (applied.is_err()) {
-        throw std::runtime_error(std::string("rename commit failed: ")
-                                 + mjbase::asm_remapper::to_string(applied.unwrap_err()));
-    }
-    if (!applied.unwrap()) {
-        throw std::runtime_error("rename commit failed (remapper rejected plan)");
-    }
+    // W4c：remap 走 applyEdit 单管道（RemapPlan 变体：候选容器重写 + 改动类
+    // 门禁 + commit 落账；plan 借用须活过调用期——token 持有；载荷 Policy 禁
+    // 拷贝，移交 move）。
+    applyEditEntry(s, mjt::workspace::EditCommand::RemapPlan{&t.plan, std::move(policy)});
     s.clearTrees();     // 容器字节整体被改写 → 树缓存作废（lazy 重解析）
     s.rebuildIndex();   // remapper 连资源 URI 一起改名 → nameToUri 索引必须重建
     facadeInvalidateAnalysisDb(s);   // 容器内容整体换血：库走下次查询重建
@@ -2412,13 +2438,6 @@ std::tuple<ca::usize, ca::usize, ca::usize> facadeMappingCounts(FacadeSession& s
     if (!s.renameToken) return {0, 0, 0};
     const auto& m = *s.renameToken->mapping;
     return {m.getClasses().size(), m.getMethods().size(), m.getFields().size()};
-}
-
-void facadeRecordRun(FacadeSession& s, const std::string& name,
-                     const std::shared_ptr<PyRunStats>& stats)
-{
-    s.lastStats    = stats;
-    s.lastPipeline = name;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -2464,7 +2483,7 @@ ContainerVerifyReport facadeVerifyContainer(FacadeSession& s)
     std::unordered_set<std::string> declared;                 // 容器内实际声明的类名
     std::unordered_map<std::string, std::unordered_set<std::string>> refsByUri;
 
-    s.container->visitResources([&](std::string_view uriView, const IResource& resource) {
+    facadeContainer(s).visitResources([&](std::string_view uriView, const IResource& resource) {
         const std::string uri(uriView);
         deadlineCheck();   // 协作层取消检查点（每条目粒度；只读操作可安全中断）
         const auto* cr = ca::core::tag_cast::dyn_cast<const ClassResource>(&resource);
@@ -2690,7 +2709,10 @@ SuggestionRunReport facadeRenameApplySuggestions(FacadeSession& s, const std::st
     options.policy = std::move(policy);
     mjbase::renamer::FileSuggestionProvider provider(std::move(file).unwrap());
     mjbase::renamer::RenamerEngine          engine;
-    auto result = engine.run(*s.container, {&provider}, options);
+    // 写边界例外（W4c 裁决）：建议引擎是整容器批量重写（自带事务/回滚语义，
+    // 产物含资源 URI 搬移），不走 EditCommand 单编辑形态——直驱容器后
+    // clearTrees/rebuildIndex 全量重建，与 import_jar 同类的整体换血面。
+    auto result = engine.run(facadeContainer(s), {&provider}, options);
     // mjbase：ca::Status 通道换 ok+error 值对；error 0.0.28 起为 Utf8String。
     if (!result.ok) {
         throw std::runtime_error("rename apply failed: " + result.error.to_std_string());
@@ -2719,7 +2741,7 @@ ShadowGenReport facadeShadowGenerate(FacadeSession& s)
     s.shadowTable = std::make_shared<mjbase::renamer::ShadowAliasTable>();
     // mjbase：随机源失败走 Result 值语义（不抛异常）；错误文本 0.0.28 起
     // 为 Utf8String（move-only）——result 不能 const，unwrap_err 走移动重载。
-    auto generated = mjbase::renamer::generateMechanicalShadowNames(*s.container, *s.shadowTable);
+    auto generated = mjbase::renamer::generateMechanicalShadowNames(facadeContainer(s), *s.shadowTable);
     if (generated.is_err()) {
         throw std::runtime_error("shadow generate: " +
                                  std::move(generated).unwrap_err().to_std_string());
@@ -2870,7 +2892,7 @@ std::vector<JarByteDiff> diffContainers(const ResourceContainer& before,
 
 std::unique_ptr<ResourceContainer> facadeCloneContainer(const FacadeSession& s)
 {
-    return cloneContainer(*s.container);
+    return cloneContainer(facadeContainer(s));
 }
 
 std::vector<JarByteDiff> facadeDiffContainers(const ResourceContainer& before,
@@ -2891,9 +2913,9 @@ JarDiffReport facadeJarDiff(FacadeSession& s, const std::string& referencePath)
     }
     JarDiffReport report;
     report.referencePath = referencePath;
-    report.diffs         = diffContainers(*s.container, reference);
+    report.diffs         = diffContainers(facadeContainer(s), reference);
     for (const auto& diff : report.diffs) {
-        if (s.container->getResource(diff.uri) == nullptr) {
+        if (facadeContainer(s).getResource(diff.uri) == nullptr) {
             ++report.referenceOnly;
         }
         else if (reference.getResource(diff.uri) == nullptr) {
@@ -2968,8 +2990,8 @@ JarRepairReport jarRepairCommon(FacadeSession& s, bool removeInvalidClassEntries
 {
     deadlineCheck();
     JarRepairReport report;
-    report.resourceCount = s.container->size();
-    report.issues        = scanJarRepairIssuesLocal(*s.container,
+    report.resourceCount = facadeContainer(s).size();
+    report.issues        = scanJarRepairIssuesLocal(facadeContainer(s),
                                                     removeInvalidClassEntries,
                                                     removeCorruptOutputMarkers,
                                                     report.classCount);
@@ -3203,7 +3225,7 @@ public:
                 mjbase::model::to_string(std::move(exported).unwrap_err()));
         }
         workspace = std::make_unique<mjt::workspace::WorkspaceBase>();
-        if (auto opened = workspace->openJar(pathRefOf(jarPath)); opened.is_err()) {
+        if (auto opened = workspace->open(pathRefOf(jarPath)); opened.is_err()) {
             throw std::runtime_error("open session db workspace failed: " +
                                      std::move(opened).unwrap_err().message);
         }
@@ -3391,7 +3413,7 @@ void syncSessionAnalysisDbForClass(SessionAnalysisDb& held, FacadeSession& s,
     // stale 收口）。
     auto uriIt = s.nameToUri.find(name);
     if (uriIt == s.nameToUri.end()) return syncFailed(held);
-    const auto* resource = s.container->getResource(uriIt->second);
+    const auto* resource = facadeContainer(s).getResource(uriIt->second);
     const auto* cr =
         resource ? ca::core::tag_cast::dyn_cast<const ClassResource>(resource) : nullptr;
     if (!cr) return syncFailed(held);
@@ -3450,7 +3472,7 @@ void syncSessionAnalysisDbForClass(SessionAnalysisDb& held, FacadeSession& s,
     // 贝，Utf8String move-only → MSVC C2280，CI 实证）——push_back 走移动。
     std::vector<ca::str::Utf8String> changedUris;
     changedUris.push_back(utf8Owned(uriIt->second));
-    scan.buildFor(*s.container, changedUris);
+    scan.buildFor(facadeContainer(s), changedUris);
 
     std::vector<mjbase::project::DbReferenceRecord> header;
     auto methodSlices = collectReferenceSlices(scan, name, header);
@@ -3608,7 +3630,7 @@ ClassCensusFileReport facadeClassCensusFile(const std::string& jarPath,
     } guard{root};
 
     mjt::workspace::WorkspaceBase workspace;
-    if (auto opened = workspace.openJar(pathRefOf(jarPath)); opened.is_err()) {
+    if (auto opened = workspace.open(pathRefOf(jarPath)); opened.is_err()) {
         const auto error = std::move(opened).unwrap_err();
         throw std::runtime_error("open jar failed: " + error.message);
     }
