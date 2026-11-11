@@ -72,6 +72,7 @@
 #include "classfile_support.hpp"
 #include "reference_scan.hpp"
 #include "summary_scan.hpp"
+#include "dex_domain.hpp"
 
 namespace mjt::workspace {
 
@@ -440,6 +441,7 @@ WorkspaceResult<void> WorkspaceBase::open(
         sourcePath_          = utf8(path);
         primaryClassUri_     = std::move(artifact.primaryClassUri);
         sourceManifestBytes_ = std::move(artifact.sourceManifestBytes);
+        dexDomain_           = std::move(artifact.dexDomain);
         auto reset = resetSessionState("open");
         if (reset.is_err()) return reset;
         return ca::core::Ok();
@@ -461,6 +463,7 @@ WorkspaceResult<void> WorkspaceBase::openEmpty()
         sourcePath_          = ca::str::Utf8String{};
         primaryClassUri_     = ca::str::Utf8String{};
         sourceManifestBytes_ = std::nullopt;
+        dexDomain_           = nullptr;
         auto reset = resetSessionState("open empty");
         if (reset.is_err()) return reset;
         return ca::core::Ok();
@@ -813,6 +816,8 @@ WorkspaceResult<FieldInfo> WorkspaceBase::fieldInfo(ca::str::Utf8StringRef owner
         return ca::core::Err(error(WorkspaceError::InvalidArgument, "get field info",
                                    "owner, name and descriptor are required"));
     }
+    // dex 会话：类事实面走 dex 域（jbc 会话族对 dex 容器不可解析）。
+    if (dexDomain_ != nullptr) return dexDomain_->fieldInfo(owner, name, descriptor);
     auto uri = resolveClassUri(*working_, owner);
     if (uri.is_err()) return ca::core::Err(std::move(uri).unwrap_err());
     const auto* resource = ca::core::tag_cast::dyn_cast<const model::ClassResource>(
@@ -837,6 +842,9 @@ WorkspaceResult<std::vector<ConstantPoolEntryInfo>> WorkspaceBase::constantPool(
     const std::string uriOrInternalName = uriOrInternalNameRef.to_std_string();
     WorkspaceErrorInfo status = ensureLoaded("get constant pool");
     if (status.is_err()) return ca::core::Err(std::move(status));
+    // dex 会话：dex 五张 ID 表投影常量池视图（libdex dom）。
+    if (dexDomain_ != nullptr)
+        return dexDomain_->constantPool(uriOrInternalName, resolve);
     auto uri = resolveClassUri(*working_, uriOrInternalName);
     if (uri.is_err()) return ca::core::Err(std::move(uri).unwrap_err());
     const auto* resource = ca::core::tag_cast::dyn_cast<const model::ClassResource>(
@@ -867,6 +875,9 @@ WorkspaceResult<MethodInstructions> WorkspaceBase::methodInstructions(
         return ca::core::Err(error(WorkspaceError::InvalidArgument, "get method instructions",
                                    "owner, name and descriptor are required"));
     }
+    // dex 会话：方法指令面走 dex 域（smali 形行渲染）。
+    if (dexDomain_ != nullptr)
+        return dexDomain_->methodInstructions(owner, name, descriptor, resolve);
     auto uri = resolveClassUri(*working_, owner);
     if (uri.is_err()) return ca::core::Err(std::move(uri).unwrap_err());
     const auto* resource = ca::core::tag_cast::dyn_cast<const model::ClassResource>(
@@ -920,6 +931,8 @@ WorkspaceResult<std::vector<SearchHit>> WorkspaceBase::searchInstructions(
     const std::string query = queryRef.to_std_string();
     WorkspaceErrorInfo status = ensureLoaded("search instructions");
     if (status.is_err()) return ca::core::Err(std::move(status));
+    // dex 会话：smali 形指令行搜索（smalict 渲染层与 JVM 面同源匹配器）。
+    if (dexDomain_ != nullptr) return dexDomain_->searchInstructions(query, options);
     auto compiled = compileSearchRegex(query, options, "search instructions");
     if (compiled.is_err()) return ca::core::Err(std::move(compiled).unwrap_err());
     auto        compiledRegex = std::move(compiled).unwrap();
@@ -1035,6 +1048,10 @@ WorkspaceResult<std::vector<ReferenceInfo>> WorkspaceBase::xrefsToMethod(
         return ca::core::Err(error(WorkspaceError::InvalidArgument, "xref method",
                                    "owner, name and descriptor are required"));
     }
+    // dex 会话：引用面走 dex 域扫描（无 supporting 合并面——dex 会话不挂
+    // 支撑容器）。
+    if (dexDomain_ != nullptr)
+        return dexDomain_->xrefsToMethod(owner, name, descriptor);
     try {
         ReferenceScan scan;
         scan.build(*analysisScanContainer());
@@ -1070,6 +1087,9 @@ WorkspaceResult<std::vector<ReferenceInfo>> WorkspaceBase::xrefsToField(
         return ca::core::Err(error(WorkspaceError::InvalidArgument, "xref field",
                                    "owner, name and descriptor are required"));
     }
+    // dex 会话：引用面走 dex 域扫描。
+    if (dexDomain_ != nullptr)
+        return dexDomain_->xrefsToField(owner, name, descriptor);
     try {
         ReferenceScan scan;
         scan.build(*analysisScanContainer());
@@ -1101,6 +1121,8 @@ WorkspaceResult<std::vector<ReferenceInfo>> WorkspaceBase::xrefsToClass(
     if (internalName.empty())
         return ca::core::Err(
             error(WorkspaceError::InvalidArgument, "xref class", "class is empty"));
+    // dex 会话：类型引用面走 dex 域扫描。
+    if (dexDomain_ != nullptr) return dexDomain_->xrefsToClass(internalName);
     try {
         ReferenceScan scan;
         scan.build(*analysisScanContainer());
@@ -1121,6 +1143,8 @@ WorkspaceResult<ReferenceScan> WorkspaceBase::referenceScan() const
 {
     WorkspaceErrorInfo status = ensureLoaded("scan references");
     if (status.is_err()) return ca::core::Err(std::move(status));
+    // dex 会话：全域引用扫描走 dex 域（ingest 桥喂库同源）。
+    if (dexDomain_ != nullptr) return ca::core::Ok(dexDomain_->buildReferenceScan());
     try {
         ReferenceScan scan;
         scan.build(*analysisScanContainer());
@@ -1144,6 +1168,9 @@ WorkspaceResult<std::vector<ReferenceInfo>> WorkspaceBase::calleesOfMethod(
         return ca::core::Err(error(WorkspaceError::InvalidArgument, "list callees",
                                    "owner, name and descriptor are required"));
     }
+    // dex 会话：直接调用目标 + resolved 的域内 CHA 展开都走 dex 域。
+    if (dexDomain_ != nullptr)
+        return dexDomain_->calleesOfMethod(owner, name, descriptor, resolved);
     try {
         std::vector<ReferenceInfo> result;
         if (!resolved) {
@@ -1253,6 +1280,8 @@ WorkspaceResult<ClassRelations> WorkspaceBase::classRelations(
         return ca::core::Err(
             error(WorkspaceError::InvalidArgument, "get class relations", "class is empty"));
     }
+    // dex 会话：层次闭包走 dex 域反向索引（域外超类截断，与容器类同口径）。
+    if (dexDomain_ != nullptr) return dexDomain_->classRelations(internalName);
     try {
         auto graph = analysisGraph();
         if (graph.is_err()) return ca::core::Err(std::move(graph).unwrap_err());
@@ -1336,6 +1365,9 @@ WorkspaceResult<std::vector<MethodOverrideInfo>> WorkspaceBase::overridesOfMetho
         return ca::core::Err(error(WorkspaceError::InvalidArgument, "get method overrides",
                                    "owner, name and descriptor are required"));
     }
+    // dex 会话：super 链同名同描述符声明走 dex 域。
+    if (dexDomain_ != nullptr)
+        return dexDomain_->overridesOfMethod(owner, name, descriptor);
     try {
         auto graph = analysisGraph();
         if (graph.is_err()) return ca::core::Err(std::move(graph).unwrap_err());

@@ -53,6 +53,17 @@ void ReferenceScan::build(const model::ResourceContainer& container)
     buildFiltered(container, nullptr);
 }
 
+ReferenceScan ReferenceScan::fromParts(std::vector<MethodReference> methods,
+                                       std::vector<FieldReference>  fields,
+                                       std::vector<TypeReference>   types)
+{
+    ReferenceScan scan;
+    scan.methods_ = std::move(methods);
+    scan.fields_  = std::move(fields);
+    scan.types_   = std::move(types);
+    return scan;
+}
+
 void ReferenceScan::buildFor(const model::ResourceContainer&         container,
                              const std::vector<ca::str::Utf8String>& uris)
 {
