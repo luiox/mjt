@@ -149,7 +149,7 @@ struct IngestedCensus
 IngestedCensus ingestFixture(const std::filesystem::path& fixture)
 {
     WorkspaceBase workspace;
-    auto          opened = workspace.openJar(refOf(fixture.string()));
+    auto          opened = workspace.open(refOf(fixture.string()));
     if (!opened.is_ok()) {
         ADD_FAILURE() << "open jar failed: " << opened.unwrap_err().message;
         return {AnalysisDb::open(refOf(freshDbPath().string())).unwrap(), 0};

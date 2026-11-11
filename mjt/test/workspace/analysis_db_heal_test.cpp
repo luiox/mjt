@@ -170,7 +170,7 @@ TEST(MjAnalysisHealTest, HealIsNoOpOnConsistentDb)
 
     WorkspaceBase workspace;
     ASSERT_TRUE(
-        workspace.openJar(ca::str::Utf8StringRef::from_string_view(jarPath.string())).is_ok());
+        workspace.open(ca::str::Utf8StringRef::from_string_view(jarPath.string())).is_ok());
 
     auto db    = openOrDie(dbPath);
     auto stats = ingestIntoAnalysisDb(workspace, db);
@@ -212,7 +212,7 @@ TEST(MjAnalysisHealTest, HealReconcilesClassNameDivergence)
 
     WorkspaceBase workspace;
     ASSERT_TRUE(
-        workspace.openJar(ca::str::Utf8StringRef::from_string_view(jarPath.string())).is_ok());
+        workspace.open(ca::str::Utf8StringRef::from_string_view(jarPath.string())).is_ok());
 
     auto db    = openOrDie(dbPath);
     auto stats = ingestIntoAnalysisDb(workspace, db);
@@ -253,7 +253,7 @@ TEST(MjAnalysisHealTest, HealReconcilesMemberOverlayDivergence)
 
     WorkspaceBase workspace;
     ASSERT_TRUE(
-        workspace.openJar(ca::str::Utf8StringRef::from_string_view(jarPath.string())).is_ok());
+        workspace.open(ca::str::Utf8StringRef::from_string_view(jarPath.string())).is_ok());
 
     auto db    = openOrDie(dbPath);
     auto stats = ingestIntoAnalysisDb(workspace, db);

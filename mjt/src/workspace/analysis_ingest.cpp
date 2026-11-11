@@ -1,5 +1,7 @@
 #include "analysis_ingest.hpp"
 
+#include "analysis_ops.hpp"
+
 #include <map>
 #include <string>
 #include <unordered_map>
@@ -105,7 +107,7 @@ ca::Result<AnalysisIngestStats, AnalysisIngestError> ingestIntoAnalysisDb(
 
     //-- 条目身份：容器面遍历 + 内容锚 + 输入/条目登记 ------------------------
 
-    auto resources = workspace.listResources(true);
+    auto resources = listResources(*workspace.workingContainer(), true);
     if (resources.is_err()) {
         return ca::core::Err(workspaceError(std::move(resources).unwrap_err()));
     }
@@ -127,7 +129,7 @@ ca::Result<AnalysisIngestStats, AnalysisIngestError> ingestIntoAnalysisDb(
     };
 
     for (const ResourceSummary& resource : resourceList) {
-        auto content = workspace.readResource(resource.uri);
+        auto content = readResource(*workspace.workingContainer(), resource.uri);
         if (content.is_err()) {
             return ca::core::Err(workspaceError(std::move(content).unwrap_err()));
         }
@@ -190,7 +192,8 @@ ca::Result<AnalysisIngestStats, AnalysisIngestError> ingestIntoAnalysisDb(
 
     //-- 类事实（类头 + 成员清单，class 条目关联） ----------------------------
 
-    auto classInfos = workspace.listClasses();
+    auto classInfos = listClasses(*workspace.workingContainer(),
+                                workspace.lvtJarFallbackFlag());
     if (classInfos.is_err()) {
         return ca::core::Err(workspaceError(std::move(classInfos).unwrap_err()));
     }
@@ -320,7 +323,7 @@ ca::Result<AnalysisIngestStats, AnalysisIngestError> ingestIntoAnalysisDb(
     for (const ClassInfo& info : classList) {
         const auto entry = entryIdByPath.find(info.resourceUri.to_std_string());
         if (entry == entryIdByPath.end()) continue;
-        auto content = workspace.readResource(info.resourceUri.ref());
+        auto content = readResource(*workspace.workingContainer(), info.resourceUri.ref());
         if (content.is_err()) {
             return ca::core::Err(workspaceError(std::move(content).unwrap_err()));
         }

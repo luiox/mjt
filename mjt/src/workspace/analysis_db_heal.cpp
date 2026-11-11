@@ -2,6 +2,8 @@
 /// @brief       open 期身份迁移自愈实现（设计面见 analysis_db_heal.hpp）。
 #include "analysis_db_heal.hpp"
 
+#include "analysis_ops.hpp"
+
 #include <map>
 #include <set>
 #include <string>
@@ -107,7 +109,7 @@ ca::Result<AnalysisHealStats, AnalysisHealError> healAnalysisDbIdentities(
     //锚定同类行，行名 ≠ 副本名即补 (库行名 → 副本名)。方向无关——undo 方向
     //的滞后差与注记被 compact 进基线的残差同式覆盖。
     {
-        auto summaries = workspace.listClassSummaries();
+        auto summaries = listClassSummaries(*workspace.workingContainer());
         if (summaries.is_err())
             return ca::core::Err(AnalysisHealError{
                 AnalysisHealErrorKind::Workspace,
@@ -218,7 +220,8 @@ ca::Result<AnalysisHealStats, AnalysisHealError> healAnalysisDbIdentities(
         std::vector<mjbase::project::DbIdentityRename> reconcile;
         for (const auto& record : std::move(renames).unwrap()) {
             if (record.target != mjbase::project::RenameTargetKind::Member) continue;
-            auto info = workspace.classInfo(record.owner.ref());
+            auto info = classInfo(*workspace.workingContainer(), record.owner.ref(),
+                                  workspace.lvtJarFallbackFlag());
             if (info.is_err()) {
                 //owner 不在副本：覆盖层残行（类已删/更名未愈的组合态），
                 //导入期整库对账面处理，此处只计披露。

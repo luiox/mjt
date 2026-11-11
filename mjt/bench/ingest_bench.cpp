@@ -22,6 +22,7 @@
 #include "mjbase/project/analysis_db.hpp"
 #include "workspace/reference_scan.hpp"
 #include "workspace/workspace.hpp"
+#include "workspace/analysis_ops.hpp"
 
 namespace {
 
@@ -102,14 +103,14 @@ int main(int argc, char** argv)
 
     Stopwatch openWatch;
     mjt::workspace::WorkspaceBase workspace;
-    if (workspace.openJar(utf8Ref(containerPath)).is_err())
+    if (workspace.open(utf8Ref(containerPath)).is_err())
         die("openJar failed: " + containerPath);
     const double openMs = openWatch.ms();
 
     //-- 相 1：条目遍历 + 内容锚（含容器 canonical 序列化） ------------------
 
     Stopwatch entryWatch;
-    auto resources = workspace.listResources(true);
+    auto resources = mjt::workspace::listResources(*workspace.workingContainer(), true);
     if (resources.is_err()) die("listResources failed");
     const auto resourceList = std::move(resources).unwrap();
 
@@ -128,7 +129,7 @@ int main(int argc, char** argv)
     for (const mjt::workspace::ResourceSummary& resource : resourceList) {
         // ResourceSummary.uri 换型 Utf8String：字节长度走 byte_length()（.size()
         // 是码点语义），data() 直接给 u8* 字节；接口面吃 Utf8StringRef 借用视图。
-        auto content = workspace.readResource(resource.uri);
+        auto content = mjt::workspace::readResource(*workspace.workingContainer(), resource.uri.ref());
         if (content.is_err())
             die("readResource failed: " + resource.uri.to_std_string());
         auto bytes = std::move(content).unwrap().bytes;
@@ -173,7 +174,8 @@ int main(int argc, char** argv)
     //-- 相 3：类事实 -------------------------------------------------------
 
     Stopwatch classScanWatch;
-    auto      classInfos = workspace.listClasses();
+    auto      classInfos = mjt::workspace::listClasses(*workspace.workingContainer(),
+                                 workspace.lvtJarFallbackFlag());
     if (classInfos.is_err()) die("listClasses failed");
     const auto classList = std::move(classInfos).unwrap();
 

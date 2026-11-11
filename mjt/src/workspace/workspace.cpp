@@ -60,6 +60,10 @@
 #include "jzip/zip_io.hpp"
 #include "libca/zip/checksum.hpp"
 #include "analysis_edit.hpp"
+#include "container_io.hpp"
+#include "edit_support.hpp"
+#include "jar_ops.hpp"
+#include "analysis_ops.hpp"
 #include "analysis_edit_sync.hpp"
 #include "constant_scan.hpp"
 #include "search_match.hpp"
@@ -77,318 +81,25 @@ using support::utf8Text;
 
 // ── 基础助手 ─────────────────────────────────────────────────────
 
-WorkspaceErrorInfo error(WorkspaceError code, const std::string& operation,
-                         const std::string& detail)
-{
-    return WorkspaceErrorInfo{code, operation + ": " + detail};
-}
-
-ca::str::Utf16String utf16(const std::string& value)
-{
-    return ca::str::Utf16String::from_utf8_string(ca::str::Utf8StringRef::from_data(
-        reinterpret_cast<const ca::u8*>(value.data()), value.size()));
-}
-
-/// @brief 底层文本 → Utf8String：字节原文直通，不做二次校验（jbc/容器面文本
-///        按 modified UTF-8 原文保留；与 analysis_ingest 的 utf8() 同口径）。
-ca::str::Utf8String utf8(std::string_view value)
-{
-    return ca::str::Utf8String::from_data_unchecked(reinterpret_cast<const ca::u8*>(value.data()),
-                                                    value.size());
-}
-
-/// @brief std::string（DTO/接口面）→ Utf8StringRef 借用视图（B1 扫描查询参数）。
-ca::str::Utf8StringRef utf8Ref(const std::string& value)
-{
-    return ca::str::Utf8StringRef::from_data(reinterpret_cast<const ca::u8*>(value.data()),
-                                             value.size());
-}
-
-/// @brief std::string 列表 → Utf8String 列表（DTO vector 字段换型直通）。
-std::vector<ca::str::Utf8String> utf8List(const std::vector<std::string>& values)
-{
-    std::vector<ca::str::Utf8String> result;
-    result.reserve(values.size());
-    for (const std::string& value : values) result.push_back(utf8(value));
-    return result;
-}
-
-/// @brief UTF-8 窄串 → filesystem path（Windows 上 path(std::string) 按 ACP
-///        解码，非 ASCII 必乱；与 model/resource_io.cpp 的 u8path 口径一致）。
-std::filesystem::path fsPath(const std::string& text)
-{
-    return std::filesystem::u8path(text);
-}
-
-/// @brief filesystem path → UTF-8 窄串（path::string() 在 Windows 走 ACP，
-///        非 ASCII 会抛 code-page 异常；API 边界契约是 UTF-8）。
-std::string pathToUtf8(const std::filesystem::path& path)
-{
-    const auto u8 = path.u8string();
-    return std::string(reinterpret_cast<const char*>(u8.c_str()), u8.size());
-}
-
-/// @brief IResource::getLocation() 借用视图 → owning 文本（跨界传递用）。
-std::string locationText(const model::IResource& resource)
-{
-    const auto location = resource.getLocation();
-    return std::string(reinterpret_cast<const char*>(location.data()), location.byte_length());
-}
-
 /// @brief 资源类型短名（小写口径："class"/"manifest"/"jar"/"resource"）。
-std::string resourceTypeName(model::ResourceType type)
-{
-    switch (type) {
-    case model::ResourceType::Class: return "class";
-    case model::ResourceType::Manifest: return "manifest";
-    case model::ResourceType::Jar: return "jar";
-    default: return "resource";
-    }
-}
-
-/// @brief model 模块错误 → workspace 错误值。
-///
-/// 值语义下按码分流：
-/// 文件/条目缺失 → NotFound，zip-slip → InvalidArgument，其余（Io/BadEntry/
-/// UnsupportedFormat/TypeMismatch/BadArgument）保持 DataLoss 兜底。
-WorkspaceErrorInfo modelFailure(const std::string& operation, model::ModelError modelError)
-{
-    switch (modelError) {
-    case model::ModelError::NotFound:
-        return error(WorkspaceError::NotFound, operation, "archive or entry not found");
-    case model::ModelError::PathEscape:
-        return error(WorkspaceError::InvalidArgument, operation,
-                     "archive entry escapes target dir");
-    default:
-        return error(WorkspaceError::DataLoss, operation, model::to_string(modelError));
-    }
-}
-
-WorkspaceResult<std::vector<ca::u8>> bytesOf(const model::IResource& resource)
-{
-    if (const auto* classResource =
-            ca::core::tag_cast::dyn_cast<const model::ClassResource>(&resource))
-        return ca::core::Ok(classResource->get());
-    if (const auto* manifestResource =
-            ca::core::tag_cast::dyn_cast<const model::ManifestResource>(&resource))
-        return ca::core::Ok(manifestResource->get().toBytes());
-    if (const auto* unknownResource =
-            ca::core::tag_cast::dyn_cast<const model::UnknownResource>(&resource))
-        return ca::core::Ok(unknownResource->get());
-    return ca::core::Err(error(WorkspaceError::Unimplemented, "read resource",
-                               "unsupported resource type at " + locationText(resource)));
-}
-
-std::unique_ptr<model::IResource> cloneResource(const model::IResource& resource)
-{
-    if (const auto* classResource =
-            ca::core::tag_cast::dyn_cast<const model::ClassResource>(&resource))
-        return std::make_unique<model::ClassResource>(locationText(*classResource),
-                                                      classResource->get());
-    if (const auto* manifestResource =
-            ca::core::tag_cast::dyn_cast<const model::ManifestResource>(&resource))
-        return std::make_unique<model::ManifestResource>(manifestResource->get());
-    if (const auto* unknownResource =
-            ca::core::tag_cast::dyn_cast<const model::UnknownResource>(&resource))
-        return std::make_unique<model::UnknownResource>(locationText(*unknownResource),
-                                                        unknownResource->get());
-    return nullptr;
-}
-
-WorkspaceResult<std::unique_ptr<model::ResourceContainer>> cloneContainer(
-    const model::ResourceContainer& source)
-{
-    auto               result = std::make_unique<model::ResourceContainer>();
-    WorkspaceErrorInfo err;
-    source.visitResources([&](std::string_view uri, const model::IResource& resource) {
-        if (err.is_err()) return;
-        auto copied = cloneResource(resource);
-        if (!copied) {
-            err = error(WorkspaceError::Unimplemented, "clone container",
-                        "unsupported resource type at " + std::string(uri));
-            return;
-        }
-        result->addResource(uri, std::move(copied));
-    });
-    if (err.is_err()) return ca::core::Err(std::move(err));
-    return ca::core::Ok(std::move(result));
-}
 
 // ── class 解码（libjbc 会话；字段口径照旧）──────────────────────────────
 
-WorkspaceResult<std::shared_ptr<jbc::ir::ClassSession>> sessionOf(
-    const std::vector<ca::u8>& bytes, const std::string& operation)
-{
-    auto parsed = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(bytes));
-    if (parsed.is_err())
-        return ca::core::Err(
-            error(WorkspaceError::DataLoss, operation, "class bytes cannot be parsed"));
-    return ca::core::Ok(std::move(parsed).unwrap());
-}
 
 /// @brief Code 嵌套 LNT 行 → {line, 代码指令序号}；pc 无对应指令时 index 为 -1。
-WorkspaceResult<std::vector<LineNumberInfo>> lineNumbersOf(jbc::ir::ClassSession& session,
-                                                           jbc::core::MemberInfo& method,
-                                                           ca::usize              methodIndex)
-{
-    std::vector<LineNumberInfo> result;
-    jbc::core::CodeAttr*        code = support::ensureCode(session.backing(), method);
-    if (code == nullptr) return ca::core::Ok(std::move(result));
 
-    std::vector<std::pair<ca::u32, ca::i32>> rows;   // {pc, line}
-    for (jbc::core::AttrSlot& nested : code->attrs) {
-        if (!session.backing().cp.utf8Equals(nested.nameCp, "LineNumberTable")) continue;
-        if (!nested.decoded()) {
-            if (session.backing().decodeAttr(nested).is_err()) continue;
-        }
-        const auto* table =
-            ca::core::tag_cast::cast<const jbc::core::LineNumberTableAttr>(nested.peek());
-        if (table == nullptr) continue;
-        for (const auto& row : table->rows)
-            rows.emplace_back(row.startPc, static_cast<ca::i32>(row.line));
-    }
-    if (rows.empty()) return ca::core::Ok(std::move(result));
-
-    auto promoted = jbc::ir::promoteMethod(session, methodIndex);
-    if (promoted.is_err())
-        return ca::core::Err(
-            error(WorkspaceError::DataLoss, "decode method", "method body cannot be promoted"));
-    auto raw = promoted.unwrap()->dom.exportRaw();
-    if (raw.is_err())
-        return ca::core::Err(
-            error(WorkspaceError::DataLoss, "decode method", "method body cannot be exported"));
-    const auto insns = std::move(raw).unwrap();
-    for (const auto& [pc, line] : rows) {
-        LineNumberInfo info;
-        info.line = line;
-        for (ca::usize index = 0; index < insns.size(); ++index) {
-            if (insns[index].pc == pc) {
-                info.instructionIndex = static_cast<ca::i32>(index);
-                break;
-            }
-        }
-        result.push_back(info);
-    }
-    return ca::core::Ok(std::move(result));
-}
-
-FieldInfo makeFieldInfo(jbc::core::ClassFile& cf, jbc::core::MemberInfo& field)
-{
-    FieldInfo output;
-    output.name             = utf8(utf8Text(cf, field.nameCp));
-    output.descriptor       = utf8(utf8Text(cf, field.descCp));
-    output.signature        = utf8(support::signatureText(cf, field.attrs));
-    output.access           = static_cast<ca::i32>(field.access);
-    output.constantValue    = support::fieldConstantValue(cf, field);
-    support::collectAnnotations(cf, field.attrs, output.annotations);
-    return output;
-}
 
 /// @brief 把 LVT 显示名策略应用到查询输出的 locals（B3，#121 §4.4）。
 ///
 /// 只改呈现名：行数、槽位、描述符原样——LVT 原文在字节码里照存，判定
 /// 结果也不入库（v1 决策）。呈现核心在 mjbase::analysis（纯函数面）。
-void applyLvtDisplayPolicy(std::vector<LocalVariableInfo>& locals, bool jarFallback)
-{
-    if (locals.empty()) return;
-    std::vector<mjbase::analysis::LvtDisplayRow> rows;
-    rows.reserve(locals.size());
-    for (const auto& local : locals)
-        rows.push_back({local.name.ref(), local.descriptor.ref(),
-                        static_cast<ca::u32>(local.index)});
-    const auto names = mjbase::analysis::lvtDisplayNames(rows, jarFallback);
-    for (ca::usize index = 0; index < locals.size(); ++index)
-        locals[index].name = names[index].clone();
-}
 
-WorkspaceResult<MethodInfo> makeMethodInfo(jbc::ir::ClassSession& session,
-                                           jbc::core::MemberInfo& method, ca::usize methodIndex,
-                                           bool lvtFallback)
-{
-    jbc::core::ClassFile& cf = session.backing();
-    MethodInfo output;
-    output.name       = utf8(utf8Text(cf, method.nameCp));
-    output.descriptor = utf8(utf8Text(cf, method.descCp));
-    output.signature  = utf8(support::signatureText(cf, method.attrs));
-    output.access     = static_cast<ca::i32>(method.access);
-    if (jbc::core::CodeAttr* code = support::ensureCode(cf, method)) {
-        output.maxStack      = static_cast<ca::i32>(code->maxStack);
-        output.maxLocals     = static_cast<ca::i32>(code->maxLocals);
-        output.tryCatchCount = code->excTable.size();
-        // instructionCount：代码指令序数（CodeDom 程序顺序；label/line 不是指令）。
-        auto promoted = jbc::ir::promoteMethod(session, methodIndex);
-        if (promoted.is_err())
-            return ca::core::Err(error(
-                WorkspaceError::DataLoss, "decode method",
-                "method body cannot be promoted: " + utf8Text(cf, method.nameCp) + " (" +
-                    std::to_string(static_cast<int>(promoted.unwrap_err())) + ")"));
-        output.instructionCount = promoted.unwrap()->dom.size();
-        support::collectLocalVariables(cf, *code, output.localVariables);
-        applyLvtDisplayPolicy(output.localVariables, lvtFallback);
-    }
-    output.exceptions = utf8List(support::exceptionNames(cf, method));
-    auto lines        = lineNumbersOf(session, method, methodIndex);
-    if (lines.is_err()) return ca::core::Err(std::move(lines).unwrap_err());
-    output.lineNumbers = std::move(lines).unwrap();
-    support::collectAnnotations(cf, method.attrs, output.annotations);
-    return ca::core::Ok(std::move(output));
-}
 
 /// @brief InnerClasses 属性的内部类名（去重排序；inner_name_index=0 的匿名形态跳过）。
 ///
 /// typed InnerClassesAttr 体经公开解码入口读出（B3 分派接线前后同形，不触碰
 /// 槽状态）；解码失败的槽跳过（查询面对畸形输入宽容）。
-std::vector<std::string> innerClassNames(jbc::core::ClassFile& cf)
-{
-    std::vector<std::string> names;
-    for (jbc::core::AttrSlot& slot : cf.attrs) {
-        if (!cf.cp.utf8Equals(slot.nameCp, "InnerClasses")) continue;
-        auto d = decodeInnerClassesBody(cf, slot);
-        if (d.is_err()) continue;
-        const auto body = std::move(d).unwrap();
-        const auto& ic  = static_cast<const jbc::core::InnerClassesAttr&>(*body);
-        for (const jbc::core::InnerClassesAttr::Row& row : ic.rows) {
-            if (row.innerNameCp == 0) continue;
-            const auto name = utf8Text(cf, row.innerNameCp);
-            if (!name.empty()) names.push_back(name);
-        }
-    }
-    std::sort(names.begin(), names.end());
-    names.erase(std::unique(names.begin(), names.end()), names.end());
-    return names;
-}
 
-WorkspaceResult<ClassInfo> decodeClass(const std::string& uri, const model::ClassResource& resource,
-                                       bool lvtFallback)
-{
-    auto session = sessionOf(resource.get(), "decode class " + uri);
-    if (session.is_err()) return ca::core::Err(std::move(session).unwrap_err());
-    auto                  held = std::move(session).unwrap();
-    jbc::core::ClassFile& cf   = held->backing();
-
-    ClassInfo output;
-    output.resourceUri  = utf8(uri);
-    // cp modified UTF-8 → 规范形 UTF-8：内名/父类名与容器 URI、参数面同形，
-    // 增补平面类名（cp 内代理对形）不解码会与 UTF-8 形选择器比对 miss。
-    output.internalName = utf8(mjbase::jasm::classFileUtf8ToString(cf.thisName()));
-    output.superName    = utf8(mjbase::jasm::classFileUtf8ToString(cf.superName()));
-    output.signature    = utf8(support::signatureText(cf, cf.attrs));
-    output.access       = static_cast<ca::i32>(cf.access);
-    // version = major | (minor << 16)。
-    output.version      = static_cast<ca::i32>(cf.major) | (static_cast<ca::i32>(cf.minor) << 16);
-    for (const auto interfaceCp : cf.interfaces) {
-        output.interfaces.push_back(utf8(std::string{cf.className(interfaceCp)}));
-    }
-    for (auto& field : cf.fields) output.fields.push_back(makeFieldInfo(cf, field));
-    for (ca::usize index = 0; index < cf.methods.size(); ++index) {
-        auto info = makeMethodInfo(*held, cf.methods[index], index, lvtFallback);
-        if (info.is_err()) return ca::core::Err(std::move(info).unwrap_err());
-        output.methods.push_back(std::move(info).unwrap());
-    }
-    output.innerClasses = utf8List(innerClassNames(cf));
-    support::collectAnnotations(cf, cf.attrs, output.annotations);
-    return ca::core::Ok(std::move(output));
-}
 
 // ── 搜索 ────────────────────────────────────────────────────────
 
@@ -404,67 +115,6 @@ WorkspaceResult<ClassInfo> decodeClass(const std::string& uri, const model::Clas
 ///        与跳转以 jasm 全文为权威。旧「按操作数布局」命名把全部 CP 形态
 ///        （getstatic/invoke*/checkcast/new…）标成 ldc，搜索结果的类型标签
 ///        失去判别力，改为助记符归类。
-std::string instructionNodeType(jbc::core::Op op)
-{
-    const char* mnemonic = jbc::core::mnemonicOf(op);
-    const std::string name = mnemonic != nullptr ? mnemonic : "";
-
-    const auto isAnyOf = [&name](std::initializer_list<std::string_view> candidates) {
-        return std::any_of(candidates.begin(), candidates.end(), [&](std::string_view item) {
-            return name == item;
-        });
-    };
-    if (name == "invokedynamic") return "invokedynamic";
-    if (name.rfind("invoke", 0) == 0) return "invoke";
-    if (isAnyOf({"getfield", "getstatic", "putfield", "putstatic"})) return "field";
-    if (isAnyOf({"ldc", "ldc_w", "ldc2_w"})) return "ldc";
-    if (isAnyOf({"new", "anewarray", "checkcast", "instanceof"})) return "cp_ref";
-    if (name == "multianewarray") return "multianewarray";
-    if (name == "iinc") return "iinc";
-    //数组元素加载/存储（两字符类型前缀 iaload/aastore 等）：先于局部变量
-    //load/store 判定——裸名 aload/astore 属数组族；带槽位的 aload_N/astore_N
-    //全名不命中数组表，剥后缀后走局部变量分支。
-    static constexpr std::array<std::string_view, 16> kArrayOps = {
-        "iaload", "laload", "faload", "daload", "aaload", "baload", "caload", "saload",
-        "iastore", "lastore", "fastore", "dastore", "aastore", "bastore", "castore",
-        "sastore"};
-    for (const auto& arrayOp : kArrayOps) {
-        if (name == arrayOp) return "array";
-    }
-    //局部变量加载/存储族：类型前缀（i/l/f/d/a）+ load/store；带槽位的短格式
-    //（aload_0 等）先剥掉数字后缀再匹配。
-    auto baseName = name;
-    const auto underscore = name.rfind('_');
-    if (underscore != std::string::npos &&
-        std::all_of(name.begin() + static_cast<std::ptrdiff_t>(underscore) + 1, name.end(),
-                    [](unsigned char c) { return std::isdigit(c) != 0; }))
-        baseName = name.substr(0, underscore);
-    if (baseName.size() == 5 && baseName.compare(1, 4, "load") == 0 &&
-        std::string("ilfda").find(baseName[0]) != std::string::npos)
-        return "var";
-    if (baseName.size() == 6 && baseName.compare(1, 5, "store") == 0 &&
-        std::string("ilfda").find(baseName[0]) != std::string::npos)
-        return "var";
-    if (name == "ret") return "var";
-    if (name.rfind("iconst", 0) == 0 || name.rfind("lconst", 0) == 0 ||
-        name.rfind("fconst", 0) == 0 || name.rfind("dconst", 0) == 0 ||
-        isAnyOf({"aconst_null", "bipush", "sipush"}))
-        return "const";
-    switch (jbc::core::shapeOf(op)) {
-    case jbc::core::Shape::Branch2:
-    case jbc::core::Shape::Branch4: return "jump";
-    case jbc::core::Shape::TableSwitch: return "tableswitch";
-    case jbc::core::Shape::LookupSwitch: return "lookupswitch";
-    case jbc::core::Shape::None: return "insn";
-    case jbc::core::Shape::Imm1:
-    case jbc::core::Shape::Imm2:
-    case jbc::core::Shape::Atype1: return "int";
-    case jbc::core::Shape::Local1: return "var";
-    case jbc::core::Shape::Iinc1: return "iinc";
-    default: break;
-    }
-    return "insn";
-}
 
 /// @brief 成员引用 CP 索引 → "owner.name:desc"（operandComment 渲染口径）。
 std::string memberRefColonText(const jbc::core::ClassFile& cf, ca::u32 cpIndex)
@@ -622,325 +272,11 @@ InstructionDetailInfo renderInstruction(const jbc::core::ClassFile& cf,
 
 // ── 字节 diff / 修复 / 指纹 ──────────────────────────────────────
 
-std::vector<ByteDiff> diffContainers(const model::ResourceContainer& before,
-                                     const model::ResourceContainer& after)
-{
-    std::set<std::string> uris;
-    before.visitResources(
-        [&](std::string_view uri, const model::IResource&) { uris.insert(std::string(uri)); });
-    after.visitResources(
-        [&](std::string_view uri, const model::IResource&) { uris.insert(std::string(uri)); });
-
-    std::vector<ByteDiff> diffs;
-    for (const auto& uri : uris) {
-        const model::IResource* beforeResource = before.getResource(uri);
-        const model::IResource* afterResource  = after.getResource(uri);
-        std::vector<ca::u8>     beforeBytes;
-        std::vector<ca::u8>     afterBytes;
-        if (beforeResource != nullptr) {
-            auto bytes = bytesOf(*beforeResource);
-            if (bytes.is_err()) continue;
-            beforeBytes = std::move(bytes).unwrap();
-        }
-        if (afterResource != nullptr) {
-            auto bytes = bytesOf(*afterResource);
-            if (bytes.is_err()) continue;
-            afterBytes = std::move(bytes).unwrap();
-        }
-        if (beforeBytes == afterBytes) continue;
-
-        // 单一公共前后缀收缩：第一个差异字节到最后一个差异字节（照旧口径）。
-        ca::usize start = 0;
-        while (start < beforeBytes.size() && start < afterBytes.size() &&
-               beforeBytes[start] == afterBytes[start]) {
-            ++start;
-        }
-        ca::usize beforeEnd = beforeBytes.size();
-        ca::usize afterEnd  = afterBytes.size();
-        while (beforeEnd > start && afterEnd > start &&
-               beforeBytes[beforeEnd - 1] == afterBytes[afterEnd - 1]) {
-            --beforeEnd;
-            --afterEnd;
-        }
-        ByteDiff diff;
-        diff.uri        = utf8(uri);
-        diff.beforeSize = beforeBytes.size();
-        diff.afterSize  = afterBytes.size();
-        diff.ranges.push_back({start, beforeEnd - start, afterEnd - start});
-        diffs.push_back(std::move(diff));
-    }
-    return diffs;
-}
-
-/// @brief 编辑校验门的作用域：前后差异条目的 URI 集——操作受影响面。
-///        容器基线未编辑类不参与门禁（它们本来就是这个样子，编辑前就存在）。
-std::vector<std::string> changedUris(const std::vector<ByteDiff>& diffs)
-{
-    std::vector<std::string> uris;
-    uris.reserve(diffs.size());
-    for (const auto& diff : diffs) uris.push_back(diff.uri.to_std_string());
-    return uris;
-}
-
-bool hasClassExtension(const std::string& uri)
-{
-    constexpr char kExtension[] = ".class";
-    if (uri.size() < sizeof(kExtension) - 1) return false;
-    const auto offset = uri.size() - (sizeof(kExtension) - 1);
-    for (ca::usize index = 0; index < sizeof(kExtension) - 1; ++index) {
-        const auto character = static_cast<unsigned char>(uri[offset + index]);
-        if (std::tolower(character) != kExtension[index]) return false;
-    }
-    return true;
-}
-
 // 内名推导（模型层族视图原语，Multi-Release 版本化 URI 剥离口径见
 // model/resource_container.hpp）：本文件不再持有副本。
 
-/// @brief class 字节 → 内部名（骨架解析；失败为空）。
-///
-/// 返回规范形 UTF-8：与容器 URI、workspace 索引与参数面同形（类索引用它
-/// 建键，resolveClassUri 用它比对选择器）。
-std::string internalNameOfBytes(const std::vector<ca::u8>& bytes)
-{
-    auto read = jbc::core::readClass(jbc::core::ByteView(bytes));
-    if (read.is_err()) return {};
-    auto parsed = std::move(read).unwrap();
-    return mjbase::jasm::classFileUtf8ToString(parsed.file->thisName());
-}
-
-std::vector<JarRepairIssue> scanJarRepairIssues(const model::ResourceContainer& container,
-                                                const JarRepairRequest& request,
-                                                ca::usize&              classCount)
-{
-    jasm::JvmJasmService        validator;
-    std::vector<JarRepairIssue> issues;
-    container.visitResources([&](std::string_view uriView, const model::IResource& resource) {
-        const std::string uri{uriView};
-        const auto* classResource =
-            ca::core::tag_cast::dyn_cast<const model::ClassResource>(&resource);
-        if (classResource != nullptr) {
-            ++classCount;
-            const auto validated = validator.validate(classResource->get());
-            if (!validated.isOk()) {
-                issues.push_back({utf8(uri),
-                                  utf8("invalid_class"),
-                                  utf8("class bytes did not pass Jasm validation"),
-                                  classResource->get().size(),
-                                  request.removeInvalidClassEntries});
-            }
-        }
-        else if (hasClassExtension(uri)) {
-            auto bytes = bytesOf(resource);
-            issues.push_back({utf8(uri),
-                              utf8("invalid_class_entry"),
-                              utf8("a .class entry was not recognized as valid class bytes"),
-                              bytes.is_ok() ? bytes.unwrap().size() : 0,
-                              request.removeInvalidClassEntries});
-        }
-        if (uri.find("corrupt_output_stream") != std::string::npos) {
-            auto bytes = bytesOf(resource);
-            issues.push_back({utf8(uri),
-                              utf8("corrupt_output_marker"),
-                              utf8("resource name matches a known corrupt output marker"),
-                              bytes.is_ok() ? bytes.unwrap().size() : 0,
-                              request.removeCorruptOutputMarkers});
-        }
-    });
-    std::sort(issues.begin(), issues.end(),
-              [](const JarRepairIssue& left, const JarRepairIssue& right) {
-                  if (left.uri != right.uri) return left.uri < right.uri;
-                  return left.kind < right.kind;
-              });
-    return issues;
-}
-
-void removeSelectedRepairIssues(model::ResourceContainer&         candidate,
-                                const std::vector<JarRepairIssue>& issues)
-{
-    // 容器以 string_view 键视图指向资源自持文本：先拷贝待删键再删除。
-    auto&                    resources = candidate.getResources();
-    std::vector<std::string> doomed;
-    for (const auto& issue : issues) {
-        if (issue.selectedForRemoval) doomed.push_back(issue.uri.to_std_string());
-    }
-    for (const std::string& uri : doomed) resources.erase(std::string_view(uri));
-}
-
-bool hasSelectedRepairIssues(const std::vector<JarRepairIssue>& issues)
-{
-    return std::any_of(issues.begin(), issues.end(), [](const JarRepairIssue& issue) {
-        return issue.selectedForRemoval;
-    });
-}
-
-std::vector<std::string> changedClassNames(const model::ResourceContainer& container,
-                                           const std::vector<ByteDiff>&    diffs)
-{
-    std::vector<std::string> result;
-    for (const auto& diff : diffs) {
-        const auto* resource = ca::core::tag_cast::dyn_cast<const model::ClassResource>(
-            container.getResource(diff.uri.ref()));
-        if (resource == nullptr) continue;
-        const auto name = internalNameOfBytes(resource->get());
-        if (!name.empty()) result.push_back(name);
-    }
-    std::sort(result.begin(), result.end());
-    result.erase(std::unique(result.begin(), result.end()), result.end());
-    return result;
-}
-
-/// @brief 结构化 mutation 是否聚焦单个方法（指纹落库单方法面判据，#132）。
-///
-/// 换体/指令级/try-catch/局部名/方法访问位 kind 的 member 选择器就是方法本体；
-/// annotation kind 按附着位置判。类级与字段级 kind 不聚焦（批量面兜底——
-/// 类头/字段变化不进方法语义面，全方法 unchanged）。AddMethod/RemoveMethod
-/// 也聚焦：落库面按「库内未登记/字节已不存在」如实跳过。
-EditedMethodFocus focusedMethodOfEdit(const ClassMutation& mutation)
-{
-    using K = ClassMutationKind;
-    const bool methodKind =
-        mutation.kind == K::SetMethodAccess || mutation.kind == K::ReplaceMethodBody ||
-        mutation.kind == K::InsertInstruction || mutation.kind == K::ReplaceInstruction ||
-        mutation.kind == K::RemoveInstruction || mutation.kind == K::ReplaceTryCatchBlocks ||
-        mutation.kind == K::RenameLocal || mutation.kind == K::AddMethod ||
-        mutation.kind == K::RemoveMethod;
-    const bool annotationMethod =
-        (mutation.kind == K::AddMarkerAnnotation || mutation.kind == K::RemoveAnnotation) &&
-        mutation.annotationTarget == AnnotationTarget::Method;
-    if (!methodKind && !annotationMethod) return {};
-    const std::string owner =
-        mjbase::model::internalNameFromClassUri(mutation.classUri.to_std_string());
-    if (owner.empty() || mutation.member.name.to_std_string().empty()) return {};
-    EditedMethodFocus focus;
-    focus.ownerInternalName = owner;
-    focus.memberName        = mutation.member.name.to_std_string();
-    focus.memberDescriptor  = mutation.member.descriptor.to_std_string();
-    focus.isMethod          = true;
-    return focus;
-}
-
-void appendUniqueImpact(std::vector<ReferenceImpact>&    impacts,
-                        std::unordered_set<std::string>& seen, const std::string& kind,
-                        const std::string& target)
-{
-    const std::string key = kind + "\n" + target;
-    if (!seen.insert(key).second) return;
-    impacts.push_back({utf8(kind), utf8(target)});
-}
-
-/// @brief 受影响引用事实（mjbase ReferenceScan 直连面：direct 方法/字段/类型引用）。
-///
-/// 扫描作用域收敛到 diff 条目自身：References-from 查询只读类的自身字节，
-/// 与容器其余类无关——全容器 IR 会话建面把每次 dry_run 编辑押上 O(容器)
-/// 解析（大 jar 上 off 档相对 relaxed 门禁早退多出数十秒尾差，#80），抽
-/// diff 条目到临时容器再建索引后成本为 O(受影响条目)。同一字节扫出同一
-/// sourceClass，去重 + 终排序后输出与全容器口径逐条一致。
-std::vector<ReferenceImpact> collectImpacts(const model::ResourceContainer& container,
-                                            const std::vector<ByteDiff>&    diffs,
-                                            const std::vector<ca::str::Utf8String>& classes)
-{
-    try {
-        model::ResourceContainer        scope;
-        std::unordered_set<std::string> scopedUris;
-        for (const auto& diff : diffs) {
-            const auto uri = diff.uri.to_std_string();
-            if (!scopedUris.insert(uri).second) continue;
-            const auto* classResource =
-                ca::core::tag_cast::dyn_cast<const model::ClassResource>(container.getResource(uri));
-            if (classResource == nullptr) continue;   // 非 class 条目（MANIFEST 等）不进扫描
-            scope.addResource(uri, std::make_unique<model::ClassResource>(
-                                       locationText(*classResource), classResource->get()));
-        }
-        ReferenceScan                   index;
-        index.build(scope);
-        std::vector<ReferenceImpact>    impacts;
-        std::unordered_set<std::string> seen;
-        for (const auto& owner : classes) {
-            for (const auto& reference : index.methodReferencesFromClass(owner.ref())) {
-                appendUniqueImpact(impacts, seen, "method",
-                                   reference.target.owner.to_std_string() + "." +
-                                       reference.target.name.to_std_string() +
-                                       reference.target.descriptor.to_std_string());
-            }
-            for (const auto& reference : index.fieldReferencesFromClass(owner.ref())) {
-                appendUniqueImpact(impacts, seen, "field",
-                                   reference.target.owner.to_std_string() + "." +
-                                       reference.target.name.to_std_string() +
-                                       reference.target.descriptor.to_std_string());
-            }
-            for (const auto& reference : index.typeReferencesFromClass(owner.ref())) {
-                appendUniqueImpact(impacts, seen, "type", reference.targetType.to_std_string());
-            }
-        }
-        std::sort(impacts.begin(), impacts.end(),
-                  [](const ReferenceImpact& left, const ReferenceImpact& right) {
-                      if (left.kind != right.kind) return left.kind < right.kind;
-                      return left.target < right.target;
-                  });
-        return impacts;
-    }
-    catch (const std::exception&) {
-        return {};
-    }
-}
-
 // ── 指纹（fnv1a64:16hex；长度按小端逐字节入串）─────────────────
 
-void hashFingerprintBytes(ca::u64& state, const ca::u8* data, ca::usize size)
-{
-    constexpr ca::u64 kPrime = 1099511628211ULL;
-    for (ca::usize index = 0; index < size; ++index) {
-        state ^= data[index];
-        state *= kPrime;
-    }
-}
-
-void hashFingerprintLength(ca::u64& state, ca::usize value)
-{
-    const auto stableValue = static_cast<ca::u64>(value);
-    for (ca::usize index = 0; index < sizeof(stableValue); ++index) {
-        const auto byte = static_cast<ca::u8>((stableValue >> (index * 8U)) & 0xffU);
-        hashFingerprintBytes(state, &byte, 1);
-    }
-}
-
-std::string fingerprintBytes(const std::vector<ca::u8>& bytes)
-{
-    constexpr ca::u64 kOffsetBasis = 14695981039346656037ULL;
-    ca::u64           state        = kOffsetBasis;
-    hashFingerprintLength(state, bytes.size());
-    hashFingerprintBytes(state, bytes.data(), bytes.size());
-    std::ostringstream output;
-    output << "fnv1a64:" << std::hex << std::setw(16) << std::setfill('0') << state;
-    return output.str();
-}
-
-WorkspaceResult<std::string> fingerprintContainer(const model::ResourceContainer& container)
-{
-    constexpr ca::u64        kOffsetBasis = 14695981039346656037ULL;
-    ca::u64                  state        = kOffsetBasis;
-    std::vector<std::string> uris;
-    container.visitResources(
-        [&](std::string_view uri, const model::IResource&) { uris.push_back(std::string(uri)); });
-    std::sort(uris.begin(), uris.end());
-    for (const auto& uri : uris) {
-        const model::IResource* resource = container.getResource(uri);
-        if (resource == nullptr) continue;
-        auto bytes = bytesOf(*resource);
-        if (bytes.is_err()) return ca::core::Err(std::move(bytes).unwrap_err());
-        const auto& content = bytes.unwrap();
-        hashFingerprintLength(state, uri.size());
-        hashFingerprintBytes(state, reinterpret_cast<const ca::u8*>(uri.data()), uri.size());
-        hashFingerprintLength(state, content.size());
-        hashFingerprintBytes(state, content.data(), content.size());
-    }
-    std::ostringstream output;
-    output << "fnv1a64:" << std::hex << std::setw(16) << std::setfill('0') << state;
-    return ca::core::Ok(output.str());
-}
-
-// ── 导出目的地与原子导出 ───────────────────────────────────────
 
 WorkspaceResult<std::string> normalizedRegularFile(const std::string& path,
                                                    const std::string& operation)
@@ -963,227 +299,6 @@ WorkspaceResult<std::string> normalizedRegularFile(const std::string& path,
     return ca::core::Ok(pathToUtf8(absolute));
 }
 
-WorkspaceResult<std::filesystem::path> validateExportDestination(
-    const std::string& sourcePath, const std::string& outputPath,
-    const std::string& operation = "export JAR",
-    const std::string& sourceDescription = "input JAR")
-{
-    namespace fs = std::filesystem;
-    if (outputPath.empty())
-        return ca::core::Err(
-            error(WorkspaceError::InvalidArgument, operation, "output path is empty"));
-
-    std::error_code filesystemError;
-    const auto      output = fs::absolute(fsPath(outputPath), filesystemError);
-    if (filesystemError)
-        return ca::core::Err(error(WorkspaceError::InvalidArgument, operation, outputPath));
-    const auto source = fs::absolute(fsPath(sourcePath), filesystemError);
-    if (!filesystemError && source == output) {
-        return ca::core::Err(error(WorkspaceError::PermissionDenied, operation,
-                                   "output must not overwrite the " + sourceDescription));
-    }
-    const auto parent = output.parent_path();
-    if (!parent.empty() && !fs::exists(parent)) {
-        return ca::core::Err(
-            error(WorkspaceError::NotFound, operation, "output parent does not exist"));
-    }
-    if (fs::exists(output))
-        return ca::core::Err(error(WorkspaceError::AlreadyExists, operation, pathToUtf8(output)));
-    return ca::core::Ok(output);
-}
-
-// ── 导出 jar 物化（#74 保真口径）───────────────────────────────────────
-// 不再经 mjbase::model::ResourceHelper::exportToJar：其三处副作用与导出保真
-// 契约冲突——1) ensureMultiReleaseManifest 检测到 versions/ 条目就给 MANIFEST
-// 注入 Multi-Release:true（激活源 jar 里本惰性的版本化覆盖，语义级副作用，
-// 且注入原地写进传入容器）；2) ManifestResource 经 Manifest::toBytes 重序列
-// 化，行尾恒 CRLF、主属性段外尾随内容被丢弃；3) JarWriter 写出条目名经路径
-// 规范化改写（折叠/拒写，mjbase#167）——其逐级补 STORED 父目录占位的历史
-// 行为自 mjbase 0.0.21 起已移除（写出不再合成占位，条目集面与保真导出同
-// 口径），但非常规条目名仍过不了写面。改为本侧自装 zip：条目集 = 容器
-// 条目集（源目录条目原样保留、不新增占位）；MANIFEST 字节经
-// resolveExportManifestBytes 决策（无编辑逐字节复制源字节，有编辑物化编辑）。
-// 条目名按容器 URI 原始字节直写（与源条目名逐字节一致，不做路径规范化改写）。
-// 压缩/头装配口径与 mjbase JarWriter 一致（DEFLATE + CRC32 + UTF-8 flag
-// 0x0800；空载荷含目录条目 STORED），时间戳取 DOS 纪元固定值保证可重现。
-
-/// @brief 导出条目载荷：条目名 = 容器 URI 原始字节，data = 资源字节。
-struct FidelityJarEntry
-{
-    std::string         name;
-    std::vector<ca::u8> data;
-};
-
-/// @brief 收集保真导出条目：容器资源原样展开，MANIFEST 用保真决策字节。
-WorkspaceResult<std::vector<FidelityJarEntry>> collectFidelityJarEntries(
-    model::ResourceContainer& container, const model::ResourceContainer* baseline,
-    const std::optional<std::vector<ca::u8>>& sourceManifestBytes)
-{
-    auto manifestBytes = resolveExportManifestBytes(container, baseline, sourceManifestBytes);
-    if (manifestBytes.is_err()) return ca::core::Err(std::move(manifestBytes).unwrap_err());
-    auto resolvedManifest = std::move(manifestBytes).unwrap();
-
-    std::vector<FidelityJarEntry> entries;
-    WorkspaceErrorInfo            collectError;
-    container.visitResources([&](std::string_view uri, const model::IResource& resource) {
-        if (collectError.is_err()) return;
-        if (ca::core::tag_cast::dyn_cast<const model::ManifestResource>(&resource) != nullptr) {
-            // MANIFEST 条目：决策器对含 ManifestResource 的容器必返回字节。
-            if (resolvedManifest.has_value())
-                entries.push_back({std::string(uri), std::move(*resolvedManifest)});
-            return;
-        }
-        auto bytes = bytesOf(resource);
-        if (bytes.is_err()) {
-            collectError = std::move(bytes).unwrap_err();
-            return;
-        }
-        entries.push_back({std::string(uri), std::move(bytes).unwrap()});
-    });
-    if (collectError.is_err()) return ca::core::Err(std::move(collectError));
-    std::sort(entries.begin(), entries.end(), [](const FidelityJarEntry& left,
-                                                 const FidelityJarEntry& right) {
-        return left.name < right.name;
-    });
-    return ca::core::Ok(std::move(entries));
-}
-
-/// @brief 按保真口径把容器物化为 jar（原子写：临时文件 + rename）。
-WorkspaceErrorInfo exportContainerToJar(model::ResourceContainer& container,
-                                        const model::ResourceContainer* baseline,
-                                        const std::optional<std::vector<ca::u8>>& sourceManifestBytes,
-                                        const std::string& sourcePath,
-                                        const std::string& outputPath, ca::u64 revision)
-{
-    namespace fs = std::filesystem;
-    auto output = validateExportDestination(sourcePath, outputPath);
-    if (output.is_err()) return std::move(output).unwrap_err();
-    const auto destination = std::move(output).unwrap();
-
-    auto collected = collectFidelityJarEntries(container, baseline, sourceManifestBytes);
-    if (collected.is_err()) return std::move(collected).unwrap_err();
-    const auto entries = std::move(collected).unwrap();
-
-    std::error_code filesystemError;
-    auto            temporary = destination;
-    temporary += ".mjt-tmp-" + std::to_string(revision);
-    if (fs::exists(temporary))
-        return error(WorkspaceError::AlreadyExists, "export JAR", pathToUtf8(temporary));
-    try {
-        // DOS 纪元（1980-01-01 00:00:00）固定时间戳：产物字节可重现，JVM
-        // 不读条目时间戳。
-        constexpr ca::u16 kDosEpochTime = 0;
-        constexpr ca::u16 kDosEpochDate = 0x0021;
-        jzip::ZipArchive  archive;
-        for (const auto& entry : entries) {
-            auto local = std::make_unique<jzip::LocalFileHeader>();
-            local->setFileName(entry.name);
-            local->setGeneralPurposeBitFlag(0x0800);   // bit11 = UTF-8
-            local->setLastModFileTime(kDosEpochTime);
-            local->setLastModFileDate(kDosEpochDate);
-            local->setOffset(0);
-            if (entry.data.empty()) {
-                // 零载荷条目（源目录条目等）STORED 原样保留。
-                local->setCompressionMethod(0);
-                local->setCompressedSize(0);
-                local->setUncompressedSize(0);
-                local->setCrc32(0);
-            }
-            else {
-                ca::zip::Crc32 crc;
-                crc.update(entry.data.data(), entry.data.size());
-                auto compressed = jzip::DeflateCompressor().compress(entry.data);
-                local->setCompressionMethod(8);
-                local->setCompressedSize(static_cast<ca::u32>(compressed.size()));
-                local->setUncompressedSize(static_cast<ca::i64>(entry.data.size()));
-                local->setCrc32(crc.value());
-                local->setFileData(std::move(compressed));
-            }
-            archive.addPart(std::move(local));
-        }
-        const auto archiveBytes = jzip::ZipIO::writeDirect(archive);
-        std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
-        if (!out)
-            return error(WorkspaceError::Internal, "export JAR",
-                         "failed to open temporary archive: " + pathToUtf8(temporary));
-        out.write(reinterpret_cast<const char*>(archiveBytes.data()),
-                  static_cast<std::streamsize>(archiveBytes.size()));
-        out.flush();
-        if (!out) {
-            out.close();
-            fs::remove(temporary, filesystemError);
-            return error(WorkspaceError::Internal, "export JAR",
-                         "failed to write temporary archive");
-        }
-        out.close();
-        if (!fs::exists(temporary) || fs::file_size(temporary) == 0) {
-            fs::remove(temporary, filesystemError);
-            return error(WorkspaceError::Internal, "export JAR",
-                         "temporary archive was not written");
-        }
-        fs::rename(temporary, destination, filesystemError);
-        if (filesystemError) {
-            fs::remove(temporary, filesystemError);
-            return error(WorkspaceError::Internal, "export JAR", "atomic rename failed");
-        }
-        return WorkspaceErrorInfo{};
-    }
-    catch (const std::exception& exception) {
-        fs::remove(temporary, filesystemError);
-        return error(WorkspaceError::Internal, "export JAR", exception.what());
-    }
-}
-
-WorkspaceErrorInfo exportContainerToClass(model::ResourceContainer& container,
-                                          const std::string& classUri,
-                                          const std::string& sourcePath,
-                                          const std::string& outputPath, ca::u64 revision)
-{
-    namespace fs = std::filesystem;
-    auto output =
-        validateExportDestination(sourcePath, outputPath, "export class", "input class");
-    if (output.is_err()) return std::move(output).unwrap_err();
-    const auto destination = std::move(output).unwrap();
-
-    std::error_code filesystemError;
-    auto            temporary = destination;
-    temporary += ".mjbase-class-tmp-" + std::to_string(revision);
-    if (fs::exists(temporary))
-        return error(WorkspaceError::AlreadyExists, "export class", pathToUtf8(temporary));
-    try {
-        auto written =
-            model::ResourceHelper::exportToClassFile(container, pathToUtf8(temporary), classUri);
-        if (written.is_err()) {
-            fs::remove(temporary, filesystemError);
-            return modelFailure("export class", std::move(written).unwrap_err());
-        }
-        if (!fs::exists(temporary) || fs::file_size(temporary) == 0) {
-            fs::remove(temporary, filesystemError);
-            return error(WorkspaceError::Internal, "export class",
-                         "temporary classfile was not written");
-        }
-        fs::rename(temporary, destination, filesystemError);
-        if (filesystemError) {
-            fs::remove(temporary, filesystemError);
-            return error(WorkspaceError::Internal, "export class", "atomic rename failed");
-        }
-        return WorkspaceErrorInfo{};
-    }
-    catch (const std::exception& exception) {
-        fs::remove(temporary, filesystemError);
-        return error(WorkspaceError::Internal, "export class", exception.what());
-    }
-}
-
-template <typename T>
-jasm::Result<T> jasmFailure(const std::string& message)
-{
-    jasm::Result<T> result;
-    result.diagnostics.push_back(
-        {jasm::DiagnosticSeverity::Error, jasm::DiagnosticStage::Resource, utf16(message),
-         std::nullopt});
-    return result;
-}
 
 template <typename T>
 void sortUnique(std::vector<T>& values)
@@ -1243,15 +358,6 @@ const char* to_string(WorkspaceError errorCode) noexcept
 
 // ── WorkspaceBase 内部结构 ──────────────────────────────────────────────
 
-struct WorkspaceBase::SupportingResource
-{
-    std::string                               id;
-    std::string                               path;
-    std::string                               fingerprint;
-    std::string                               role = "support";   ///< 角色标签
-    std::unique_ptr<model::ResourceContainer> container;
-};
-
 /// @brief 层次/覆盖分析图：KeyPool + ClassHierarchy + 每类声明摘要。
 ///
 /// 未登记的超类型（java/lang/Object 等）物化为合成节点（无成员、access 0），
@@ -1290,233 +396,78 @@ WorkspaceBase::~WorkspaceBase() = default;
 /// 内容，导出逐字节复制需要源字节）。转发 read/readWithProgress 两个入口，
 /// 进度变体也捕获（两个读取入口都可能被消费面走到）。捕获名 = 解码后
 /// 规范名，与容器内 ManifestResource 的 URI 同口径。
-class SourceManifestCapture final : public mjbase::jar::IJarReader
-{
-public:
-    SourceManifestCapture(std::unique_ptr<mjbase::jar::IJarReader> inner,
-                          std::optional<std::vector<ca::u8>>& sink)
-        : inner_(std::move(inner))
-        , sink_(sink)
-    {}
-    ca::core::Result<void, mjbase::jar::JarError> read(
-        const std::function<void(const ca::str::Utf8String&, const std::vector<ca::u8>&)>&
-            consumer) override
-    {
-        return inner_->read(
-            [&](const ca::str::Utf8String& name, const std::vector<ca::u8>& data) {
-                capture(name, data);
-                consumer(name, data);
-            });
-    }
-    ca::core::Result<void, mjbase::jar::JarError> readWithProgress(
-        const mjbase::jar::IJarReader::ProgressConsumer& consumer) override
-    {
-        return inner_->readWithProgress(
-            [&](int index, int total, const ca::str::Utf8String& name,
-                const std::vector<ca::u8>& data) {
-                capture(name, data);
-                consumer(index, total, name, data);
-            });
-    }
-
-private:
-    void capture(const ca::str::Utf8String& name, const std::vector<ca::u8>& data)
-    {
-        if (sink_.has_value()) return;
-        if (name.ref() ==
-            ca::str::Utf8StringRef::from_cstr(mjbase::jar::JarUtil::kManifestFileName))
-            sink_ = data;
-    }
-    std::unique_ptr<mjbase::jar::IJarReader> inner_;
-    std::optional<std::vector<ca::u8>>&      sink_;
-};
-
-WorkspaceResult<void> WorkspaceBase::openJar(ca::str::Utf8StringRef pathRef)
+WorkspaceResult<void> WorkspaceBase::open(ca::str::Utf8StringRef pathRef)
 {
     const std::string path = pathRef.to_std_string();
     // 缺省空 decoder = 原始字节直通（#1110 族缺省零漂移，见 decoder 重载）。
-    return openJar(utf8Ref(path), {});
+    return open(utf8Ref(path), {});
 }
 
-WorkspaceResult<void> WorkspaceBase::openJar(
+WorkspaceResult<void> WorkspaceBase::open(
     ca::str::Utf8StringRef pathRef, const mjbase::jar::IJarReader::EntryNameDecoder& decoder)
 {
-    const std::string path = pathRef.to_std_string();
-    if (path.empty())
-        return ca::core::Err(error(WorkspaceError::InvalidArgument, "open JAR", "path is empty"));
-    namespace fs = std::filesystem;
-    std::error_code filesystemError;
-    const auto      status = fs::status(fsPath(path), filesystemError);
-    if (filesystemError || !fs::exists(status))
-        return ca::core::Err(error(WorkspaceError::NotFound, "open JAR", path));
-    if (!fs::is_regular_file(status))
+    const std::string path   = pathRef.to_std_string();
+    const auto        format = formatForPath(path);
+    if (format == ContainerFormat::None)
+        return ca::core::Err(error(WorkspaceError::InvalidArgument, "open",
+                                   "unsupported container extension: " + path));
+    const ContainerIoEntry* entry = ContainerIoRegistry::instance().find(format);
+    if (entry == nullptr || entry->import == nullptr)
         return ca::core::Err(
-            error(WorkspaceError::InvalidArgument, "open JAR", "path is not a regular file"));
+            error(WorkspaceError::Unimplemented, "open", "no importer for this format"));
 
     try {
-        model::ResourceContainer loaded;
-        // 单次读取遍内旁路捕获源 MANIFEST 原始字节（#74 导出保真）。
-        std::optional<std::vector<ca::u8>> sourceManifest;
-        auto                               reader = std::make_unique<mjbase::jar::JvmJarReader>(utf8Ref(path));
-        if (decoder) reader->setEntryNameDecoder(decoder);
-        auto imported = model::ResourceHelper::importFromJar(
-            loaded, path,
-            std::make_unique<SourceManifestCapture>(std::move(reader), sourceManifest));
-        if (imported.is_err())
-            return ca::core::Err(modelFailure("open JAR", std::move(imported).unwrap_err()));
-        auto original = cloneContainer(loaded);
-        if (original.is_err()) return ca::core::Err(std::move(original).unwrap_err());
-        auto working = cloneContainer(loaded);
-        if (working.is_err()) return ca::core::Err(std::move(working).unwrap_err());
+        auto importedArtifact = entry->import(path, pathRef, decoder);
+        if (importedArtifact.is_err())
+            return ca::core::Err(std::move(importedArtifact).unwrap_err());
+        auto artifact = std::move(importedArtifact).unwrap();
 
-        original_            = std::move(original).unwrap();
-        working_             = std::move(working).unwrap();
-        artifactKind_        = ArtifactKind::Jar;
+        // classfile 族导入行上抛打开期门禁作用域（沿旧 openClass 口径：
+        // relaxed 单类门；容器型格式无打开期门禁——沿旧 openJar 口径）。
+        if (!artifact.gateUris.empty()) {
+            std::vector<jasm::Diagnostic> diagnostics;
+            const WorkspaceErrorInfo      validation = validateCandidate(
+                *artifact.working, diagnostics, jasm::ValidationMode::Relaxed, artifact.gateUris);
+            if (validation.is_err()) {
+                return ca::core::Err(error(WorkspaceError::DataLoss, "open",
+                                           "class did not pass validation"));
+            }
+        }
+
+        original_            = std::move(artifact.original);
+        working_             = std::move(artifact.working);
+        format_              = format;
         sourcePath_          = utf8(path);
+        primaryClassUri_     = std::move(artifact.primaryClassUri);
+        sourceManifestBytes_ = std::move(artifact.sourceManifestBytes);
+        auto reset = resetSessionState("open");
+        if (reset.is_err()) return reset;
+        return ca::core::Ok();
+    }
+    catch (const std::exception& exception) {
+        return ca::core::Err(error(WorkspaceError::DataLoss, "open", exception.what()));
+    }
+}
+
+WorkspaceResult<void> WorkspaceBase::openEmpty()
+{
+    // 空容器出生（pysdk new_container 契约）：双空快照、无源路径、格式 None
+    // ——会话自出生即 loaded（编辑面 ensureLoaded 直接可用），纯 add_entry
+    // 填充；后续 open(path) 原样接管（自带全套重置）。
+    try {
+        original_            = std::make_unique<model::ResourceContainer>();
+        working_             = std::make_unique<model::ResourceContainer>();
+        format_              = ContainerFormat::None;
+        sourcePath_          = ca::str::Utf8String{};
         primaryClassUri_     = ca::str::Utf8String{};
-        sourceManifestBytes_ = std::move(sourceManifest);
-        supporting_.clear();
-        // 会话史清零（旧语义：打开新主资源丢弃 undo/redo/savepoint）。绑定态
-        // 先落盘旧容器台账再重置链（新容器台账随下次 flush 落盘；旧容器已落盘
-        // 历史入待释放清单随之清理——台账作用域 = 容器）。
-        auto digest = ledgerBaseDigest();
-        if (digest.is_err()) return ca::core::Err(std::move(digest).unwrap_err());
-        if (ledger_.bound()) {
-            if (ledger_.hasPending()) {
-                auto flushed = ledger_.flush(project::rfc3339UtcNow());
-                if (flushed.is_err())
-                    return ca::core::Err(ledgerFailure("open JAR", std::move(flushed).unwrap_err()));
-            }
-            ledger_.resetSession(project::copyLedgerText(digest.unwrap()));
-        }
-        else {
-            auto fresh = project::EditLedgerStore::createInMemory(project::copyLedgerText(digest.unwrap()));
-            if (fresh.is_err())
-                return ca::core::Err(ledgerFailure("open JAR", std::move(fresh).unwrap_err()));
-            ledger_ = std::move(fresh).unwrap();
-        }
-        redoHint_.clear();
-        revision_         = 0;
-        nextSupportingId_ = 1;
-        // LVT 显示名策略旗标缓存失效：新主资源的形态基线重算（revision 复位
-        // 不能单独作键——新旧会话 revision 可能同为 0）。
-        lvtPolicyComputed_ = false;
+        sourceManifestBytes_ = std::nullopt;
+        auto reset = resetSessionState("open empty");
+        if (reset.is_err()) return reset;
         return ca::core::Ok();
     }
     catch (const std::exception& exception) {
-        return ca::core::Err(error(WorkspaceError::DataLoss, "open JAR", exception.what()));
+        return ca::core::Err(error(WorkspaceError::DataLoss, "open empty", exception.what()));
     }
-}
-
-WorkspaceResult<void> WorkspaceBase::openClass(ca::str::Utf8StringRef pathRef)
-{
-    const std::string path = pathRef.to_std_string();
-    if (path.empty())
-        return ca::core::Err(
-            error(WorkspaceError::InvalidArgument, "open class", "path is empty"));
-    namespace fs = std::filesystem;
-    std::error_code filesystemError;
-    const auto      status = fs::status(fsPath(path), filesystemError);
-    if (filesystemError || !fs::exists(status))
-        return ca::core::Err(error(WorkspaceError::NotFound, "open class", path));
-    if (!fs::is_regular_file(status))
-        return ca::core::Err(
-            error(WorkspaceError::InvalidArgument, "open class", "path is not a regular file"));
-
-    try {
-        model::ResourceContainer imported;
-        auto importedStatus = model::ResourceHelper::importFromClassFile(imported, path);
-        if (importedStatus.is_err())
-            return ca::core::Err(
-                modelFailure("open class", std::move(importedStatus).unwrap_err()));
-        const auto* importedClass =
-            ca::core::tag_cast::dyn_cast<const model::ClassResource>(imported.getResource(path));
-        if (importedClass == nullptr) {
-            return ca::core::Err(
-                error(WorkspaceError::DataLoss, "open class", "class resource was not imported"));
-        }
-        // 该次解码只取内名建 URI：LVT 显示名旗标此处置 false（工作副本尚未
-        // 就位，不触发扫描）。
-        auto info = decodeClass(path, *importedClass, false);
-        if (info.is_err()) return ca::core::Err(std::move(info).unwrap_err());
-        auto decoded = std::move(info).unwrap();
-        if (decoded.internalName.is_empty()) {
-            return ca::core::Err(error(WorkspaceError::DataLoss, "open class",
-                                       "class has an empty internal name"));
-        }
-
-        const auto               uri = decoded.internalName.to_std_string() + ".class";
-        model::ResourceContainer loaded;
-        loaded.addResource(uri,
-                           std::make_unique<model::ClassResource>(uri, importedClass->get()));
-        std::vector<jasm::Diagnostic> diagnostics;
-        // openClass 门禁只覆盖本类（作用域收窄；relaxed 语义下协变捷径
-        // 基线类照常打开）。
-        const WorkspaceErrorInfo      validation =
-            validateCandidate(loaded, diagnostics, jasm::ValidationMode::Relaxed, {uri});
-        if (validation.is_err()) {
-            return ca::core::Err(error(WorkspaceError::DataLoss, "open class",
-                                       "class did not pass validation"));
-        }
-
-        auto original = cloneContainer(loaded);
-        if (original.is_err()) return ca::core::Err(std::move(original).unwrap_err());
-        auto working = cloneContainer(loaded);
-        if (working.is_err()) return ca::core::Err(std::move(working).unwrap_err());
-
-        original_            = std::move(original).unwrap();
-        working_             = std::move(working).unwrap();
-        artifactKind_        = ArtifactKind::Class;
-        sourcePath_          = utf8(path);
-        primaryClassUri_     = utf8(uri);
-        sourceManifestBytes_ = std::nullopt;   // class 工件无 jar 保真面
-        supporting_.clear();
-        auto digest = ledgerBaseDigest();
-        if (digest.is_err()) return ca::core::Err(std::move(digest).unwrap_err());
-        if (ledger_.bound()) {
-            if (ledger_.hasPending()) {
-                auto flushed = ledger_.flush(project::rfc3339UtcNow());
-                if (flushed.is_err())
-                    return ca::core::Err(
-                        ledgerFailure("open class", std::move(flushed).unwrap_err()));
-            }
-            ledger_.resetSession(project::copyLedgerText(digest.unwrap()));
-        }
-        else {
-            auto fresh = project::EditLedgerStore::createInMemory(project::copyLedgerText(digest.unwrap()));
-            if (fresh.is_err())
-                return ca::core::Err(ledgerFailure("open class", std::move(fresh).unwrap_err()));
-            ledger_ = std::move(fresh).unwrap();
-        }
-        redoHint_.clear();
-        revision_         = 0;
-        nextSupportingId_ = 1;
-        // LVT 显示名策略旗标缓存失效：新主资源的形态基线重算（revision 复位
-        // 不能单独作键——新旧会话 revision 可能同为 0）。
-        lvtPolicyComputed_ = false;
-        return ca::core::Ok();
-    }
-    catch (const std::exception& exception) {
-        return ca::core::Err(error(WorkspaceError::DataLoss, "open class", exception.what()));
-    }
-}
-
-WorkspaceResult<SupportingResourceInfo> WorkspaceBase::addSupportingJar(
-    ca::str::Utf8StringRef pathRef)
-{
-    const std::string path = pathRef.to_std_string();
-    return addSupportingRole(utf8Ref(path), ca::str::Utf8StringRef::from_cstr("support"));
-}
-
-WorkspaceResult<SupportingResourceInfo> WorkspaceBase::addSupportingContainer(
-    ca::str::Utf8StringRef pathRef, model::ContainerRole role)
-{
-    const std::string path = pathRef.to_std_string();
-    // primary 由 project_open 绑定，不接受挂载登记。
-    if (role == model::ContainerRole::Primary)
-        return ca::core::Err(error(WorkspaceError::InvalidArgument, "add supporting container",
-                                   "primary role is bound by project open"));
-    return addSupportingRole(utf8Ref(path), utf8Ref(std::string{model::to_string(role)}));
 }
 
 WorkspaceResult<SupportingResourceInfo> WorkspaceBase::addSupportingRole(
@@ -1529,7 +480,7 @@ WorkspaceResult<SupportingResourceInfo> WorkspaceBase::addSupportingRole(
     auto normalized = normalizedRegularFile(path, "add supporting JAR");
     if (normalized.is_err()) return ca::core::Err(std::move(normalized).unwrap_err());
     const auto normalPath = std::move(normalized).unwrap();
-    for (const auto& support : supporting_) {
+    for (const auto& support : registry_->records()) {
         // 路径唯一约束跨角色生效：同一容器换角色挂载不追加第二条记录。
         if (support.path == normalPath) {
             return ca::core::Err(error(WorkspaceError::AlreadyExists, "add supporting JAR",
@@ -1537,7 +488,7 @@ WorkspaceResult<SupportingResourceInfo> WorkspaceBase::addSupportingRole(
         }
     }
     try {
-        auto container = std::make_unique<model::ResourceContainer>();
+        auto container = std::make_shared<model::ResourceContainer>();
         auto imported  = model::ResourceHelper::importFromJar(*container, normalPath);
         if (imported.is_err())
             return ca::core::Err(
@@ -1545,7 +496,7 @@ WorkspaceResult<SupportingResourceInfo> WorkspaceBase::addSupportingRole(
         auto fingerprint = fingerprintContainer(*container);
         if (fingerprint.is_err()) return ca::core::Err(std::move(fingerprint).unwrap_err());
         const auto fingerprintText = std::move(fingerprint).unwrap();
-        for (const auto& support : supporting_) {
+        for (const auto& support : registry_->records()) {
             if (support.fingerprint == fingerprintText) {
                 return ca::core::Err(error(WorkspaceError::AlreadyExists, "add supporting JAR",
                                            "supporting content is already attached"));
@@ -1553,7 +504,7 @@ WorkspaceResult<SupportingResourceInfo> WorkspaceBase::addSupportingRole(
         }
 
         SupportingResourceInfo info;
-        info.id            = utf8("support-" + std::to_string(nextSupportingId_++));
+        info.id            = utf8(registry_->nextSupportId());
         info.path          = utf8(normalPath);
         info.fingerprint   = utf8(fingerprintText);
         info.resourceCount = container->size();
@@ -1561,9 +512,16 @@ WorkspaceResult<SupportingResourceInfo> WorkspaceBase::addSupportingRole(
         container->visitResources([&](std::string_view, const model::IResource& resource) {
             if (resource.getType() == model::ResourceType::Class) ++info.classCount;
         });
-        supporting_.push_back({info.id.to_std_string(), info.path.to_std_string(),
-                               info.fingerprint.to_std_string(), roleLabel,
-                               std::move(container)});
+        ContainerRecord record;
+        record.id          = normalPath;
+        record.supportId   = info.id.to_std_string();
+        record.path        = info.path.to_std_string();
+        record.fingerprint = info.fingerprint.to_std_string();
+        record.role        = roleLabel == "runtime" ? model::ContainerRole::Runtime
+                                                    : model::ContainerRole::Library;
+        record.roleLabel   = roleLabel;
+        record.container   = std::move(container);
+        registry_->records().push_back(std::move(record));
         return ca::core::Ok(std::move(info));
     }
     catch (const std::exception& exception) {
@@ -1572,7 +530,7 @@ WorkspaceResult<SupportingResourceInfo> WorkspaceBase::addSupportingRole(
     }
 }
 
-WorkspaceResult<SupportingResourceInfo> WorkspaceBase::removeSupportingJar(
+WorkspaceResult<SupportingResourceInfo> WorkspaceBase::removeSupporting(
     ca::str::Utf8StringRef idRef)
 {
     const std::string id = idRef.to_std_string();
@@ -1582,23 +540,21 @@ WorkspaceResult<SupportingResourceInfo> WorkspaceBase::removeSupportingJar(
         return ca::core::Err(error(WorkspaceError::InvalidArgument, "remove supporting JAR",
                                    "support ID is empty"));
     }
-    const auto found =
-        std::find_if(supporting_.begin(), supporting_.end(),
-                     [&](const SupportingResource& support) { return support.id == id; });
-    if (found == supporting_.end())
+    const auto* found = registry_->findBySupportId(id);
+    if (found == nullptr)
         return ca::core::Err(error(WorkspaceError::NotFound, "remove supporting JAR", id));
 
     // 一容器一记录：摘除即清理该容器的全部角色注册，无残留半边。
     SupportingResourceInfo info;
-    info.id            = utf8(found->id);
+    info.id            = utf8(found->supportId);
     info.path          = utf8(found->path);
     info.fingerprint   = utf8(found->fingerprint);
     info.resourceCount = found->container->size();
-    info.role          = utf8(found->role);
+    info.role          = utf8(found->roleLabel);
     found->container->visitResources([&](std::string_view, const model::IResource& resource) {
         if (resource.getType() == model::ResourceType::Class) ++info.classCount;
     });
-    supporting_.erase(found);
+    registry_->detachBySupportId(id);
     return ca::core::Ok(std::move(info));
 }
 
@@ -1607,11 +563,6 @@ WorkspaceResult<SupportingResourceInfo> WorkspaceBase::removeSupportingJar(
 bool WorkspaceBase::isLoaded() const noexcept
 {
     return working_ != nullptr && original_ != nullptr;
-}
-
-ArtifactKind WorkspaceBase::artifactKind() const noexcept
-{
-    return artifactKind_;
 }
 
 const ca::str::Utf8String& WorkspaceBase::sourcePath() const noexcept
@@ -1632,34 +583,10 @@ ca::u64 WorkspaceBase::revision() const noexcept
 bool WorkspaceBase::lvtJarFallbackFlag() const
 {
     if (lvtPolicyComputed_ && lvtPolicyRevision_ == revision_) return lvtJarFallback_;
-    mjbase::analysis::LvtShapeStats stats;
-    // 全容器 class 扫描 LVT 行集（与 ReferenceScan::build 同纪律：净化预检
-    // 不过的损坏 class 跳过、会话打不开跳过）。这里只需逐名形态判定，行集
-    // 不落任何存储。
-    workingContainer()->visitResources(
-        [&](std::string_view, const model::IResource& resource) {
-            const auto* classResource =
-                ca::core::tag_cast::dyn_cast<const model::ClassResource>(&resource);
-            if (classResource == nullptr) return;
-            if (!spi::sanitizeClassFile(classResource->get()).empty()) return;
-            auto session = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(classResource->get()));
-            if (session.is_err()) return;
-            auto                  held = std::move(session).unwrap();
-            jbc::core::ClassFile& cf   = held->backing();
-            for (auto& method : cf.methods) {
-                jbc::core::CodeAttr* code = support::ensureCode(cf, method);
-                if (code == nullptr) continue;
-                std::vector<LocalVariableInfo> locals;
-                support::collectLocalVariables(cf, *code, locals);
-                for (const auto& local : locals) {
-                    ++stats.total;
-                    if (!mjbase::analysis::lvtNameTrustworthy(local.name.ref())) ++stats.invalid;
-                }
-            }
-        });
-    lvtJarFallback_     = mjbase::analysis::lvtJarFallback(stats);
-    lvtPolicyRevision_  = revision_;
-    lvtPolicyComputed_  = true;
+    // 判定扫描沉 analysis_ops（无状态纯函数）；本成员只留 revision 键控缓存。
+    lvtJarFallback_    = working_ != nullptr ? lvtJarFallbackOf(*working_) : false;
+    lvtPolicyRevision_ = revision_;
+    lvtPolicyComputed_ = true;
     return lvtJarFallback_;
 }
 
@@ -1761,7 +688,7 @@ std::unique_ptr<model::ResourceContainer> WorkspaceBase::analysisScanContainer()
         auto copied = cloneResource(resource);
         if (copied) merged->addResource(uri, std::move(copied));
     });
-    for (const auto& support : supporting_) {
+    for (const auto& support : registry_->records()) {
         support.container->visitResources(
             [&](std::string_view uri, const model::IResource& resource) {
                 if (merged->getResource(uri) != nullptr) return;   // 主容器 URI 优先
@@ -1784,14 +711,14 @@ std::unordered_map<std::string, std::string> WorkspaceBase::supportingClassIds()
     });
 
     std::unordered_map<std::string, std::string> result;
-    for (const auto& support : supporting_) {
+    for (const auto& support : registry_->records()) {
         support.container->visitResources([&](std::string_view, const model::IResource& resource) {
             const auto* classResource =
                 ca::core::tag_cast::dyn_cast<const model::ClassResource>(&resource);
             if (classResource == nullptr) return;
             const auto name = internalNameOfBytes(classResource->get());
             if (!name.empty() && primary.find(name) == primary.end())
-                result.emplace(name, support.id);
+                result.emplace(name, support.supportId);
         });
     }
     return result;
@@ -1836,7 +763,7 @@ WorkspaceResult<WorkspaceBase::AnalysisGraph> WorkspaceBase::analysisGraph() con
             });
         };
         appendClasses(*working_, true);
-        for (const auto& support : supporting_) appendClasses(*support.container, false);
+        for (const auto& support : registry_->records()) appendClasses(*support.container, false);
 
         // 未登记超类型物化为合成节点（java/lang/Object 等；无成员、access 0）。
         std::unordered_set<ca::u32> known;
@@ -1872,190 +799,6 @@ WorkspaceResult<WorkspaceBase::AnalysisGraph> WorkspaceBase::analysisGraph() con
 
 // ── 资源 / class 读取面 ─────────────────────────────────────────────────
 
-WorkspaceResult<std::vector<ResourceSummary>> WorkspaceBase::listResources(
-    bool includeClasses) const
-{
-    WorkspaceErrorInfo status = ensureLoaded("list resources");
-    if (status.is_err()) return ca::core::Err(std::move(status));
-    std::vector<ResourceSummary> result;
-    working_->visitResources([&](std::string_view uri, const model::IResource& resource) {
-        if (!includeClasses && resource.getType() == model::ResourceType::Class) return;
-        auto bytes = bytesOf(resource);
-        if (bytes.is_err()) return;
-        result.push_back({utf8(uri), utf8(resourceTypeName(resource.getType())),
-                          bytes.unwrap().size()});
-    });
-    std::sort(result.begin(), result.end(),
-              [](const ResourceSummary& left, const ResourceSummary& right) {
-                  return left.uri < right.uri;
-              });
-    return ca::core::Ok(std::move(result));
-}
-
-WorkspaceResult<ResourceContent> WorkspaceBase::readResource(ca::str::Utf8StringRef uriRef) const
-{
-    const std::string uri = uriRef.to_std_string();
-    WorkspaceErrorInfo status = ensureLoaded("read resource");
-    if (status.is_err()) return ca::core::Err(std::move(status));
-    const model::IResource* resource = working_->getResource(uri);
-    if (resource == nullptr)
-        return ca::core::Err(error(WorkspaceError::NotFound, "read resource", uri));
-    auto bytes = bytesOf(*resource);
-    if (bytes.is_err()) return ca::core::Err(std::move(bytes).unwrap_err());
-    ResourceContent result;
-    result.summary = {utf8(uri), utf8(resourceTypeName(resource->getType())), bytes.unwrap().size()};
-    result.bytes   = std::move(bytes).unwrap();
-    return ca::core::Ok(std::move(result));
-}
-
-WorkspaceResult<ClassBytesInfo> WorkspaceBase::readClassBytes(
-    ca::str::Utf8StringRef uriOrInternalNameRef) const
-{
-    const std::string uriOrInternalName = uriOrInternalNameRef.to_std_string();
-    WorkspaceErrorInfo status = ensureLoaded("read class bytes");
-    if (status.is_err()) return ca::core::Err(std::move(status));
-    std::string uri;
-    if (hasClassExtension(uriOrInternalName) &&
-        working_->getResource(uriOrInternalName) != nullptr) {
-        uri = uriOrInternalName;
-    }
-    else {
-        auto resolved = resolveClassUri(*working_, uriOrInternalName);
-        if (resolved.is_err()) return ca::core::Err(std::move(resolved).unwrap_err());
-        uri = std::move(resolved).unwrap();
-    }
-    const model::IResource* resource = working_->getResource(uri);
-    if (resource == nullptr)
-        return ca::core::Err(error(WorkspaceError::NotFound, "read class bytes", uri));
-    auto bytes = bytesOf(*resource);
-    if (bytes.is_err()) return ca::core::Err(std::move(bytes).unwrap_err());
-
-    ClassBytesInfo result;
-    result.resourceUri  = utf8(uri);
-    result.bytes        = std::move(bytes).unwrap();
-    result.fingerprint  = utf8(fingerprintBytes(result.bytes));
-    result.internalName = utf8(internalNameOfBytes(result.bytes));
-    return ca::core::Ok(std::move(result));
-}
-
-WorkspaceResult<std::string> WorkspaceBase::resolveClassUri(
-    const model::ResourceContainer& container, const std::string& uriOrInternalName) const
-{
-    if (uriOrInternalName.empty())
-        return ca::core::Err(
-            error(WorkspaceError::InvalidArgument, "resolve class", "selector is empty"));
-    if (ca::core::tag_cast::isa<model::ClassResource>(container.getResource(uriOrInternalName)))
-        return ca::core::Ok(uriOrInternalName);
-    try {
-        // 内名 selector 命中 Multi-Release 族（base 与 versions/<N> 变体并存，
-        // 内名相同）时按确定序选定：base 形条目优先于版本化条目（JEP 238 口径
-        // 版本 ≥ 9），同层级取 URI 字节序最小。不得依赖容器迭代序——那会让
-        // 同一容器在不同进程/标准库里解析到不同族员。
-        std::string match;
-        ca::i64     matchVersion = -1;
-        container.visitResources([&](std::string_view uri, const model::IResource& resource) {
-            const auto* classResource =
-                ca::core::tag_cast::dyn_cast<const model::ClassResource>(&resource);
-            if (classResource == nullptr) return;
-            if (internalNameOfBytes(classResource->get()) != uriOrInternalName) return;
-            const ca::i64 version = model::multiReleaseVersionOfClassUri(uri);
-            const bool    candidateVersioned = version >= 9;
-            const bool    currentVersioned   = matchVersion >= 9;
-            const bool    better = match.empty() ||
-                                   (!candidateVersioned && currentVersioned) ||
-                                   (candidateVersioned == currentVersioned &&
-                                    std::string_view(uri) < std::string_view(match));
-            if (!better) return;
-            match        = std::string(uri);
-            matchVersion = version;
-        });
-        if (match.empty())
-            return ca::core::Err(
-                error(WorkspaceError::NotFound, "resolve class", uriOrInternalName));
-        return ca::core::Ok(std::move(match));
-    }
-    catch (const std::exception& exception) {
-        return ca::core::Err(error(WorkspaceError::DataLoss, "resolve class", exception.what()));
-    }
-}
-
-WorkspaceResult<std::vector<ClassSummary>> WorkspaceBase::listClassSummaries() const
-{
-    WorkspaceErrorInfo status = ensureLoaded("list class summaries");
-    if (status.is_err()) return ca::core::Err(std::move(status));
-    std::vector<ClassSummary> result;
-    working_->visitResources([&](std::string_view uri, const model::IResource& resource) {
-        const auto* classResource =
-            ca::core::tag_cast::dyn_cast<const model::ClassResource>(&resource);
-        if (classResource == nullptr) return;
-        auto decoded = decodeClassSummary(std::string(uri), *classResource);
-        if (decoded.is_err()) return;
-        result.push_back(std::move(decoded).unwrap());
-    });
-    std::sort(result.begin(), result.end(),
-              [](const ClassSummary& left, const ClassSummary& right) {
-                  if (left.internalName != right.internalName)
-                      return left.internalName < right.internalName;
-                  return left.resourceUri < right.resourceUri;
-              });
-    return ca::core::Ok(std::move(result));
-}
-
-WorkspaceResult<std::vector<ClassInfo>> WorkspaceBase::listClasses() const
-{
-    WorkspaceErrorInfo status = ensureLoaded("list classes");
-    if (status.is_err()) return ca::core::Err(std::move(status));
-    std::vector<ClassInfo> result;
-    working_->visitResources([&](std::string_view uri, const model::IResource& resource) {
-        const auto* classResource =
-            ca::core::tag_cast::dyn_cast<const model::ClassResource>(&resource);
-        if (classResource == nullptr) return;
-        auto decoded = decodeClass(std::string(uri), *classResource, lvtJarFallbackFlag());
-        if (decoded.is_err()) return;
-        result.push_back(std::move(decoded).unwrap());
-    });
-    std::sort(result.begin(), result.end(), [](const ClassInfo& left, const ClassInfo& right) {
-        if (left.internalName != right.internalName) return left.internalName < right.internalName;
-        return left.resourceUri < right.resourceUri;
-    });
-    return ca::core::Ok(std::move(result));
-}
-
-WorkspaceResult<ClassInfo> WorkspaceBase::classInfo(ca::str::Utf8StringRef uriOrInternalNameRef) const
-{
-    const std::string uriOrInternalName = uriOrInternalNameRef.to_std_string();
-    WorkspaceErrorInfo status = ensureLoaded("get class info");
-    if (status.is_err()) return ca::core::Err(std::move(status));
-    auto uri = resolveClassUri(*working_, uriOrInternalName);
-    if (uri.is_err()) return ca::core::Err(std::move(uri).unwrap_err());
-    const auto* resource = ca::core::tag_cast::dyn_cast<const model::ClassResource>(
-        working_->getResource(uri.unwrap()));
-    if (resource == nullptr)
-        return ca::core::Err(error(WorkspaceError::NotFound, "get class info", uri.unwrap()));
-    return decodeClass(uri.unwrap(), *resource, lvtJarFallbackFlag());
-}
-
-WorkspaceResult<MethodInfo> WorkspaceBase::methodInfo(ca::str::Utf8StringRef ownerRef,
-                                                      ca::str::Utf8StringRef nameRef,
-                                                      ca::str::Utf8StringRef descriptorRef) const
-{
-    const std::string owner      = ownerRef.to_std_string();
-    const std::string name       = nameRef.to_std_string();
-    const std::string descriptor = descriptorRef.to_std_string();
-    if (name.empty() || descriptor.empty()) {
-        return ca::core::Err(error(WorkspaceError::InvalidArgument, "get method info",
-                                   "name and descriptor are required"));
-    }
-    auto decoded = classInfo(utf8Ref(owner));
-    if (decoded.is_err()) return ca::core::Err(std::move(decoded).unwrap_err());
-    // ClassInfo 换型 move-only：unwrap 走移动重载，命中行按移动语义返回。
-    for (auto& method : std::move(decoded).unwrap().methods) {
-        if (method.name == utf8Ref(name) && method.descriptor == utf8Ref(descriptor))
-            return ca::core::Ok(std::move(method));
-    }
-    return ca::core::Err(
-        error(WorkspaceError::NotFound, "get method info", owner + "." + name + descriptor));
-}
 
 WorkspaceResult<FieldInfo> WorkspaceBase::fieldInfo(ca::str::Utf8StringRef ownerRef,
                                                     ca::str::Utf8StringRef nameRef,
@@ -2165,105 +908,6 @@ WorkspaceResult<MethodInstructions> WorkspaceBase::methodInstructions(
                                owner + "." + name + descriptor));
 }
 
-WorkspaceResult<MethodBytecode> WorkspaceBase::methodBytecode(ca::str::Utf8StringRef ownerRef,
-                                                              ca::str::Utf8StringRef nameRef,
-                                                              ca::str::Utf8StringRef descriptorRef) const
-{
-    const std::string owner      = ownerRef.to_std_string();
-    const std::string name       = nameRef.to_std_string();
-    const std::string descriptor = descriptorRef.to_std_string();
-    WorkspaceErrorInfo status = ensureLoaded("get method bytecode");
-    if (status.is_err()) return ca::core::Err(std::move(status));
-    if (owner.empty() || name.empty() || descriptor.empty()) {
-        return ca::core::Err(error(WorkspaceError::InvalidArgument, "get method bytecode",
-                                   "owner, name and descriptor are required"));
-    }
-    auto uri = resolveClassUri(*working_, owner);
-    if (uri.is_err()) return ca::core::Err(std::move(uri).unwrap_err());
-    const auto* resource = ca::core::tag_cast::dyn_cast<const model::ClassResource>(
-        working_->getResource(uri.unwrap()));
-    if (resource == nullptr)
-        return ca::core::Err(error(WorkspaceError::NotFound, "get method bytecode", owner));
-    auto session = sessionOf(resource->get(), "get method bytecode");
-    if (session.is_err()) return ca::core::Err(std::move(session).unwrap_err());
-    auto                  held = std::move(session).unwrap();
-    jbc::core::ClassFile& cf   = held->backing();
-    for (ca::usize methodIndex = 0; methodIndex < cf.methods.size(); ++methodIndex) {
-        auto& method = cf.methods[methodIndex];
-        if (utf8Text(cf, method.nameCp) != name || utf8Text(cf, method.descCp) != descriptor)
-            continue;
-        auto info = makeMethodInfo(*held, method, methodIndex, lvtJarFallbackFlag());
-        if (info.is_err()) return ca::core::Err(std::move(info).unwrap_err());
-        MethodBytecode result;
-        result.method = std::move(info).unwrap();
-        if (support::ensureCode(cf, method) != nullptr) {
-            auto promoted = jbc::ir::promoteMethod(*held, methodIndex);
-            if (promoted.is_err())
-                return ca::core::Err(error(WorkspaceError::DataLoss, "get method bytecode",
-                                           "method body cannot be promoted"));
-            auto raw = promoted.unwrap()->dom.exportRaw();
-            if (raw.is_err())
-                return ca::core::Err(error(WorkspaceError::DataLoss, "get method bytecode",
-                                       "method body cannot be exported"));
-            const auto insns = std::move(raw).unwrap();
-            ca::i32    index = 0;
-            for (const auto& insn : insns) {
-                InstructionInfo item;
-                item.index  = index++;
-                item.opcode = static_cast<ca::i32>(insn.op);
-                const char* mnemonic = jbc::core::mnemonicOf(insn.op);
-                item.mnemonic = ca::str::Utf8String::from_cstr(mnemonic != nullptr ? mnemonic : "?");
-                item.nodeType = utf8(instructionNodeType(insn.op));
-                result.instructions.push_back(std::move(item));
-            }
-        }
-        return ca::core::Ok(std::move(result));
-    }
-    return ca::core::Err(error(WorkspaceError::NotFound, "get method bytecode",
-                               owner + "." + name + descriptor));
-}
-
-jasm::Result<jasm::JvmJasmMethodDisassembly> WorkspaceBase::getMethodJasm(
-    ca::str::Utf8StringRef ownerRef, ca::str::Utf8StringRef nameRef,
-    ca::str::Utf8StringRef descriptorRef) const
-{
-    const std::string owner      = ownerRef.to_std_string();
-    const std::string name       = nameRef.to_std_string();
-    const std::string descriptor = descriptorRef.to_std_string();
-    if (!isLoaded()) return jasmFailure<jasm::JvmJasmMethodDisassembly>("workspace is not loaded");
-    auto uri = resolveClassUri(*working_, owner);
-    if (uri.is_err()) {
-        return jasmFailure<jasm::JvmJasmMethodDisassembly>(std::move(uri).unwrap_err().message);
-    }
-    const auto* resource = ca::core::tag_cast::dyn_cast<const model::ClassResource>(
-        working_->getResource(uri.unwrap()));
-    if (resource == nullptr)
-        return jasmFailure<jasm::JvmJasmMethodDisassembly>("Class resource not found: " + owner);
-    return jasm::JvmJasmService{}.disassembleMethod(resource->get(), nameRef, descriptorRef);
-}
-
-WorkspaceResult<std::vector<ManifestAttribute>> WorkspaceBase::manifestAttributes() const
-{
-    WorkspaceErrorInfo status = ensureLoaded("read manifest");
-    if (status.is_err()) return ca::core::Err(std::move(status));
-    const model::ManifestResource* manifest = nullptr;
-    working_->visitResources([&](std::string_view, const model::IResource& resource) {
-        if (manifest == nullptr)
-            manifest = ca::core::tag_cast::dyn_cast<const model::ManifestResource>(&resource);
-    });
-    if (manifest == nullptr)
-        return ca::core::Err(error(WorkspaceError::NotFound, "read manifest", "MANIFEST.MF"));
-    std::vector<ManifestAttribute> result;
-    result.reserve(manifest->get().getMainAttributes().size());
-    for (const auto& [key, value] : manifest->get().getMainAttributes()) {
-        result.push_back({key.clone(), value.clone()});
-    }
-    std::sort(result.begin(), result.end(),
-              [](const ManifestAttribute& left, const ManifestAttribute& right) {
-                  return left.key < right.key;
-              });
-    return ca::core::Ok(std::move(result));
-}
 
 // 引擎文本搜索四分面（searchClasses/searchMembers/searchStrings/searchNumbers）
 // 与资源串活扫描面（resourceStrings/searchResourceStrings）已随查询面
@@ -2763,54 +1407,8 @@ WorkspaceResult<std::vector<MethodOverrideInfo>> WorkspaceBase::overridesOfMetho
     }
 }
 
-jasm::Result<jasm::JvmJasmDisassembly> WorkspaceBase::getJasm(ca::str::Utf8StringRef uriRef) const
-{
-    const std::string uri = uriRef.to_std_string();
-    if (!isLoaded()) return jasmFailure<jasm::JvmJasmDisassembly>("workspace is not loaded");
-    jasm::ResourceJasmService service(*working_);
-    return service.disassemble(uri);
-}
 
 // ── 变更事务面 ──────────────────────────────────────────────────────────
-
-MutationResult WorkspaceBase::validateJasm(ca::str::Utf8StringRef uriRef,
-                                           ca::str::Utf16StringRef sourceName,
-                                           ca::str::Utf16StringRef source,
-                                           const MutationRequest&  request)
-{
-    const std::string uri = uriRef.to_std_string();
-    WorkspaceErrorInfo status = ensureLoaded("validate JASM");
-    if (status.is_err()) return stateFailure(std::move(status));
-    if (!accepts(request)) return revisionConflict();
-    // 选择器与结构化补丁同口径：裸内部名按容器字节内容解析到规范 URI。
-    auto resolvedUri = resolveClassUri(*working_, uri);
-    if (resolvedUri.is_err()) return stateFailure(std::move(resolvedUri).unwrap_err());
-    try {
-        auto                 candidate = cloneWorking();
-        ClassMutationService service(*candidate);
-        const std::string    uri = std::move(resolvedUri).unwrap();
-        auto assembled = service.applyJasm(ca::str::Utf8StringRef::from_string_view(uri),
-                                           sourceName, source, request.validationMode);
-
-        MutationResult result;
-        result.revision    = revision_;
-        result.exportable  = canExport();
-        result.diagnostics = std::move(assembled.diagnostics);
-        if (!assembled.isOk()) {
-            result.status = error(WorkspaceError::InvalidArgument, "validate JASM",
-                                  "candidate class did not pass validation");
-            return result;
-        }
-        result.status             = WorkspaceErrorInfo{};
-        result.byteDiffs          = diffContainers(*working_, *candidate);
-        result.affectedClasses    = utf8List(changedClassNames(*candidate, result.byteDiffs));
-        result.affectedReferences = collectImpacts(*candidate, result.byteDiffs, result.affectedClasses);
-        return result;
-    }
-    catch (const std::exception& exception) {
-        return stateFailure(error(WorkspaceError::Internal, "validate JASM", exception.what()));
-    }
-}
 
 MutationResult WorkspaceBase::commit(std::unique_ptr<model::ResourceContainer> candidate,
                                      std::vector<jasm::Diagnostic> diagnostics,
@@ -3012,7 +1610,7 @@ std::vector<project::LedgerIdentityRename> WorkspaceBase::identitySpecsOfRemap(
                 continue;
             }
             const std::string ownerText(oldOwner);
-            auto info = classInfo(utf8Ref(ownerText));
+            auto info = classInfo(*working_, utf8Ref(ownerText), lvtJarFallbackFlag());
             if (info.is_err()) continue;
             const auto& clazz = std::move(info).unwrap();
             const auto  memberNameText = std::string(oldName);
@@ -3039,257 +1637,6 @@ std::vector<project::LedgerIdentityRename> WorkspaceBase::identitySpecsOfRemap(
     emitMembers(plan.fieldRules(), false);
     emitMembers(plan.methodRules(), true);
     return specs;
-}
-
-MutationResult WorkspaceBase::applyJasm(ca::str::Utf8StringRef uriRef,
-                                        ca::str::Utf16StringRef sourceName,
-                                        ca::str::Utf16StringRef source,
-                                        const MutationRequest&  request)
-{
-    const std::string uri = uriRef.to_std_string();
-    if (request.dryRun) return validateJasm(utf8Ref(uri), sourceName, source, request);
-    WorkspaceErrorInfo status = ensureLoaded("apply JASM");
-    if (status.is_err()) return stateFailure(std::move(status));
-    if (!accepts(request)) return revisionConflict();
-    // 选择器与结构化补丁同口径：裸内部名按容器字节内容解析到规范 URI。
-    auto resolvedUri = resolveClassUri(*working_, uri);
-    if (resolvedUri.is_err()) return stateFailure(std::move(resolvedUri).unwrap_err());
-    try {
-        auto                 candidate = cloneWorking();
-        ClassMutationService service(*candidate);
-        const std::string    uri = std::move(resolvedUri).unwrap();
-        auto assembled = service.applyJasm(ca::str::Utf8StringRef::from_string_view(uri),
-                                           sourceName, source, request.validationMode);
-        if (!assembled.isOk()) {
-            MutationResult result;
-            result.status = error(WorkspaceError::InvalidArgument, "apply JASM",
-                                  "candidate class did not pass validation");
-            result.revision    = revision_;
-            result.exportable  = canExport();
-            result.diagnostics = std::move(assembled.diagnostics);
-            return result;
-        }
-        return commit(std::move(candidate), std::move(assembled.diagnostics), request);
-    }
-    catch (const std::exception& exception) {
-        return stateFailure(error(WorkspaceError::Internal, "apply JASM", exception.what()));
-    }
-}
-
-MutationResult WorkspaceBase::validateClassBytes(ca::str::Utf8StringRef     uriRef,
-                                                 const std::vector<ca::u8>& classBytes,
-                                                 const MutationRequest&     request)
-{
-    const std::string uri = uriRef.to_std_string();
-    WorkspaceErrorInfo status = ensureLoaded("validate class bytes");
-    if (status.is_err()) return stateFailure(std::move(status));
-    if (!accepts(request)) return revisionConflict();
-    if (classBytes.empty()) {
-        return stateFailure(error(WorkspaceError::InvalidArgument, "validate class bytes",
-                                  "candidate class is empty"));
-    }
-    try {
-        auto       candidate = cloneWorking();
-        const auto current =
-            ca::core::tag_cast::dyn_cast<const model::ClassResource>(candidate->getResource(uri));
-        if (current == nullptr) {
-            return stateFailure(error(WorkspaceError::NotFound, "validate class bytes",
-                                      "class resource not found: " + uri));
-        }
-        candidate->replaceResource(uri,
-                                   std::make_unique<model::ClassResource>(uri, classBytes));
-
-        MutationResult result;
-        result.revision   = revision_;
-        result.exportable = canExport();
-        // 门禁作用域 = 本次替换的类。
-        result.status     = validateCandidate(*candidate, result.diagnostics,
-                                              request.validationMode, {uri});
-        if (result.status.is_err()) return result;
-        result.byteDiffs          = diffContainers(*working_, *candidate);
-        result.affectedClasses    = utf8List(changedClassNames(*candidate, result.byteDiffs));
-        result.affectedReferences = collectImpacts(*candidate, result.byteDiffs, result.affectedClasses);
-        return result;
-    }
-    catch (const std::exception& exception) {
-        return stateFailure(
-            error(WorkspaceError::Internal, "validate class bytes", exception.what()));
-    }
-}
-
-MutationResult WorkspaceBase::applyClassBytes(ca::str::Utf8StringRef     uriRef,
-                                              const std::vector<ca::u8>& classBytes,
-                                              const MutationRequest&     request)
-{
-    const std::string uri = uriRef.to_std_string();
-    if (request.dryRun) return validateClassBytes(utf8Ref(uri), classBytes, request);
-    WorkspaceErrorInfo status = ensureLoaded("apply class bytes");
-    if (status.is_err()) return stateFailure(std::move(status));
-    if (!accepts(request)) return revisionConflict();
-    if (classBytes.empty()) {
-        return stateFailure(error(WorkspaceError::InvalidArgument, "apply class bytes",
-                                  "candidate class is empty"));
-    }
-    try {
-        auto       candidate = cloneWorking();
-        const auto current =
-            ca::core::tag_cast::dyn_cast<const model::ClassResource>(candidate->getResource(uri));
-        if (current == nullptr) {
-            return stateFailure(error(WorkspaceError::NotFound, "apply class bytes",
-                                      "class resource not found: " + uri));
-        }
-        candidate->replaceResource(uri,
-                                   std::make_unique<model::ClassResource>(uri, classBytes));
-        std::vector<jasm::Diagnostic> diagnostics;
-        // 门禁作用域 = 本次替换的类。
-        status = validateCandidate(*candidate, diagnostics, request.validationMode, {uri});
-        if (status.is_err()) {
-            MutationResult result;
-            result.status      = std::move(status);
-            result.revision    = revision_;
-            result.exportable  = canExport();
-            result.diagnostics = std::move(diagnostics);
-            return result;
-        }
-        return commit(std::move(candidate), std::move(diagnostics), request);
-    }
-    catch (const std::exception& exception) {
-        return stateFailure(
-            error(WorkspaceError::Internal, "apply class bytes", exception.what()));
-    }
-}
-
-MutationResult WorkspaceBase::validateClassMutation(const ClassMutation&   mutation,
-                                                    const MutationRequest& request)
-{
-    WorkspaceErrorInfo status = ensureLoaded("validate class mutation");
-    if (status.is_err()) return stateFailure(std::move(status));
-    if (!accepts(request)) return revisionConflict();
-    try {
-        auto                 candidate = cloneWorking();
-        ClassMutationService service(*candidate);
-        auto                 outcome = service.apply(mutation, request.validationMode);
-
-        MutationResult result;
-        result.revision    = revision_;
-        result.exportable  = canExport();
-        result.diagnostics = std::move(outcome.diagnostics);
-        if (outcome.status.is_err()) {
-            result.status = std::move(outcome.status);
-            return result;
-        }
-        result.status             = WorkspaceErrorInfo{};
-        result.byteDiffs          = diffContainers(*working_, *candidate);
-        result.affectedClasses    = utf8List(changedClassNames(*candidate, result.byteDiffs));
-        result.affectedReferences = collectImpacts(*candidate, result.byteDiffs, result.affectedClasses);
-        return result;
-    }
-    catch (const std::exception& exception) {
-        return stateFailure(
-            error(WorkspaceError::Internal, "validate class mutation", exception.what()));
-    }
-}
-
-MutationResult WorkspaceBase::applyClassMutation(const ClassMutation&   mutation,
-                                                 const MutationRequest& request)
-{
-    WorkspaceErrorInfo status = ensureLoaded("apply class mutation");
-    if (status.is_err()) return stateFailure(std::move(status));
-    //选择器契约对齐 replaceClassBytes：精确资源 URI 直接命中，内部名按字节
-    //内容解析到规范 URI。
-    auto resolvedUri = resolveClassUri(*working_, mutation.classUri.to_std_string());
-    if (resolvedUri.is_err()) return stateFailure(std::move(resolvedUri).unwrap_err());
-    ClassMutation resolvedMutation = mutation.clone();
-    resolvedMutation.classUri      = utf8(std::move(resolvedUri).unwrap());
-    if (request.dryRun) return validateClassMutation(resolvedMutation, request);
-    if (!accepts(request)) return revisionConflict();
-    try {
-        auto                 candidate = cloneWorking();
-        ClassMutationService service(*candidate);
-        auto                 outcome = service.apply(resolvedMutation, request.validationMode);
-        if (outcome.status.is_err()) {
-            MutationResult result;
-            result.status      = std::move(outcome.status);
-            result.revision    = revision_;
-            result.exportable  = canExport();
-            result.diagnostics = std::move(outcome.diagnostics);
-            return result;
-        }
-        // 单方法寻址 kind 的指纹落库走聚焦单方法面（recordMethodVersion）；
-        // 其余 kind 聚焦为空，commit 锚点按整类批量面兜底。
-        EditedMethodFocus focus = focusedMethodOfEdit(resolvedMutation);
-        return commit(std::move(candidate), std::move(outcome.diagnostics), request,
-                      focus.ownerInternalName.empty() ? nullptr : &focus);
-    }
-    catch (const std::exception& exception) {
-        return stateFailure(
-            error(WorkspaceError::Internal, "apply class mutation", exception.what()));
-    }
-}
-
-MutationResult WorkspaceBase::replaceClassBytes(ca::str::Utf8StringRef     uriOrInternalNameRef,
-                                                const std::vector<ca::u8>& bytes,
-                                                const MutationRequest&     request)
-{
-    const std::string uriOrInternalName = uriOrInternalNameRef.to_std_string();
-    WorkspaceErrorInfo status = ensureLoaded("replace class bytes");
-    if (status.is_err()) return stateFailure(std::move(status));
-    if (!accepts(request)) return revisionConflict();
-    if (bytes.empty() || bytes.size() > kMaximumClassReplacementSize)
-        return stateFailure(error(WorkspaceError::InvalidArgument, "replace class bytes",
-                                  "class size must be in 1..16777216 bytes"));
-    if (bytes.size() < 4 || bytes[0] != 0xca || bytes[1] != 0xfe || bytes[2] != 0xba ||
-        bytes[3] != 0xbe)
-        return stateFailure(error(WorkspaceError::InvalidArgument, "replace class bytes",
-                                  "candidate does not start with CAFEBABE"));
-
-    auto resolved = resolveClassUri(*working_, uriOrInternalName);
-    if (resolved.is_err()) return stateFailure(std::move(resolved).unwrap_err());
-    const auto uri                  = std::move(resolved).unwrap();
-    const auto expectedInternalName = mjbase::model::internalNameFromClassUri(uri);
-    if (expectedInternalName.empty())
-        return stateFailure(error(WorkspaceError::InvalidArgument, "replace class bytes",
-                                  "target URI is not a canonical class or multi-release class "
-                                  "URI"));
-    const auto* current =
-        ca::core::tag_cast::dyn_cast<const model::ClassResource>(working_->getResource(uri));
-    if (current == nullptr)
-        return stateFailure(error(WorkspaceError::NotFound, "replace class bytes", uri));
-
-    try {
-        const auto actualInternalName = internalNameOfBytes(bytes);
-        if (actualInternalName != expectedInternalName)
-            return stateFailure(error(WorkspaceError::InvalidArgument, "replace class bytes",
-                                      "candidate internal name does not match target URI"));
-
-        auto candidate = cloneWorking();
-        candidate->replaceResource(
-            uri, std::make_unique<model::ClassResource>(locationText(*current), bytes));
-        std::vector<jasm::Diagnostic> diagnostics;
-        // 门禁作用域 = 本次替换的类。
-        status = validateCandidate(*candidate, diagnostics, request.validationMode, {uri});
-        if (status.is_err()) {
-            MutationResult result = stateFailure(std::move(status));
-            result.diagnostics    = std::move(diagnostics);
-            return result;
-        }
-        if (!request.dryRun)
-            return commit(std::move(candidate), std::move(diagnostics), request);
-
-        MutationResult result;
-        result.status             = WorkspaceErrorInfo{};
-        result.revision           = revision_;
-        result.exportable         = canExport();
-        result.diagnostics        = std::move(diagnostics);
-        result.byteDiffs          = diffContainers(*working_, *candidate);
-        result.affectedClasses    = utf8List(changedClassNames(*candidate, result.byteDiffs));
-        result.affectedReferences = collectImpacts(*candidate, result.byteDiffs, result.affectedClasses);
-        return result;
-    }
-    catch (const std::exception& exception) {
-        return stateFailure(
-            error(WorkspaceError::InvalidArgument, "replace class bytes", exception.what()));
-    }
 }
 
 WorkspaceResult<std::vector<ModifiedClassInfo>> WorkspaceBase::modifiedClasses() const
@@ -3443,124 +1790,6 @@ WorkspaceErrorInfo WorkspaceBase::validateCandidate(const model::ResourceContain
     return status;
 }
 
-// ── workflow 事务助手（错误通道 WorkspaceErrorInfo）──────────────
-
-void removeWorkflowExport(const WorkflowResult& result)
-{
-    if (!result.exported || result.exportPath.is_empty()) return;
-    std::error_code filesystemError;
-    std::filesystem::remove(fsPath(result.exportPath.to_std_string()), filesystemError);
-}
-
-WorkspaceResult<std::filesystem::path> createWorkflowCandidateJarPath()
-{
-    namespace fs = std::filesystem;
-    static std::atomic<ca::u64> sequence{0};
-    std::error_code             filesystemError;
-    const auto                  root = fs::temp_directory_path(filesystemError);
-    if (filesystemError) {
-        return ca::core::Err(error(WorkspaceError::Internal, "workflow candidate artifact",
-                                   filesystemError.message()));
-    }
-    for (ca::usize attempt = 0; attempt < 16; ++attempt) {
-        const auto id = std::to_string(
-                            std::chrono::steady_clock::now().time_since_epoch().count()) +
-                        "-" + std::to_string(sequence.fetch_add(1));
-        const auto path = root / ("mjbase-workflow-candidate-" + id + ".jar");
-        if (!fs::exists(path)) return ca::core::Ok(path);
-    }
-    return ca::core::Err(error(WorkspaceError::AlreadyExists, "workflow candidate artifact",
-                               "cannot allocate a unique temporary JAR"));
-}
-
-/// RAII 守卫：作用域结束删除候选 JAR 快照（一次性消费契约的兜底清理面）。
-class ScopedWorkflowCandidateJar final
-{
-public:
-    explicit ScopedWorkflowCandidateJar(std::filesystem::path path)
-        : path_(std::move(path))
-    {}
-
-    ~ScopedWorkflowCandidateJar()
-    {
-        std::error_code filesystemError;
-        std::filesystem::remove(path_, filesystemError);
-    }
-
-    ScopedWorkflowCandidateJar(const ScopedWorkflowCandidateJar&)            = delete;
-    ScopedWorkflowCandidateJar& operator=(const ScopedWorkflowCandidateJar&) = delete;
-
-    const std::filesystem::path& path() const noexcept { return path_; }
-
-private:
-    std::filesystem::path path_;
-};
-
-WorkspaceErrorInfo validateWorkflowReferenceQuery(const WorkflowReferenceQuery& query)
-{
-    if (query.owner.is_empty()) {
-        return error(WorkspaceError::InvalidArgument, "workflow xref", "owner is required");
-    }
-    if (query.kind == WorkflowReferenceKind::Class) return WorkspaceErrorInfo{};
-    if (query.name.is_empty() || query.descriptor.is_empty()) {
-        return error(WorkspaceError::InvalidArgument, "workflow xref",
-                     "member name and descriptor are required");
-    }
-    return WorkspaceErrorInfo{};
-}
-
-/// @brief 对任意容器（工作副本或候选）执行精确 xref 查询。
-///
-/// 渲染口径与 workspace 自有 xref 族一致（"type"/"direct"，owner.name:desc 拼接）；
-/// 不走 analysisScanContainer——候选容器是独立的纯容器，无 supporting 叠加面。
-WorkspaceResult<std::vector<ReferenceInfo>> workflowReferences(
-    const model::ResourceContainer& container, const WorkflowReferenceQuery& query)
-{
-    const WorkspaceErrorInfo status = validateWorkflowReferenceQuery(query);
-    if (status.is_err()) return ca::core::Err(status);
-    try {
-        ReferenceScan scan;
-        scan.build(container);
-        std::vector<ReferenceInfo> result;
-        switch (query.kind) {
-        case WorkflowReferenceKind::Class:
-            for (const auto& reference : scan.typeReferencesTo(query.owner.ref())) {
-                result.push_back(referenceInfo(reference.site, reference.targetType.ref(), "type"));
-            }
-            break;
-        case WorkflowReferenceKind::Field:
-            for (const auto& reference : scan.fieldReferencesTo(query.owner.ref(),
-                                                                query.name.ref(),
-                                                                query.descriptor.ref())) {
-                result.push_back(referenceInfo(
-                    reference.site,
-                    reference.target.owner.to_std_string() + "." +
-                        reference.target.name.to_std_string() +
-                        reference.target.descriptor.to_std_string(),
-                    "direct"));
-            }
-            break;
-        case WorkflowReferenceKind::Method:
-            for (const auto& reference : scan.methodReferencesTo(query.owner.ref(),
-                                                                 query.name.ref(),
-                                                                 query.descriptor.ref())) {
-                result.push_back(referenceInfo(
-                    reference.site,
-                    reference.target.owner.to_std_string() + "." +
-                        reference.target.name.to_std_string() +
-                        reference.target.descriptor.to_std_string(),
-                    "direct"));
-            }
-            break;
-        }
-        sortReferences(result);
-        return ca::core::Ok(std::move(result));
-    }
-    catch (const std::exception& exception) {
-        return ca::core::Err(error(WorkspaceError::Internal, "workflow xref", exception.what()));
-    }
-}
-
 /// @brief 扫描 JDK 归档（.jar/.zip/.jmod，递归）建层次图。
 ///
 /// mbase CommonSuperClassProvider::scan 的 mjbase 对应物：resolver 的数据获取
@@ -3703,266 +1932,6 @@ ImpactAnalysis WorkspaceBase::analyzeRemap(const asm_remapper::MemberRemapPlan& 
     }
 }
 
-MutationResult WorkspaceBase::applyRemap(const asm_remapper::MemberRemapPlan& plan,
-                                         const asm_remapper::RemapPolicy&    policy,
-                                         const MutationRequest&              request)
-{
-    auto loaded = ensureLoaded("apply remap");
-    if (loaded.is_err()) return stateFailure(std::move(loaded));
-    if (!accepts(request)) return revisionConflict();
-    if (request.dryRun) {
-        auto analysis = analyzeRemap(plan, policy);
-        MutationResult result;
-        result.status             = std::move(analysis.status);
-        result.revision           = revision_;
-        result.exportable         = analysis.exportable;
-        result.diagnostics        = std::move(analysis.diagnostics);
-        result.byteDiffs          = std::move(analysis.byteDiffs);
-        result.affectedReferences = std::move(analysis.afterReferences);
-        result.affectedClasses    = utf8List(changedClassNames(*working_, result.byteDiffs));
-        return result;
-    }
-    try {
-        auto candidate = cloneWorking();
-        auto remapped  = asm_remapper::applyResourceRemapPlan(*candidate, plan, policy);
-        if (remapped.is_err()) {
-            return stateFailure(error(WorkspaceError::Internal, "apply remap",
-                                      std::string("remap failed: ") +
-                                          asm_remapper::to_string(std::move(remapped).unwrap_err())));
-        }
-        std::vector<jasm::Diagnostic> diagnostics;
-        // 门禁作用域 = remap 改动的类。
-        const auto byteDiffs = diffContainers(*working_, *candidate);
-        auto status = validateCandidate(*candidate, diagnostics, request.validationMode,
-                                        changedUris(byteDiffs));
-        if (status.is_err()) {
-            MutationResult result;
-            result.status      = std::move(status);
-            result.revision    = revision_;
-            result.exportable  = canExport();
-            result.diagnostics = std::move(diagnostics);
-            return result;
-        }
-        //身份注记：真改名（rename_apply/mapping_apply 经此漏斗）的类/成员规格
-        //随事务落账并迁移分析库（shadow 落分析库——覆盖层按稳定 ID 键控）。
-        return commit(std::move(candidate), std::move(diagnostics), request, nullptr,
-                      identitySpecsOfRemap(plan));
-    }
-    catch (const std::exception& exception) {
-        return stateFailure(error(WorkspaceError::Internal, "apply remap", exception.what()));
-    }
-}
-
-MutationResult WorkspaceBase::validatePipeline(const PipelineRequest& pipeline,
-                                               const MutationRequest& request)
-{
-    auto loaded = ensureLoaded("validate pipeline");
-    if (loaded.is_err()) return stateFailure(std::move(loaded));
-    if (!accepts(request)) return revisionConflict();
-    try {
-        auto candidate = cloneWorking();
-        auto status    = runPipeline(*candidate, pipeline);
-        if (status.is_err()) return stateFailure(std::move(status));
-
-        MutationResult result;
-        result.revision   = revision_;
-        result.exportable = canExport();
-        // 门禁作用域 = pipeline 改动的类；diff 只算一次，scope 与报告共用。
-        // ByteDiff 携 move-only Utf8String：byteDiffs 非常量才能移动移交。
-        auto byteDiffs = diffContainers(*working_, *candidate);
-        result.status =
-            validateCandidate(*candidate, result.diagnostics, request.validationMode,
-                              changedUris(byteDiffs));
-        if (result.status.is_err()) return result;
-        result.byteDiffs          = std::move(byteDiffs);
-        result.affectedClasses    = utf8List(changedClassNames(*candidate, result.byteDiffs));
-        result.affectedReferences = collectImpacts(*candidate, result.byteDiffs, result.affectedClasses);
-        return result;
-    }
-    catch (const std::exception& exception) {
-        return stateFailure(error(WorkspaceError::Internal, "validate pipeline", exception.what()));
-    }
-}
-
-MutationResult WorkspaceBase::applyPipeline(const PipelineRequest& pipeline,
-                                            const MutationRequest& request)
-{
-    if (request.dryRun) return validatePipeline(pipeline, request);
-    auto loaded = ensureLoaded("apply pipeline");
-    if (loaded.is_err()) return stateFailure(std::move(loaded));
-    if (!accepts(request)) return revisionConflict();
-    try {
-        auto candidate = cloneWorking();
-        auto status    = runPipeline(*candidate, pipeline);
-        if (status.is_err()) return stateFailure(std::move(status));
-
-        std::vector<jasm::Diagnostic> diagnostics;
-        // 门禁作用域 = pipeline 改动的类。
-        const auto byteDiffs = diffContainers(*working_, *candidate);
-        status = validateCandidate(*candidate, diagnostics, request.validationMode,
-                                   changedUris(byteDiffs));
-        if (status.is_err()) {
-            MutationResult result;
-            result.status      = std::move(status);
-            result.revision    = revision_;
-            result.exportable  = canExport();
-            result.diagnostics = std::move(diagnostics);
-            return result;
-        }
-        return commit(std::move(candidate), std::move(diagnostics), request);
-    }
-    catch (const std::exception& exception) {
-        return stateFailure(error(WorkspaceError::Internal, "apply pipeline", exception.what()));
-    }
-}
-
-WorkflowResult WorkspaceBase::runWorkflow(const WorkflowRequest& workflow,
-                                          const MutationRequest& request)
-{
-    WorkflowResult result;
-    const auto     loaded = ensureLoaded("run workflow");
-    if (loaded.is_err()) {
-        result.mutation = stateFailure(std::move(loaded));
-        return result;
-    }
-    if (!accepts(request)) {
-        result.mutation = revisionConflict();
-        return result;
-    }
-
-    const auto fail = [&](const std::string& stage, WorkspaceErrorInfo status) {
-        result.stages.push_back({utf8(stage), status});
-        result.mutation = stateFailure(std::move(status));
-        return std::move(result);
-    };
-
-    try {
-        auto inputFingerprint = fingerprintContainer(*working_);
-        if (inputFingerprint.is_err())
-            return fail("fingerprint", std::move(inputFingerprint).unwrap_err());
-        result.inputFingerprint = utf8(std::move(inputFingerprint).unwrap());
-
-        auto candidate = cloneWorking();
-        if (workflow.remapPlan != nullptr) {
-            auto remapped = asm_remapper::applyResourceRemapPlan(*candidate, *workflow.remapPlan,
-                                                                 workflow.remapPolicy);
-            if (remapped.is_err()) {
-                return fail("mapping",
-                            error(WorkspaceError::Internal, "run workflow mapping",
-                                  std::string("remap failed: ") +
-                                      asm_remapper::to_string(std::move(remapped).unwrap_err())));
-            }
-            result.stages.push_back({utf8("mapping"), WorkspaceErrorInfo{}});
-        }
-        if (workflow.runPipeline) {
-            const auto status = runPipeline(*candidate, workflow.pipeline);
-            if (status.is_err()) return fail("pipeline", status);
-            result.stages.push_back({utf8("pipeline"), WorkspaceErrorInfo{}});
-        }
-
-        std::vector<jasm::Diagnostic> diagnostics;
-        // 门禁作用域 = workflow 改动的类。
-        const auto byteDiffs = diffContainers(*working_, *candidate);
-        const auto validation =
-            validateCandidate(*candidate, diagnostics, jasm::ValidationMode::Relaxed,
-                              changedUris(byteDiffs));
-        if (validation.is_err()) {
-            result.stages.push_back({utf8("validation"), validation});
-            result.mutation.status      = validation;
-            result.mutation.revision    = revision_;
-            result.mutation.exportable  = canExport();
-            result.mutation.diagnostics = std::move(diagnostics);
-            return result;
-        }
-        result.stages.push_back({utf8("validation"), WorkspaceErrorInfo{}});
-
-        for (const auto& query : workflow.referenceQueries) {
-            auto before = workflowReferences(*working_, query);
-            if (before.is_err()) return fail("xref", std::move(before).unwrap_err());
-            auto after = workflowReferences(*candidate, query);
-            if (after.is_err()) return fail("xref", std::move(after).unwrap_err());
-            result.references.push_back(
-                {query.clone(), std::move(before).unwrap(), std::move(after).unwrap()});
-        }
-        if (!workflow.referenceQueries.empty())
-            result.stages.push_back({utf8("xref"), WorkspaceErrorInfo{}});
-
-        auto candidateFingerprint = fingerprintContainer(*candidate);
-        if (candidateFingerprint.is_err())
-            return fail("fingerprint", std::move(candidateFingerprint).unwrap_err());
-        result.candidateFingerprint = utf8(std::move(candidateFingerprint).unwrap());
-
-        if (workflow.candidateJarConsumer) {
-            auto artifactPath = createWorkflowCandidateJarPath();
-            if (artifactPath.is_err())
-                return fail("candidate_artifact", std::move(artifactPath).unwrap_err());
-            ScopedWorkflowCandidateJar artifact(std::move(artifactPath).unwrap());
-            const auto exportStatus =
-                exportContainerToJar(*candidate, original_.get(), sourceManifestBytes_,
-                                     sourcePath_.to_std_string(),
-                                     pathToUtf8(artifact.path()), revision_);
-            if (exportStatus.is_err()) return fail("candidate_artifact", exportStatus);
-            const auto stageStatus = workflow.candidateJarConsumer(pathToUtf8(artifact.path()));
-            if (stageStatus.is_err()) {
-                return fail(workflow.candidateJarStageName.is_empty() ? "candidate_artifact"
-                                                                     : workflow.candidateJarStageName.to_std_string(),
-                            stageStatus);
-            }
-            result.stages.push_back(
-                {utf8(workflow.candidateJarStageName.is_empty()
-                          ? std::string{"candidate_artifact"}
-                          : workflow.candidateJarStageName.to_std_string()),
-                 WorkspaceErrorInfo{}});
-        }
-
-        if (!workflow.exportPath.is_empty()) {
-            auto destination =
-                validateExportDestination(sourcePath_.to_std_string(),
-                                         workflow.exportPath.to_std_string());
-            if (destination.is_err()) return fail("export", std::move(destination).unwrap_err());
-            result.exportPath = utf8(pathToUtf8(destination.unwrap()));
-            if (!request.dryRun) {
-                const auto exportStatus = exportContainerToJar(
-                    *candidate, original_.get(), sourceManifestBytes_,
-                    sourcePath_.to_std_string(), result.exportPath.to_std_string(), revision_);
-                if (exportStatus.is_err()) return fail("export", exportStatus);
-                result.exported = true;
-            }
-            result.stages.push_back(
-                {utf8(request.dryRun ? "export_preview" : "export"), WorkspaceErrorInfo{}});
-        }
-
-        if (request.dryRun) {
-            result.mutation.status             = WorkspaceErrorInfo{};
-            result.mutation.revision           = revision_;
-            result.mutation.exportable         = canExport();
-            result.mutation.diagnostics        = std::move(diagnostics);
-            result.mutation.byteDiffs          = diffContainers(*working_, *candidate);
-            result.mutation.affectedClasses =
-                utf8List(changedClassNames(*candidate, result.mutation.byteDiffs));
-            result.mutation.affectedReferences =
-                collectImpacts(*candidate, result.mutation.byteDiffs, result.mutation.affectedClasses);
-            return result;
-        }
-        //workflow 带 remap 时同 applyRemap 漏斗：身份注记随事务落账并迁移。
-        result.mutation =
-            commit(std::move(candidate), std::move(diagnostics), request, nullptr,
-                   workflow.remapPlan != nullptr
-                       ? identitySpecsOfRemap(*workflow.remapPlan)
-                       : std::vector<project::LedgerIdentityRename>{});
-        if (result.mutation.status.is_err()) {
-            removeWorkflowExport(result);
-            result.exported = false;
-        }
-        return result;
-    }
-    catch (const std::exception& exception) {
-        removeWorkflowExport(result);
-        result.exported = false;
-        return fail("workflow", error(WorkspaceError::Internal, "run workflow", exception.what()));
-    }
-}
-
 WorkspaceErrorInfo WorkspaceBase::buildRenamePlan(const RenameRequest&   request,
                                                   asm_remapper::MemberRemapPlan&   plan,
                                                   std::vector<RenameMapping>&      mappings,
@@ -3975,9 +1944,9 @@ WorkspaceErrorInfo WorkspaceBase::buildRenamePlan(const RenameRequest&   request
     switch (request.kind) {
     case RenameKind::Class:
     {
-        auto source = classInfo(request.owner);
+        auto source = classInfo(*working_, request.owner, lvtJarFallbackFlag());
         if (source.is_err()) return source.unwrap_err();
-        auto existing = classInfo(request.newName);
+        auto existing = classInfo(*working_, request.newName, lvtJarFallbackFlag());
         if (existing.is_ok() && request.newName != request.owner)
             return error(WorkspaceError::AlreadyExists, "rename class",
                          request.newName.to_std_string());
@@ -3987,7 +1956,7 @@ WorkspaceErrorInfo WorkspaceBase::buildRenamePlan(const RenameRequest&   request
     }
     case RenameKind::Package:
     {
-        auto classes = listClasses();
+        auto classes = listClasses(*working_, lvtJarFallbackFlag());
         if (classes.is_err()) return classes.unwrap_err();
         std::string oldPrefix = request.owner.to_std_string();
         std::string newPrefix = request.newName.to_std_string();
@@ -4029,7 +1998,8 @@ WorkspaceErrorInfo WorkspaceBase::buildRenamePlan(const RenameRequest&   request
         if (request.name.is_empty() || request.descriptor.is_empty())
             return error(WorkspaceError::InvalidArgument, "rename method",
                          "name and descriptor are required");
-        auto method = methodInfo(request.owner, request.name, request.descriptor);
+        auto method = methodInfo(*working_, request.owner, request.name, request.descriptor,
+                                 lvtJarFallbackFlag());
         if (method.is_err()) return method.unwrap_err();
         auto component = overridesOfMethod(request.owner, request.name, request.descriptor);
         if (component.is_err()) return component.unwrap_err();
@@ -4062,7 +2032,8 @@ WorkspaceErrorInfo WorkspaceBase::buildRenamePlan(const RenameRequest&   request
             return error(WorkspaceError::InvalidArgument, "rename local",
                          "method name, local name and descriptor are required");
         {
-            auto method = methodInfo(request.owner, request.methodName, request.descriptor);
+            auto method = methodInfo(*working_, request.owner, request.methodName,
+                                     request.descriptor, lvtJarFallbackFlag());
             if (method.is_err()) return method.unwrap_err();
         }
         mappings.push_back({utf8("local"), request.name.clone(), request.newName.clone()});
@@ -4100,285 +2071,6 @@ RenameAnalysis WorkspaceBase::analyzeRename(const RenameRequest& request) const
     result.requiresOverrideReview = !result.impact.risks.empty();
     result.readyToApply = result.status.is_ok() && !result.requiresOverrideReview;
     return result;
-}
-
-MutationResult WorkspaceBase::applyRename(const RenameRequest& request,
-                                          const MutationRequest& requestOptions)
-{
-    auto preview = analyzeRename(request);
-    if (preview.status.is_err()) return stateFailure(std::move(preview.status));
-    if (!preview.readyToApply) {
-        return stateFailure(error(WorkspaceError::FailedPrecondition, "apply rename",
-                                  "rename requires override review: " +
-                                      (preview.impact.risks.empty()
-                                           ? std::string("unknown risk")
-                                           : preview.impact.risks.front().to_std_string())));
-    }
-    if (request.kind == RenameKind::Local) {
-        ClassMutation mutation;
-        mutation.classUri             = utf8(request.owner.ref());
-        mutation.kind                 = ClassMutationKind::RenameLocal;
-        mutation.member               = {utf8(request.methodName.ref()), utf8(request.descriptor.ref())};
-        mutation.localName            = utf8(request.name.ref());
-        mutation.replacementLocalName = utf8(request.newName.ref());
-        mutation.localIndex           = request.localIndex;
-        return applyClassMutation(mutation, requestOptions);
-    }
-    asm_remapper::MemberRemapPlan plan;
-    std::vector<RenameMapping>      mappings;
-    std::vector<MethodOverrideInfo> overrides;
-    std::vector<std::string>        risks;
-    auto status = buildRenamePlan(request, plan, mappings, overrides, risks);
-    if (status.is_err()) return stateFailure(std::move(status));
-    return applyRemap(plan, request.policy, requestOptions);
-}
-
-WorkflowCandidateCommitResult WorkspaceBase::commitWorkflowCandidateJar(
-    const WorkflowCandidateCommitRequest& candidateRequest, const MutationRequest& request)
-{
-    WorkflowCandidateCommitResult result;
-    WorkspaceErrorInfo            loaded = ensureLoaded("commit workflow candidate JAR");
-    if (loaded.is_err()) {
-        result.mutation = stateFailure(std::move(loaded));
-        return result;
-    }
-    if (!accepts(request)) {
-        result.mutation = revisionConflict();
-        return result;
-    }
-    if (candidateRequest.candidateJarPath.is_empty()) {
-        result.mutation =
-            stateFailure(error(WorkspaceError::InvalidArgument, "commit workflow candidate JAR",
-                               "candidate JAR path is empty"));
-        return result;
-    }
-
-    const auto removeExport = [&result] {
-        if (!result.exported || result.exportPath.is_empty()) return;
-        std::error_code filesystemError;
-        std::filesystem::remove(fsPath(result.exportPath.to_std_string()), filesystemError);
-        result.exported = false;
-    };
-
-    try {
-        std::error_code filesystemError;
-        if (!std::filesystem::is_regular_file(
-                fsPath(candidateRequest.candidateJarPath.to_std_string()), filesystemError) ||
-            filesystemError) {
-            result.mutation = stateFailure(
-                error(WorkspaceError::NotFound, "commit workflow candidate JAR",
-                      candidateRequest.candidateJarPath.to_std_string()));
-            return result;
-        }
-
-        auto candidate = std::make_unique<model::ResourceContainer>();
-        auto imported = model::ResourceHelper::importFromJar(
-            *candidate, candidateRequest.candidateJarPath.ref());
-        if (imported.is_err()) {
-            result.mutation = stateFailure(
-                modelFailure("commit workflow candidate JAR", std::move(imported).unwrap_err()));
-            return result;
-        }
-
-        std::vector<jasm::Diagnostic> diagnostics;
-        // 门禁作用域 = 候选 JAR 相对工作副本的改动面。
-        const auto byteDiffs = diffContainers(*working_, *candidate);
-        const WorkspaceErrorInfo validation =
-            validateCandidate(*candidate, diagnostics, jasm::ValidationMode::Relaxed,
-                              changedUris(byteDiffs));
-        if (validation.is_err()) {
-            result.mutation.status      = validation;
-            result.mutation.revision    = revision_;
-            result.mutation.exportable  = canExport();
-            result.mutation.diagnostics = std::move(diagnostics);
-            return result;
-        }
-
-        if (!candidateRequest.exportPath.is_empty()) {
-            auto destination = validateExportDestination(
-                sourcePath_.to_std_string(), candidateRequest.exportPath.to_std_string());
-            if (destination.is_err()) {
-                result.mutation = stateFailure(std::move(destination).unwrap_err());
-                return result;
-            }
-            result.exportPath = utf8(pathToUtf8(destination.unwrap()));
-            if (!request.dryRun) {
-                const WorkspaceErrorInfo exportStatus = exportContainerToJar(
-                    *candidate, original_.get(), sourceManifestBytes_,
-                    sourcePath_.to_std_string(), result.exportPath.to_std_string(), revision_);
-                if (exportStatus.is_err()) {
-                    result.mutation = stateFailure(exportStatus);
-                    return result;
-                }
-                result.exported = true;
-            }
-        }
-
-        if (request.dryRun) {
-            result.mutation.status      = WorkspaceErrorInfo{};
-            result.mutation.revision    = revision_;
-            result.mutation.exportable  = canExport();
-            result.mutation.diagnostics = std::move(diagnostics);
-            result.mutation.byteDiffs   = diffContainers(*working_, *candidate);
-            result.mutation.affectedClasses =
-                utf8List(changedClassNames(*candidate, result.mutation.byteDiffs));
-            result.mutation.affectedReferences =
-                collectImpacts(*candidate, result.mutation.byteDiffs, result.mutation.affectedClasses);
-            return result;
-        }
-
-        result.mutation = commit(std::move(candidate), std::move(diagnostics), request);
-        if (result.mutation.status.is_err()) removeExport();
-        return result;
-    }
-    catch (const std::exception& exception) {
-        removeExport();
-        result.mutation = stateFailure(error(WorkspaceError::Internal,
-                                             "commit workflow candidate JAR", exception.what()));
-        return result;
-    }
-}
-
-JarDiffResult WorkspaceBase::diffJar(ca::str::Utf8StringRef referencePathRef) const
-{
-    const std::string referencePath = referencePathRef.to_std_string();
-    JarDiffResult result;
-    result.referencePath = utf8(referencePath);
-    WorkspaceErrorInfo loaded = ensureLoaded("diff JAR");
-    if (loaded.is_err()) {
-        result.status = std::move(loaded);
-        return result;
-    }
-    if (referencePath.empty()) {
-        result.status =
-            error(WorkspaceError::InvalidArgument, "diff JAR", "reference path is empty");
-        return result;
-    }
-
-    try {
-        model::ResourceContainer reference;
-        auto imported = model::ResourceHelper::importFromJar(reference, referencePath);
-        if (imported.is_err()) {
-            result.status = modelFailure("diff JAR", std::move(imported).unwrap_err());
-            return result;
-        }
-        result.byteDiffs = diffContainers(*working_, reference);
-        for (const auto& diff : result.byteDiffs) {
-            const model::IResource* workspaceResource =
-                working_->getResource(diff.uri.ref());
-            const model::IResource* referenceResource =
-                reference.getResource(diff.uri.ref());
-            if (workspaceResource == nullptr) {
-                ++result.referenceOnly;
-            }
-            else if (referenceResource == nullptr) {
-                ++result.workspaceOnly;
-            }
-            else {
-                ++result.modified;
-            }
-        }
-        result.status = WorkspaceErrorInfo{};
-        return result;
-    }
-    catch (const std::exception& exception) {
-        result.status = error(WorkspaceError::DataLoss, "diff JAR", exception.what());
-        return result;
-    }
-}
-
-JarRepairResult WorkspaceBase::analyzeJarRepair(const JarRepairRequest& repair,
-                                                const MutationRequest&  request) const
-{
-    JarRepairResult    result;
-    WorkspaceErrorInfo loaded = ensureLoaded("analyze JAR repair");
-    if (loaded.is_err()) {
-        result.mutation = stateFailure(std::move(loaded));
-        return result;
-    }
-    if (!accepts(request)) {
-        result.mutation = revisionConflict();
-        return result;
-    }
-
-    try {
-        auto candidate                    = cloneWorking();
-        result.resourceCount              = candidate->size();
-        result.issues                     = scanJarRepairIssues(*candidate, repair, result.classCount);
-        result.mutation.revision          = revision_;
-        result.mutation.exportable        = canExport();
-        if (!hasSelectedRepairIssues(result.issues)) return result;
-        removeSelectedRepairIssues(*candidate, result.issues);
-
-        // 门禁作用域 = 修复改动面：删除型修复的改动条目已不在候选中，
-        // 其余条目未动不参与门禁（基线类编辑前就存在）。
-        // ByteDiff 携 move-only Utf8String：byteDiffs 非常量才能移动移交。
-        auto byteDiffs = diffContainers(*working_, *candidate);
-        result.mutation.status =
-            validateCandidate(*candidate, result.mutation.diagnostics,
-                              jasm::ValidationMode::Relaxed, changedUris(byteDiffs));
-        if (result.mutation.status.is_err()) return result;
-        result.mutation.byteDiffs = std::move(byteDiffs);
-        result.mutation.affectedClasses =
-            utf8List(changedClassNames(*candidate, result.mutation.byteDiffs));
-        result.mutation.affectedReferences =
-            collectImpacts(*candidate, result.mutation.byteDiffs, result.mutation.affectedClasses);
-        return result;
-    }
-    catch (const std::exception& exception) {
-        result.mutation =
-            stateFailure(error(WorkspaceError::Internal, "analyze JAR repair", exception.what()));
-        return result;
-    }
-}
-
-JarRepairResult WorkspaceBase::applyJarRepair(const JarRepairRequest& repair,
-                                              const MutationRequest&  request)
-{
-    if (request.dryRun) return analyzeJarRepair(repair, request);
-    JarRepairResult    result;
-    WorkspaceErrorInfo loaded = ensureLoaded("apply JAR repair");
-    if (loaded.is_err()) {
-        result.mutation = stateFailure(std::move(loaded));
-        return result;
-    }
-    if (!accepts(request)) {
-        result.mutation = revisionConflict();
-        return result;
-    }
-
-    try {
-        auto candidate       = cloneWorking();
-        result.resourceCount = candidate->size();
-        result.issues        = scanJarRepairIssues(*candidate, repair, result.classCount);
-        if (!hasSelectedRepairIssues(result.issues)) {
-            result.mutation.revision   = revision_;
-            result.mutation.exportable = canExport();
-            return result;
-        }
-        removeSelectedRepairIssues(*candidate, result.issues);
-
-        std::vector<jasm::Diagnostic> diagnostics;
-        // 门禁作用域 = 修复改动面：删除型修复的改动条目已不在候选中，
-        // 其余条目未动不参与门禁。
-        const auto byteDiffs                 = diffContainers(*working_, *candidate);
-        const WorkspaceErrorInfo      status = validateCandidate(
-            *candidate, diagnostics, request.validationMode, changedUris(byteDiffs));
-        if (status.is_err()) {
-            result.mutation.status      = status;
-            result.mutation.revision    = revision_;
-            result.mutation.exportable  = canExport();
-            result.mutation.diagnostics = std::move(diagnostics);
-            return result;
-        }
-        result.mutation = commit(std::move(candidate), std::move(diagnostics), request);
-        return result;
-    }
-    catch (const std::exception& exception) {
-        result.mutation =
-            stateFailure(error(WorkspaceError::Internal, "apply JAR repair", exception.what()));
-        return result;
-    }
 }
 
 MutationResult WorkspaceBase::revertClass(ca::str::Utf8StringRef uriRef,
@@ -4632,60 +2324,51 @@ MutationResult WorkspaceBase::redo(const MutationRequest& request)
 
 // ── 导出面 ──────────────────────────────────────────────────────────────
 
-WorkspaceResult<void> WorkspaceBase::exportJar(ca::str::Utf8StringRef outputPathRef) const
+WorkspaceResult<void> WorkspaceBase::exportArtifact(ca::str::Utf8StringRef outputPathRef) const
 {
     const std::string outputPath = outputPathRef.to_std_string();
-    WorkspaceErrorInfo status = ensureLoaded("export JAR");
+    WorkspaceErrorInfo status = ensureLoaded("export artifact");
     if (status.is_err()) return ca::core::Err(std::move(status));
-    if (artifactKind_ != ArtifactKind::Jar) {
-        return ca::core::Err(error(WorkspaceError::FailedPrecondition, "export JAR",
-                                   "workspace artifact is not a JAR"));
+    const ContainerIoEntry* entry = ContainerIoRegistry::instance().find(format_);
+    if (entry == nullptr || entry->exportFn == nullptr) {
+        return ca::core::Err(error(WorkspaceError::FailedPrecondition, "export artifact",
+                                   "no exporter for the current format"));
     }
     // close/export 前 flush 挂点（§3.2）：导出物离开内存前台账定稿。未绑定 =
     // no-op；flush 失败 fail-closed（不产出一个后台无账的导出物）。
     if (ledger_.bound() && ledger_.hasPending()) {
         auto flushed = ledger_.flush(project::rfc3339UtcNow());
         if (flushed.is_err())
-            return ca::core::Err(ledgerFailure("export JAR", std::move(flushed).unwrap_err()));
+            return ca::core::Err(
+                ledgerFailure("export artifact", std::move(flushed).unwrap_err()));
     }
-    const WorkspaceErrorInfo exported =
-        exportContainerToJar(*working_, original_.get(), sourceManifestBytes_,
-                             sourcePath_.to_std_string(), outputPath, revision_);
+    ExportSpec spec;
+    spec.working             = working_.get();
+    spec.original            = original_.get();
+    spec.sourceManifestBytes = &sourceManifestBytes_;
+    spec.sourcePath          = sourcePath_.to_std_string();
+    spec.primaryClassUri     = primaryClassUri_.to_std_string();
+    spec.revision            = revision_;
+    const WorkspaceErrorInfo exported = entry->exportFn(spec, outputPath);
     if (exported.is_err()) return ca::core::Err(std::move(exported));
     return ca::core::Ok();
 }
 
-WorkspaceResult<void> WorkspaceBase::exportClass(ca::str::Utf8StringRef outputPathRef) const
+void WorkspaceBase::bindContainerRegistry(ContainerRegistry* registry) noexcept
 {
-    const std::string outputPath = outputPathRef.to_std_string();
-    WorkspaceErrorInfo status = ensureLoaded("export class");
-    if (status.is_err()) return ca::core::Err(std::move(status));
-    if (artifactKind_ != ArtifactKind::Class || primaryClassUri_.is_empty()) {
-        return ca::core::Err(error(WorkspaceError::FailedPrecondition, "export class",
-                                   "workspace artifact is not a class"));
-    }
-    if (ledger_.bound() && ledger_.hasPending()) {
-        auto flushed = ledger_.flush(project::rfc3339UtcNow());
-        if (flushed.is_err())
-            return ca::core::Err(ledgerFailure("export class", std::move(flushed).unwrap_err()));
-    }
-    const WorkspaceErrorInfo exported =
-        exportContainerToClass(*working_, primaryClassUri_.to_std_string(),
-                               sourcePath_.to_std_string(), outputPath, revision_);
-    if (exported.is_err()) return ca::core::Err(std::move(exported));
-    return ca::core::Ok();
+    registry_ = registry != nullptr ? registry : &ownedRegistry_;
 }
 
 std::vector<SupportingResourceInfo> WorkspaceBase::supportingResources() const
 {
     std::vector<SupportingResourceInfo> result;
-    for (const auto& support : supporting_) {
+    for (const auto& support : registry_->records()) {
         SupportingResourceInfo info;
-        info.id            = utf8(support.id);
+        info.id            = utf8(support.supportId);
         info.path          = utf8(support.path);
         info.fingerprint   = utf8(support.fingerprint);
         info.resourceCount = support.container->size();
-        info.role          = utf8(support.role);
+        info.role          = utf8(support.roleLabel);
         support.container->visitResources([&](std::string_view, const model::IResource& resource) {
             if (resource.getType() == model::ResourceType::Class) ++info.classCount;
         });
@@ -4695,6 +2378,37 @@ std::vector<SupportingResourceInfo> WorkspaceBase::supportingResources() const
 }
 
 // ── 台账换底：引擎接线与重放辅助 ──────────────────────────────────
+
+WorkspaceResult<void> WorkspaceBase::resetSessionState(const std::string& operation)
+{
+    registry_->clear();
+    // 会话史清零（旧语义：打开新主资源丢弃 undo/redo/savepoint）。绑定态
+    // 先落盘旧容器台账再重置链（新容器台账随下次 flush 落盘；旧容器已落盘
+    // 历史入待释放清单随之清理——台账作用域 = 容器）。
+    auto digest = ledgerBaseDigest();
+    if (digest.is_err()) return ca::core::Err(std::move(digest).unwrap_err());
+    if (ledger_.bound()) {
+        if (ledger_.hasPending()) {
+            auto flushed = ledger_.flush(project::rfc3339UtcNow());
+            if (flushed.is_err())
+                return ca::core::Err(
+                    ledgerFailure(operation, std::move(flushed).unwrap_err()));
+        }
+        ledger_.resetSession(project::copyLedgerText(digest.unwrap()));
+    }
+    else {
+        auto fresh = project::EditLedgerStore::createInMemory(project::copyLedgerText(digest.unwrap()));
+        if (fresh.is_err())
+            return ca::core::Err(ledgerFailure(operation, std::move(fresh).unwrap_err()));
+        ledger_ = std::move(fresh).unwrap();
+    }
+    redoHint_.clear();
+    revision_          = 0;
+    // LVT 显示名策略旗标缓存失效：新主资源的形态基线重算（revision 复位
+    // 不能单独作键——新旧会话 revision 可能同为 0）。
+    lvtPolicyComputed_ = false;
+    return ca::core::Ok();
+}
 
 WorkspaceErrorInfo WorkspaceBase::ledgerFailure(const std::string& operation,
                                                 const project::ProjectStoreError& cause) const

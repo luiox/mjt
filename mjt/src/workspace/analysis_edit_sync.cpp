@@ -1,5 +1,7 @@
 #include "analysis_edit_sync.hpp"
 
+#include "analysis_ops.hpp"
+
 #include <algorithm>
 #include <map>
 #include <optional>
@@ -130,7 +132,7 @@ AnalysisEditSyncStats syncAnalysisDbAfterEdit(
 
     // 条目合并清单：容器活跃资源全量（清单口径与导入桥一致——消失条目要
     // 墓碑、新条目要建行），字节只对变更/无锚条目重读。
-    auto listed = workspace.listResources(true);
+    auto listed = listResources(*workspace.workingContainer(), true);
     if (listed.is_err()) {
         stats.failed = true;
         return stats;
@@ -169,7 +171,7 @@ AnalysisEditSyncStats syncAnalysisDbAfterEdit(
             entryInputs.push_back(std::move(input));
             continue;
         }
-        auto content = workspace.readResource(resource.uri.ref());
+        auto content = readResource(*workspace.workingContainer(), resource.uri.ref());
         if (content.is_err()) {
             // 活跃清单内的资源读不出字节属工作副本态异常：fail-closed 整体停
             // （把该条目静默剔除清单会让 ingestEntries 打墓碑——错动作）。
@@ -226,7 +228,8 @@ AnalysisEditSyncStats syncAnalysisDbAfterEdit(
     std::vector<mjbase::project::DbClassInput> classInputs;
     std::vector<ClassPlan>                      plans;
     for (const ca::str::Utf8String& uri : uris) {
-        auto info = workspace.classInfo(uri.ref());
+        auto info = classInfo(*workspace.workingContainer(), uri.ref(),
+                                    workspace.lvtJarFallbackFlag());
         if (info.is_err()) {
             // 条目已非 class（重汇编成别的形态）或解码失败：条目锚已同步，
             // 类事实交由可见域遮蔽/开期导入兜底。
@@ -364,7 +367,7 @@ AnalysisEditSyncStats syncAnalysisDbAfterEdit(
         // 数值行现存方法即使零数值也写空切片（清旧行），编辑后消失的方法
         // 清空切片；批次口径沿用本桥纪律（batchId=0 裸事务，归属锚仍是
         // open 期整库导入批）。
-        auto content = workspace.readResource(plan.uri.ref());
+        auto content = readResource(*workspace.workingContainer(), plan.uri.ref());
         if (content.is_err()) {
             // 活跃 class 条目读不出字节属工作副本态异常：与条目重锚段同款
             // fail-closed（静默跳过会让旧切片冒充新事实）。

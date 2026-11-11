@@ -9,9 +9,13 @@
 #include "mjbase/jar/jar_reader.hpp"
 #include "mjbase/model/resource_container.hpp"
 #include "mjbase/project/edit_ledger_store.hpp"
-#include "i_workspace.hpp"
+#include "mjbase/model/container_stack.hpp"
+#include "class_mutation_service.hpp"
+#include "container_io.hpp"
+#include "edit_command.hpp"
 #include "reference_scan.hpp"
 #include "workspace_types.hpp"
+#include "container_registry.hpp"
 
 namespace mjbase {
 
@@ -32,7 +36,7 @@ class AnalysisDb;   ///< 分析数据库连接（analysis_db.hpp；此处仅前�
 namespace mjt::workspace {
 
 /// @file workspace.hpp
-/// @brief WorkspaceBase：可回滚的、单线程持有的 class/JAR 分析与编辑工作区（基础实现）。
+/// @brief WorkspaceBase：可回滚的、单线程持有的 class/JAR 分析与编辑工作区（具体会话对象）。
 ///
 /// 底座按 libjbc 定型：
 /// - class 解码/检索/搜索走 jbc::core::readClass 骨架 + jbc::ir 会话（按需 promote）；
@@ -47,11 +51,11 @@ namespace mjt::workspace {
 ///   asm_remapper::applyResourceRemapPlan，帧重算经
 ///   spi::CommonSuperClassResolver + StrictTypeResolverAdapter（jdkPath 层次
 ///   图由本类扫描 JDK 归档构建）。
-class WorkspaceBase : public IWorkspace
+class WorkspaceBase
 {
 public:
     WorkspaceBase();
-    ~WorkspaceBase() override;
+    ~WorkspaceBase();
 
     WorkspaceBase(const WorkspaceBase&)            = delete;
     WorkspaceBase& operator=(const WorkspaceBase&) = delete;
@@ -64,125 +68,101 @@ public:
     /// @brief 已注册 pipeline 摘要（静态查询：无工作区状态，不进接口）。
     static std::vector<PipelineDescription> availablePipelines();
 
-    /// @brief 打开主 JAR 并建立不可变原始快照与可修改工作副本。
-    WorkspaceResult<void> openJar(ca::str::Utf8StringRef path) override;
+    /// @brief 打开主制品（按路径扩展名路由 container_io 注册表：jar /
+    ///        classfile / 注册扩展的新格式），建立不可变原始快照与可修改
+    ///        工作副本。未注册扩展 → InvalidArgument。
+    WorkspaceResult<void> open(ca::str::Utf8StringRef path);
 
-    /// @brief 打开主 JAR（#1110 族：可注入条目名宽容解码回调；缺省空 = 原始
-    /// 字节直通零漂移）。非虚重载：decoder 只贯通本实现的主 JAR 导入面
-    /// （importFromJar），接口层 IWorkspace::openJar 维持单形参不动。
+    /// @brief open 的解码注入重载（#1110 族：可注入条目名宽容解码回调；
+    ///        缺省空 = 原始字节直通零漂移）。decoder 只被 jar 族的导入行消费。
     /// @param decoder 条目名宽容解码回调（同 mjbase::jar::IJarReader::setEntryNameDecoder；
     /// 与 listJarEntries/资源 URI 消费面保持同一解码口径）。
-    WorkspaceResult<void> openJar(ca::str::Utf8StringRef path,
-                                  const mjbase::jar::IJarReader::EntryNameDecoder& decoder);
+    WorkspaceResult<void> open(ca::str::Utf8StringRef path,
+                               const mjbase::jar::IJarReader::EntryNameDecoder& decoder);
 
-    /// @brief 打开单个 classfile，并以其 JVM internal name 建立稳定资源 URI。
-    WorkspaceResult<void> openClass(ca::str::Utf8StringRef path) override;
+    /// @brief 空容器出生（pysdk new_container 契约：会话可不开任何源文件、
+    ///        纯 add_entry 填充）。建立双空快照（isLoaded 即真），无源路径、
+    ///        格式 None；台账/登记表/revision 处置与 open 同款。后续 open(path)
+    ///        按既有重置块原样接管。
+    WorkspaceResult<void> openEmpty();
 
-    /// @brief 添加只读 supporting JAR，用于后续层次和调用解析。
+    /// @brief 角色标签化的在册表登记内核（supporting 容器挂载面：一容器一
+    ///        记录，role 只是记录标签；support 值 = 旧 addSupportingJar 语义）。
     /// @return 返回当前 Workspace 内稳定的 support ID 和内容 fingerprint；重复路径或内容被拒绝。
-    WorkspaceResult<SupportingResourceInfo> addSupportingJar(ca::str::Utf8StringRef path) override;
-
-    /// @brief 带角色注册 supporting 容器：library/runtime 挂载只产生一条
-    ///        容器记录（与 support 共表，路径/内容唯一约束跨角色生效）；support
-    ///        ID 是该容器全部角色注册的唯一 detach 句柄。
-    WorkspaceResult<SupportingResourceInfo> addSupportingContainer(
-        ca::str::Utf8StringRef path, model::ContainerRole role) override;
-
-    /// @brief 角色标签化的在册表登记内核（addSupportingJar/Container 共用；
-    ///        一容器一记录，role 只是记录标签）。
     WorkspaceResult<SupportingResourceInfo> addSupportingRole(ca::str::Utf8StringRef path,
                                                               ca::str::Utf8StringRef roleLabel);
 
-    /// @brief 按 support ID 移除只读 supporting JAR，并失效依赖 classpath 的分析缓存。
+    /// @brief 按 support ID 移除在册 supporting 容器，并失效依赖 classpath 的分析缓存。
     /// @return 返回被移除的 supporting resource 描述；ID 不存在时返回 NotFound。
-    WorkspaceResult<SupportingResourceInfo> removeSupportingJar(ca::str::Utf8StringRef id) override;
+    WorkspaceResult<SupportingResourceInfo> removeSupporting(ca::str::Utf8StringRef id);
 
     /// @brief 工作区是否已加载主 class 或 JAR。
-    bool isLoaded() const noexcept override;
+    bool isLoaded() const noexcept;
 
-    /// @brief 当前主制品种类；未加载时返回 ArtifactKind::None。
-    ArtifactKind artifactKind() const noexcept override;
+    /// @brief 当前主制品格式（container_io 注册表口径）；未加载时返回 None。
+    ContainerFormat format() const noexcept { return format_; }
 
     /// @brief 当前主资源的来源路径。
-    const ca::str::Utf8String& sourcePath() const noexcept override;
+    const ca::str::Utf8String& sourcePath() const noexcept;
 
     /// @brief 单 class 工作区的稳定资源 URI；其他 kind 返回空字符串。
-    const ca::str::Utf8String& primaryClassUri() const noexcept override;
+    const ca::str::Utf8String& primaryClassUri() const noexcept;
 
     /// @brief 当前工作区 revision；只在已提交变更、undo、redo 或 restore 后递增。
-    ca::u64 revision() const noexcept override;
+    ca::u64 revision() const noexcept;
 
     /// @brief 当前工作副本是否和原始快照不同。
-    bool isDirty() const override;
+    bool isDirty() const;
 
     /// @brief 当前工作副本是否满足导出条件。
-    bool canExport() const noexcept override;
-
-    /// @brief 返回主资源的稳定排序摘要。
-    WorkspaceResult<std::vector<ResourceSummary>> listResources(bool includeClasses = true) const override;
-
-    /// @brief 读取一个主资源的原始字节。
-    WorkspaceResult<ResourceContent> readResource(ca::str::Utf8StringRef uri) const override;
-
-    /// @brief 按资源 URI 或 internal name 读取 class 原始字节和内容 fingerprint。
-    /// @note 精确 URI 指向损坏 class 时仍返回 bytes，此时 internalName 为空。
-    WorkspaceResult<ClassBytesInfo> readClassBytes(ca::str::Utf8StringRef uriOrInternalName) const override;
-
-    /// @brief 返回所有主 class 的轻量结构摘要。
-    WorkspaceResult<std::vector<ClassSummary>> listClassSummaries() const override;
-
-    /// @brief 返回所有主 class 的完整结构化元数据。
-    WorkspaceResult<std::vector<ClassInfo>> listClasses() const override;
-
-    /// @brief 通过资源 URI 或 JVM internal name 查询 class 详情。
-    WorkspaceResult<ClassInfo> classInfo(ca::str::Utf8StringRef uriOrInternalName) const override;
+    bool canExport() const noexcept;
 
     /// @brief 枚举 class 常量池条目。
     WorkspaceResult<std::vector<ConstantPoolEntryInfo>> constantPool(ca::str::Utf8StringRef uriOrInternalName,
-                                                                     bool               resolve) const override;
-
-    /// @brief 以 owner/name/descriptor 精确查询方法详情。
-    WorkspaceResult<MethodInfo> methodInfo(ca::str::Utf8StringRef owner, ca::str::Utf8StringRef name,
-                                           ca::str::Utf8StringRef descriptor) const override;
+                                                                     bool               resolve) const;
 
     /// @brief 以 owner/name/descriptor 精确查询字段详情。
     WorkspaceResult<FieldInfo> fieldInfo(ca::str::Utf8StringRef owner, ca::str::Utf8StringRef name,
-                                         ca::str::Utf8StringRef descriptor) const override;
-
-    /// @brief 返回精确选择方法的逐指令摘要及行号元数据。
-    WorkspaceResult<MethodBytecode> methodBytecode(ca::str::Utf8StringRef owner,
-                                                   ca::str::Utf8StringRef name,
-                                                   ca::str::Utf8StringRef descriptor) const override;
+                                         ca::str::Utf8StringRef descriptor) const;
 
     /// @brief 返回精确选择方法的完整指令渲染（保留 CP 索引与字节 PC）。
     WorkspaceResult<MethodInstructions> methodInstructions(ca::str::Utf8StringRef owner,
                                                            ca::str::Utf8StringRef name,
                                                            ca::str::Utf8StringRef descriptor,
-                                                           bool               resolve) const override;
+                                                           bool               resolve) const;
 
-    /// @brief 返回精确选择方法的规范化 Jasm 声明。
-    jasm::Result<jasm::JvmJasmMethodDisassembly> getMethodJasm(
-        ca::str::Utf8StringRef owner, ca::str::Utf8StringRef name, ca::str::Utf8StringRef descriptor) const override;
+    /// @brief 当前工作副本（借用；主会话只认 IResourceContainer 与 URI——
+    ///        无状态查询算子（jar_ops/analysis_ops）的输入面）。未加载时空。
+    ///        写边界只走 applyEdit（edit_pipeline 单入口）：查询算子一律
+    ///        只读消费本面。
+    const model::ResourceContainer* workingContainer() const noexcept;
+    model::ResourceContainer*       workingContainer() noexcept;
 
-    /// @brief 返回主资源 MANIFEST 的稳定排序主属性。
-    WorkspaceResult<std::vector<ManifestAttribute>> manifestAttributes() const override;
+    /// @brief jar 级 LVT 形态兜底旗标（B3 显示名策略，#121 §4.4）。
+    ///
+    /// 懒算 + revision 键控缓存：首次查询或 revision 前进后对工作副本全容器
+    /// class 扫描 LVT 行集，非法名占比 ≥ 1/2 判整 jar 不可信。判定核心在
+    /// mjbase::analysis（纯函数面）；旗标只作用于查询输出的呈现名，不改
+    /// 字节码、不入库（v1 决策：判定结果入库后置）。analysis_ops 的
+    /// classInfo/methodInfo/methodBytecode/listClasses 以本旗标为策略入参。
+    bool lvtJarFallbackFlag() const;
 
     /// @brief 按 mnemonic、opcode、节点类型和指令操作数查询方法指令；损坏 class 会被跳过。
     WorkspaceResult<std::vector<SearchHit>> searchInstructions(
-        ca::str::Utf8StringRef query, const SearchOptions& options = {}) const override;
+        ca::str::Utf8StringRef query, const SearchOptions& options = {}) const;
 
     /// @brief 精确返回所有编码目标为 owner/name/descriptor 的方法引用。
     WorkspaceResult<std::vector<ReferenceInfo>> xrefsToMethod(ca::str::Utf8StringRef owner,
                                                               ca::str::Utf8StringRef name,
-                                                              ca::str::Utf8StringRef descriptor) const override;
+                                                              ca::str::Utf8StringRef descriptor) const;
 
     /// @brief 精确返回所有编码目标为 owner/name/descriptor 的字段引用。
     WorkspaceResult<std::vector<ReferenceInfo>> xrefsToField(ca::str::Utf8StringRef owner,
                                                              ca::str::Utf8StringRef name,
-                                                             ca::str::Utf8StringRef descriptor) const override;
+                                                             ca::str::Utf8StringRef descriptor) const;
 
     /// @brief 返回所有直接或结构性引用 internalName 的位置。
-    WorkspaceResult<std::vector<ReferenceInfo>> xrefsToClass(ca::str::Utf8StringRef internalName) const override;
+    WorkspaceResult<std::vector<ReferenceInfo>> xrefsToClass(ca::str::Utf8StringRef internalName) const;
 
     /// @brief 构建全量直接引用索引（主容器 + supporting JAR；畸形 class 跳过）。
     ///
@@ -193,7 +173,7 @@ public:
     WorkspaceResult<std::vector<ReferenceInfo>> calleesOfMethod(ca::str::Utf8StringRef owner,
                                                                 ca::str::Utf8StringRef name,
                                                                 ca::str::Utf8StringRef descriptor,
-                                                                bool resolved = false) const override;
+                                                                bool resolved = false) const;
 
     /// @brief 引用行查询收口：supporting 标注 + 稳定排序。
     ///
@@ -204,121 +184,41 @@ public:
     void finalizeReferenceRows(std::vector<ReferenceInfo>& references) const;
 
     /// @brief 返回目标 class 的超类、接口、直接/全部子类和实现者。
-    WorkspaceResult<ClassRelations> classRelations(ca::str::Utf8StringRef internalName) const override;
+    WorkspaceResult<ClassRelations> classRelations(ca::str::Utf8StringRef internalName) const;
 
     /// @brief 返回精确方法所在的继承/实现覆盖组件。
     WorkspaceResult<std::vector<MethodOverrideInfo>> overridesOfMethod(
-        ca::str::Utf8StringRef owner, ca::str::Utf8StringRef name, ca::str::Utf8StringRef descriptor) const override;
-
-    /// @brief 返回可供 MCP/CLI 直接传输的完整 class JASM。
-    jasm::Result<jasm::JvmJasmDisassembly> getJasm(ca::str::Utf8StringRef uri) const override;
-
-    /// @brief 在不提交的候选副本中汇编并验证完整 class JASM。
-    MutationResult validateJasm(ca::str::Utf8StringRef uri, ca::str::Utf16StringRef sourceName,
-                                ca::str::Utf16StringRef source,
-                                const MutationRequest& request = {}) override;
-
-    /// @brief 原子应用完整 class JASM，成功后产生一个新的 revision。
-    MutationResult applyJasm(ca::str::Utf8StringRef uri, ca::str::Utf16StringRef sourceName,
-                             ca::str::Utf16StringRef source,
-                             const MutationRequest& request = {}) override;
-
-    /// @brief 验证由专用 classfile adapter 生成的完整 class 候选字节，不提交工作区。
-    MutationResult validateClassBytes(ca::str::Utf8StringRef uri,
-                                      const std::vector<ca::u8>& classBytes,
-                                      const MutationRequest& request = {}) override;
-
-    /// @brief 原子应用已由专用 classfile adapter 生成的完整 class 候选字节。
-    MutationResult applyClassBytes(ca::str::Utf8StringRef uri,
-                                   const std::vector<ca::u8>& classBytes,
-                                   const MutationRequest& request = {}) override;
-
-    /// @brief 在不提交的候选副本中应用并验证一项结构化 class 修改。
-    MutationResult validateClassMutation(const ClassMutation& mutation,
-                                         const MutationRequest& request = {}) override;
-
-    /// @brief 原子应用一项结构化 class 修改，成功后产生一个新的 revision。
-    MutationResult applyClassMutation(const ClassMutation& mutation,
-                                      const MutationRequest& request = {}) override;
-
-    /// @brief 原子替换一个 class 的原始字节；dry-run 时只返回完整验证和 diff。
-    ///
-    /// 选择器语义（URI 或内名）：内名命中 Multi-Release 族时按 resolveClassUri
-    /// 的确定序选定唯一条目。**单条 URI 语义**：替换只作用于选定条目，同族
-    /// 其它条目（versions/&lt;N&gt; 变体）字节不动、不传播——族员字节本就随
-    /// release 各自独立，逐条 URI 调用即完整族语义；本层不提供族批量替换面。
-    /// 候选字节内名必须与目标 URI 推导内名一致（版本化目标按 JEP 238 ≥ 9 口径）。
-    MutationResult replaceClassBytes(ca::str::Utf8StringRef uriOrInternalName,
-                                     const std::vector<ca::u8>& bytes,
-                                     const MutationRequest& request = {}) override;
+        ca::str::Utf8StringRef owner, ca::str::Utf8StringRef name, ca::str::Utf8StringRef descriptor) const;
 
     /// @brief 返回当前工作副本中相对打开时原始快照已变化的 class。
-    WorkspaceResult<std::vector<ModifiedClassInfo>> modifiedClasses() const override;
+    WorkspaceResult<std::vector<ModifiedClassInfo>> modifiedClasses() const;
 
     /// @brief 在不提交候选副本的情况下分析一个显式 MemberRemapPlan 的影响。
     ImpactAnalysis analyzeRemap(const asm_remapper::MemberRemapPlan& plan,
-                                const asm_remapper::RemapPolicy& policy) const override;
-
-    /// @brief 原子应用一个显式 MemberRemapPlan。
-    MutationResult applyRemap(const asm_remapper::MemberRemapPlan& plan,
-                              const asm_remapper::RemapPolicy&   policy,
-                              const MutationRequest& request = {}) override;
+                                const asm_remapper::RemapPolicy& policy) const;
 
     /// @brief 生成重命名映射和风险报告，不修改工作副本。
-    RenameAnalysis analyzeRename(const RenameRequest& request) const override;
-
-    /// @brief 原子应用一个已通过 override 风险检查的重命名请求。
-    MutationResult applyRename(const RenameRequest& request,
-                               const MutationRequest& requestOptions = {}) override;
-
-    /// @brief 在不提交候选副本的情况下运行 pass/pipeline 并返回验证和 byte diff。
-    MutationResult validatePipeline(const PipelineRequest& pipeline,
-                                    const MutationRequest& request = {}) override;
-
-    /// @brief 原子执行 pass/pipeline；dryRun 时与 validatePipeline 返回同一类结果。
-    MutationResult applyPipeline(const PipelineRequest& pipeline,
-                                 const MutationRequest& request = {}) override;
-
-    /// @brief 在一个候选事务中执行 remap、可选 pipeline、验证和候选 xref。
-    WorkflowResult runWorkflow(const WorkflowRequest& workflow,
-                               const MutationRequest& request = {}) override;
-
-    /// @brief 导入一个私有工作流候选 JAR，并按当前 revision 验证、导出和提交。
-    /// @warning candidateJarPath 仅限受控后台事务生成的 JAR；提交失败会移除本次创建的 exportPath。
-    WorkflowCandidateCommitResult commitWorkflowCandidateJar(
-        const WorkflowCandidateCommitRequest& candidate,
-        const MutationRequest& request = {}) override;
-
-    /// @brief 比较当前工作副本与一个外部 JAR 的全部可读取资源，不修改工作区。
-    JarDiffResult diffJar(ca::str::Utf8StringRef referencePath) const override;
-
-    /// @brief 扫描并预览当前工作副本的 JAR 修复候选，不提交变更。
-    JarRepairResult analyzeJarRepair(const JarRepairRequest& repair,
-                                     const MutationRequest& request = {}) const override;
-
-    /// @brief 原子应用已显式选择的 JAR 修复；dryRun 时返回预览结果。
-    JarRepairResult applyJarRepair(const JarRepairRequest& repair,
-                                   const MutationRequest& request = {}) override;
+    RenameAnalysis analyzeRename(const RenameRequest& request) const;
 
     /// @brief 将指定 class 恢复到打开工作区时的原始字节。
-    MutationResult revertClass(ca::str::Utf8StringRef uri, const MutationRequest& request = {}) override;
+    MutationResult revertClass(ca::str::Utf8StringRef uri, const MutationRequest& request = {});
 
     /// @brief 保存当前工作副本的具名快照，不改变 revision。
     ///
     /// 台账换底后快照 = 台账书签（命名指针指向当前头事务），零字节代价；
     /// flush 后以书签行持久（跨 flush 存活是相对旧克隆实现的已声明语义变化，
     /// 见 doc_ai/analysis-project-schema-v2.md §4）。
-    WorkspaceResult<void> createSavepoint(ca::str::Utf8StringRef name) override;
+    WorkspaceResult<void> createSavepoint(ca::str::Utf8StringRef name);
 
     /// @brief 恢复具名快照，产生新 revision。
     MutationResult restoreSavepoint(ca::str::Utf8StringRef name,
-                                    const MutationRequest& request = {}) override;
+                                    const MutationRequest& request = {});
 
     /// @brief 撤销上一次已提交的事务。
-    MutationResult undo(const MutationRequest& request = {}) override;
+    MutationResult undo(const MutationRequest& request = {});
 
     /// @brief 重做上一次撤销的事务。
-    MutationResult redo(const MutationRequest& request = {}) override;
+    MutationResult redo(const MutationRequest& request = {});
 
     /// @brief 绑定工程 bundle 的台账持久层（可选——不绑定则台账
     ///        纯内存，undo/redo/savepoint 行为不变、随对象销毁蒸发）。
@@ -339,7 +239,7 @@ public:
 
     /// @brief 把 pending overlay 与台账事务落盘到绑定 bundle（无绑定 = no-op）。
     ///
-    /// close/export 前的挂点：exportJar/exportClass 内部已前置调用。崩溃安全
+    /// close/export 前的挂点：exportArtifact 内部已前置调用。崩溃安全
     /// 与代际协议见 doc_ai/analysis-project-schema-v2.md §3。
     WorkspaceResult<void> flushLedger();
 
@@ -350,14 +250,12 @@ public:
     WorkspaceResult<project::LedgerCompactReport> compactLedger(
         const project::LedgerCompactRequest& request);
 
-    /// @brief 将当前工作副本原子写入一个此前不存在的输出 JAR。
-    WorkspaceResult<void> exportJar(ca::str::Utf8StringRef outputPath) const override;
-
-    /// @brief 将单 class 工作副本原子写入一个此前不存在的输出 classfile。
-    WorkspaceResult<void> exportClass(ca::str::Utf8StringRef outputPath) const override;
+    /// @brief 将当前工作副本按主制品格式原子写入一个此前不存在的输出
+    ///        （container_io 注册表路由：jar / classfile / 注册新格式）。
+    WorkspaceResult<void> exportArtifact(ca::str::Utf8StringRef outputPath) const;
 
     /// @brief 返回已附加的 supporting JAR 摘要。
-    std::vector<SupportingResourceInfo> supportingResources() const override;
+    std::vector<SupportingResourceInfo> supportingResources() const;
 
     /// @brief 绑定可选分析库：编辑提交后按受影响类落方法指纹版本
     ///        （method_versions，#132 编辑流接线）；真改名经身份注记 +
@@ -369,12 +267,21 @@ public:
     /// 计数披露在 MutationResult::methodVersions。
     void bindAnalysisDb(mjbase::project::AnalysisDb* db) noexcept { analysisDb_ = db; }
 
+    /// @brief 绑定会话级容器登记表（nullptr = 回到自带登记表）；workspace
+    ///        不再持有第二套支撑容器在册表。
+    void bindContainerRegistry(ContainerRegistry* registry) noexcept;
+
+
     /// @brief 绑定的分析库（nullptr = 未绑定；借用，生命周期归调用方）。
-    mjbase::project::AnalysisDb* analysisDb() const noexcept override { return analysisDb_; }
+    mjbase::project::AnalysisDb* analysisDb() const noexcept { return analysisDb_; }
 
 private:
-    struct SupportingResource;
     struct AnalysisGraph;
+
+    /// 编辑单入口管道内核（edit_pipeline.cpp）：取得私有事务面（ensureLoaded/
+    /// accepts/commit/cloneWorking/validateCandidate/runPipeline/…）。新增编辑
+    /// 形态只扩 EditCommand 变体 + 该文件 handler 表，本类签名不动。
+    friend struct EditPipeline;
 
     WorkspaceErrorInfo ensureLoaded(const std::string& operation) const;
     bool           accepts(const MutationRequest& request) const;
@@ -410,6 +317,10 @@ private:
     /// @brief 台账错误 → workspace 错误面（kind 映射 + operation 前缀）。
     WorkspaceErrorInfo ledgerFailure(const std::string& operation,
                                      const project::ProjectStoreError& cause) const;
+    /// @brief 会话重置尾段（open/openEmpty 共用）：登记表清空、台账按绑定
+    ///        态落盘重置（会话史清零，旧语义：打开新主资源丢弃 undo/redo/
+    ///        savepoint）、redo 栈/revision/LVT 策略缓存复位。
+    WorkspaceResult<void> resetSessionState(const std::string& operation);
     /// @brief 容器 canonical digest（SHA-256 口径，schema v2 裁决；§1.6）。
     WorkspaceResult<std::string> ledgerBaseDigest() const;
     /// @brief 把台账事务正向应用到容器（redo/restore/重放共用）。
@@ -443,14 +354,6 @@ private:
     ///        主容器 URI 优先，同 URI 的支撑资源跳过）。
     std::unique_ptr<model::ResourceContainer> analysisScanContainer() const;
     WorkspaceResult<AnalysisGraph>            analysisGraph() const;
-    /// @brief 内名/URI 选择器 → 唯一 class 资源 URI（Multi-Release 族确定序）。
-    ///
-    /// 选择器为既有 class URI 时原样返回；否则按 class 字节内名匹配。同内名
-    /// 族（base 与 META-INF/versions/&lt;N&gt; 变体并存）按确定序选定唯一条目：
-    /// base 形条目优先于版本化条目（JEP 238 口径版本 ≥ 9），同层级取 URI 字节
-    /// 序最小——不依赖容器迭代序。
-    WorkspaceResult<std::string>       resolveClassUri(const model::ResourceContainer& container,
-                                                       const std::string& uriOrInternalName) const;
     /// @brief 编辑校验门：只校验 @p scopeUris 列出的类（门禁作用域 =
     ///        操作受影响面；容器基线未编辑类不参与门禁——它们编辑前就存在）。
     ///
@@ -463,16 +366,9 @@ private:
                                          jasm::ValidationMode            mode,
                                          const std::vector<std::string>& scopeUris) const;
     /// @brief 在候选副本上组装并运行 pass/pipeline（runWorkflow 前置协议见
-    ///        i_workspace.hpp：pipeline/passNames 互斥，均空取 default-optimize）。
+    ///        workspace.hpp：pipeline/passNames 互斥，均空取 default-optimize）。
     WorkspaceErrorInfo runPipeline(model::ResourceContainer& candidate,
                                    const PipelineRequest& request) const;
-    /// @brief jar 级 LVT 形态兜底旗标（B3 显示名策略，#121 §4.4）。
-    ///
-    /// 懒算 + revision 键控缓存：首次查询或 revision 前进后对工作副本全容器
-    /// class 扫描 LVT 行集，非法名占比 ≥ 1/2 判整 jar 不可信。判定核心在
-    /// mjbase::analysis（纯函数面）；旗标只作用于查询输出的呈现名，不改
-    /// 字节码、不入库（v1 决策：判定结果入库后置）。
-    bool lvtJarFallbackFlag() const;
     /// @brief 把重命名请求展开为重映射计划 + 审阅映射表 + 风险清单
     ///        （analyzeRename/applyRename 共用的展开面）。
     WorkspaceErrorInfo buildRenamePlan(const RenameRequest& request,
@@ -484,8 +380,6 @@ private:
     void annotateSupportingSources(std::vector<ReferenceInfo>& references) const;
     std::unordered_map<std::string, std::string> supportingClassIds() const;
 
-    model::ResourceContainer* workingContainer() noexcept;
-    const model::ResourceContainer* workingContainer() const noexcept;
 
     /// 分析库会话（编辑落指纹版本；非拥有，bindAnalysisDb 接线；nullptr =
     /// 未绑定，编辑路径零行为变化）。
@@ -497,18 +391,19 @@ private:
     /// 捕获，#74 导出保真：无 MANIFEST 编辑时导出逐字节复制源内容——行尾、
     /// 续行、尾随内容原样）。nullopt = 源无该条目。
     std::optional<std::vector<ca::u8>> sourceManifestBytes_;
-    std::vector<SupportingResource> supporting_;
+    /// 会话级容器登记表：默认自带；MCP 会话打开时绑定到 ProjectSession 的同一实例。
+    ContainerRegistry  ownedRegistry_;
+    ContainerRegistry* registry_ = &ownedRegistry_;
     /// 台账引擎：undo/redo = 头指针回退/前进，savepoint = 书签；
     /// 未绑定为纯内存台账（行为与旧克隆实现一致，随对象销毁蒸发）。mutable：
     /// 导出路径（const）前置 flush 挂点。
     mutable project::EditLedgerStore ledger_;
     /// redo 目标栈（undo 压入、redo 弹出、commit 清空——对齐旧 redo_ 语义）。
     std::vector<ca::u64> redoHint_;
-    ArtifactKind artifactKind_ = ArtifactKind::None;
+    ContainerFormat format_ = ContainerFormat::None;
     ca::str::Utf8String sourcePath_;
     ca::str::Utf8String primaryClassUri_;
     ca::u64      revision_ = 0;
-    ca::u64      nextSupportingId_ = 1;
     /// LVT 显示名策略 jar 级兜底旗标缓存（revision 键控懒算；打开新主资源
     /// 时置 computed=false 重算）。mutable：查询路径（const）内懒算。
     mutable bool    lvtPolicyComputed_ = false;

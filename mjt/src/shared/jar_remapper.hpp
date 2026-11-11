@@ -5,7 +5,7 @@
 #include "libca/core/status.hpp"
 #include "mjbase/asm/remapper/member_remap_plan.hpp"
 #include "mjbase/mapping/intermediate_mapping.hpp"
-#include "workspace/i_workspace.hpp"
+#include "workspace/workspace.hpp"
 
 namespace mjt {
 
@@ -42,12 +42,12 @@ struct WorkspaceRemapRequest final
 ///@param mappings 非空时带出 mapping 解析产物（shadow sidecar 同步等需要
 ///成员 old→new 枚举面的消费方用；MemberRemapPlan 只有查询面无枚举面）。
 mjt::workspace::WorkspaceErrorInfo buildWorkspaceRemapPlan(
-    mjt::workspace::IWorkspace& workspace, const WorkspaceRemapRequest& request,
+    mjt::workspace::WorkspaceBase& workspace, const WorkspaceRemapRequest& request,
     mjbase::asm_remapper::MemberRemapPlan& plan, mjbase::asm_remapper::RemapPolicy& policy,
     mjbase::mapping::IntermediateMapping* mappings = nullptr);
 
 ///@brief 返回 mapping 应用后的引用影响、验证诊断和字节 diff，不提交工作区。
 mjt::workspace::ImpactAnalysis analyzeWorkspaceRemap(
-    mjt::workspace::IWorkspace& workspace, const WorkspaceRemapRequest& request);
+    mjt::workspace::WorkspaceBase& workspace, const WorkspaceRemapRequest& request);
 
 }   //namespace mjt

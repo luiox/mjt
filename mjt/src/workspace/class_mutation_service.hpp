@@ -368,12 +368,17 @@ public:
 
     /// @brief 汇编完整 Jasm 并事务替换候选容器中的目标 class。
     ///        validationMode 同时控制重建管线自带的字节码校验门：off 时重建
-    ///        后不再做 validate（汇编本身仍必须成功）。
+    ///        后不再做 validate（汇编本身仍必须成功）。frameMode 为
+    ///        StackMapTable 处置档（mjbase#190）：缺省 regenerate（既有调用
+    ///        点零漂移）；preserve 为坏帧类 off 门逃生门（指令面改动
+    ///        fail-closed 拒绝，pysdk frame 参数消费）。
     jasm::Result<jasm::JvmJasmClass> applyJasm(const ca::str::Utf8StringRef& uri,
                                                ca::str::Utf16StringRef       sourceName,
                                                ca::str::Utf16StringRef       source,
                                                jasm::ValidationMode          validationMode
-                                                   = jasm::ValidationMode::Relaxed);
+                                                   = jasm::ValidationMode::Relaxed,
+                                               jasm::FrameMode frameMode
+                                                   = jasm::FrameMode::Regenerate);
 
     /// @brief 应用一项结构化修改；失败时不会替换目标 ClassResource 的字节。
     ///        validationMode 控制写回后的整类校验门（off 同样跳过）。分档

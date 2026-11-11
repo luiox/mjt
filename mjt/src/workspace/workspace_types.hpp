@@ -39,7 +39,7 @@ namespace spi          = ::mjbase::spi;
 /// @file workspace_types.hpp
 /// @brief Workspace 接口层共享的数据传输类型（DTO）。
 ///
-/// 无业务语义的纯数据结构 + 枚举 + 常量：IWorkspace 接口签名与 WorkspaceBase
+/// 无业务语义的纯数据结构 + 枚举 + 常量：workspace 模块公共签名类型
 /// 实现共同使用。类型面按
 /// mjbase 约定重定型：
 /// - 错误通道：ca::Status/StatusOr → WorkspaceError + WorkspaceResult<T>
@@ -51,7 +51,7 @@ namespace spi          = ::mjbase::spi;
 /// - 诊断：jasm::Diagnostic 即 mjbase::jasm::Diagnostic；
 /// - 重映射契约类型：RemapPolicy/MemberRemapPlan 取 mjbase::asm_remapper 域
 ///   （KeyPool 驻留 + MemberKey 建键版）。
-/// RenameRequest 族、PipelineRequest 族、WorkflowRequest 族随工作区 remap/
+/// RenameRequest 族、PipelineRequest 族随工作区 remap/
 /// rename/pipeline 事务面一起迁入（mjt-mcp 为第二个管线消费方，触发装配层
 /// 定型，见 pass-contract §9）。
 
@@ -90,14 +90,6 @@ struct WorkspaceErrorInfo
 /// @brief workspace 模块 Result 别名；Ok 恒为 code == Ok 的错误值。
 template <typename T>
 using WorkspaceResult = ca::core::Result<T, WorkspaceErrorInfo>;
-
-/// @brief 工作区当前承载的主制品种类。
-enum class ArtifactKind : ca::u8
-{
-    None,
-    Class,
-    Jar,
-};
 
 /// @brief 未提供 expectedRevision 时使用的显式哨兵值。
 constexpr ca::u64 kAnyRevision = static_cast<ca::u64>(-1);
@@ -647,83 +639,6 @@ struct PipelineRequest final
     ca::str::Utf8String              pipeline;
     ca::str::Utf8String              jdkPath;
 };
-
-/// @brief 工作流中要在候选副本前后执行的精确引用查询种类。
-enum class WorkflowReferenceKind : ca::u8
-{
-    Class,
-    Field,
-    Method,
-};
-
-/// @brief 一个可重放工作流的精确 xref 查询。
-struct WorkflowReferenceQuery final
-{
-    WorkflowReferenceKind kind = WorkflowReferenceKind::Class;
-    ca::str::Utf8String           owner;
-    ca::str::Utf8String           name;
-    ca::str::Utf8String           descriptor;
-
-    /// @brief 深拷贝（runWorkflow 装配 before/after 报告行时按值持有查询）。
-    WorkflowReferenceQuery clone() const
-    {
-        return {kind, owner.clone(), name.clone(), descriptor.clone()};
-    }
-};
-
-/// @brief 一个 xref 查询在工作流输入和候选输出中的稳定结果。
-struct WorkflowReferenceReport final
-{
-    WorkflowReferenceQuery     query;
-    std::vector<ReferenceInfo> before;
-    std::vector<ReferenceInfo> after;
-};
-
-/// @brief 工作流中一个已执行阶段的状态。
-struct WorkflowStageResult final
-{
-    ca::str::Utf8String name;
-    WorkspaceErrorInfo status;
-};
-
-/// @brief 一次工作区候选事务的组合请求。
-///
-/// remapPlan 为调用期间借用的已解析计划，必须在 runWorkflow 返回前保持有效。若设置
-/// runPipeline，mapping 和 pipeline 都在同一候选副本中运行；任一阶段失败都不会提交工作区。
-struct WorkflowRequest final
-{
-    const asm_remapper::MemberRemapPlan* remapPlan = nullptr;
-    asm_remapper::RemapPolicy            remapPolicy = asm_remapper::RemapPolicy::bytecodeOnly();
-    bool                                 runPipeline = false;
-    PipelineRequest                      pipeline;
-    std::vector<WorkflowReferenceQuery>  referenceQueries;
-    /// @brief 非空时将已验证的候选副本原子导出到此前不存在的 JAR 路径。
-    /// @note dryRun 只校验导出目标，不创建输出文件。
-    ca::str::Utf8String                  exportPath;
-    /// @brief 在验证完成后接收一次性候选 JAR 快照的只读阶段。
-    /// @note 回调返回前必须完成读取，快照会立刻删除；返回错误时不导出或提交 Workspace。
-    /// @note 路径形参保持 std::string：导出目标走文件系统字节路径面，不随 DTO 文本
-    ///       字段换型（与 long_path/file_io 字节边界除外条款同口径）。
-    std::function<WorkspaceErrorInfo(const std::string&)> candidateJarConsumer;
-    ca::str::Utf8String                  candidateJarStageName;
-};
-
-/// @brief 可重放工作流的机器可读报告。
-///
-/// inputFingerprint 和 candidateFingerprint 为按资源 URI 和字节内容计算的稳定 FNV-1a-64 摘要。
-/// mutation 复用所有 Workspace 编辑的 revision、diagnostics 和 byte diff 契约；dryRun 时仅
-/// 返回候选报告，成功提交时最多增加一个 revision。
-struct WorkflowResult final
-{
-    MutationResult                       mutation;
-    ca::str::Utf8String                  inputFingerprint;
-    ca::str::Utf8String                  candidateFingerprint;
-    ca::str::Utf8String                  exportPath;
-    bool                                 exported = false;
-    std::vector<WorkflowStageResult>     stages;
-    std::vector<WorkflowReferenceReport> references;
-};
-
 /// @brief 一项可由 JAR 修复事务处理的资源问题。
 struct JarRepairIssue final
 {
@@ -739,48 +654,6 @@ struct JarRepairRequest final
 {
     bool removeInvalidClassEntries = false;
     bool removeCorruptOutputMarkers = false;
-};
-
-/// @brief JAR 修复扫描结果及候选事务预览或提交结果。
-struct JarRepairResult final
-{
-    MutationResult              mutation;
-    ca::usize                   resourceCount = 0;
-    ca::usize                   classCount = 0;
-    std::vector<JarRepairIssue> issues;
-};
-
-/// @brief 一个工作区与外部 JAR 的全资源字节比较结果。
-struct JarDiffResult final
-{
-    WorkspaceErrorInfo      status;
-    ca::str::Utf8String     referencePath;
-    ca::usize               workspaceOnly = 0;
-    ca::usize               referenceOnly = 0;
-    ca::usize               modified = 0;
-    std::vector<ByteDiff>   byteDiffs;
-};
-
-/// @brief 已完成工作流候选 JAR 的内部提交请求。
-///
-/// candidateJarPath 必须由上层事务私有持有，不能直接暴露给不可信客户端。exportPath 非空时会在
-/// commit 前从同一候选原子导出；commit 失败会删除该导出。dryRun 只验证候选和导出目标。
-///
-/// WorkflowRequest（remapPlan/pipeline/referenceQueries 组合事务）依赖未迁的
-/// remapper/pass-registry 设施，不随迁（见 i_workspace.hpp 范围说明）；候选 JAR 的
-/// 导入-验证-导出-提交契约由本类型与 commitWorkflowCandidateJar 承载。
-struct WorkflowCandidateCommitRequest final
-{
-    ca::str::Utf8String candidateJarPath;
-    ca::str::Utf8String exportPath;
-};
-
-/// @brief 工作流候选 JAR 导入、导出和提交的统一结果。
-struct WorkflowCandidateCommitResult final
-{
-    MutationResult mutation;
-    ca::str::Utf8String    exportPath;
-    bool           exported = false;
 };
 
 }   // namespace mjt::workspace

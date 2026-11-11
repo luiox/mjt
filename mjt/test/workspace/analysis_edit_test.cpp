@@ -25,6 +25,7 @@
 #include "mjbase/project/analysis_db.hpp"
 #include "workspace/analysis_edit.hpp"
 #include "workspace/analysis_ingest.hpp"
+#include "workspace/analysis_ops.hpp"
 #include "workspace/workspace.hpp"
 
 namespace mjt::workspace {
@@ -176,7 +177,8 @@ mjbase::analysis::SemanticFp fingerprintOfBytes(const std::vector<ca::u8>& bytes
 /// @brief 工作副本中该 class 的当前字节。
 std::vector<ca::u8> workingBytesOf(const WorkspaceBase& workspace, const std::string& uri)
 {
-    auto info = workspace.readClassBytes(ca::str::Utf8StringRef::from_string_view(uri));
+    auto info = readResource(*workspace.workingContainer(),
+                             ca::str::Utf8StringRef::from_string_view(uri));
     if (info.is_err()) throw std::runtime_error("working class bytes unreadable: " + uri);
     return std::move(info).unwrap().bytes;
 }
@@ -205,7 +207,7 @@ TEST(MjAnalysisEditTest, MethodEditLandsVersionRowAndUpdatesCurrent)
 
     WorkspaceBase workspace;
     ASSERT_TRUE(
-        workspace.openJar(ca::str::Utf8StringRef::from_string_view(jarPath.string())).is_ok());
+        workspace.open(ca::str::Utf8StringRef::from_string_view(jarPath.string())).is_ok());
 
     auto db = openOrDie(dbPath);
     ASSERT_TRUE(ingestIntoAnalysisDb(workspace, db).is_ok());
@@ -219,8 +221,9 @@ TEST(MjAnalysisEditTest, MethodEditLandsVersionRowAndUpdatesCurrent)
     EXPECT_FALSE(std::move(baseline).unwrap().has_value());
 
     // 单方法面：iconst_0 → iconst_1（ReplaceInstruction，聚焦成员只落 value）。
-    auto result = workspace.applyClassMutation(
-        replaceInsnZero(InstructionKind::Simple, 0x04, 0));
+    auto result = applyEdit(workspace,
+                                       EditCommand{EditCommand::ClassMutation{replaceInsnZero(InstructionKind::Simple, 0x04, 0)}},
+                                       MutationRequest{});
     ASSERT_TRUE(result.is_ok()) << result.status.message;
     ASSERT_TRUE(result.committed);
     EXPECT_EQ(1U, result.methodVersions.recorded);
@@ -258,7 +261,7 @@ TEST(MjAnalysisEditTest, SemanticsPreservingEditSkipsUnchanged)
 
     WorkspaceBase workspace;
     ASSERT_TRUE(
-        workspace.openJar(ca::str::Utf8StringRef::from_string_view(jarPath.string())).is_ok());
+        workspace.open(ca::str::Utf8StringRef::from_string_view(jarPath.string())).is_ok());
 
     auto db = openOrDie(dbPath);
     ASSERT_TRUE(ingestIntoAnalysisDb(workspace, db).is_ok());
@@ -267,15 +270,17 @@ TEST(MjAnalysisEditTest, SemanticsPreservingEditSkipsUnchanged)
     const ca::i64 valueId = memberIdOrDie(db, "workspace/Subject", "value", "()I");
 
     // 第一次编辑：iconst_0 → iconst_1，语义变化落新版本。
-    auto first = workspace.applyClassMutation(
-        replaceInsnZero(InstructionKind::Simple, 0x04, 0));
+    auto first = applyEdit(workspace,
+                                      EditCommand{EditCommand::ClassMutation{replaceInsnZero(InstructionKind::Simple, 0x04, 0)}},
+                                      MutationRequest{});
     ASSERT_TRUE(first.is_ok()) << first.status.message;
     EXPECT_EQ(1U, first.methodVersions.recorded);
 
     // 第二次编辑：iconst_1 → bipush 1。字节变了，int 装载族归一化后语义没变
     // ——提交成功（新 revision）但指纹幂等跳过，不落伪版本行。
-    auto second = workspace.applyClassMutation(
-        replaceInsnZero(InstructionKind::Int, 0x10, 1));
+    auto second = applyEdit(workspace,
+                                       EditCommand{EditCommand::ClassMutation{replaceInsnZero(InstructionKind::Int, 0x10, 1)}},
+                                       MutationRequest{});
     ASSERT_TRUE(second.is_ok()) << second.status.message;
     ASSERT_TRUE(second.committed);
     EXPECT_EQ(0U, second.methodVersions.recorded);
@@ -294,7 +299,7 @@ TEST(MjAnalysisEditTest, WholeClassReplacementRecordsBatchAndReconciles)
 
     WorkspaceBase workspace;
     ASSERT_TRUE(
-        workspace.openJar(ca::str::Utf8StringRef::from_string_view(jarPath.string())).is_ok());
+        workspace.open(ca::str::Utf8StringRef::from_string_view(jarPath.string())).is_ok());
 
     auto db = openOrDie(dbPath);
     ASSERT_TRUE(ingestIntoAnalysisDb(workspace, db).is_ok());
@@ -305,9 +310,11 @@ TEST(MjAnalysisEditTest, WholeClassReplacementRecordsBatchAndReconciles)
 
     // 整类替换（patch_replace_class_bytes 同款路径）：两个方法语义都变，
     // 批量面逐方法落版本。
-    auto result = workspace.replaceClassBytes(
-        ca::str::Utf8StringRef::from_cstr("workspace/Subject.class"),
-        assemble("workspace/Subject", replacedSubjectSource()));
+    auto result = applyEdit(workspace,
+                                       EditCommand{EditCommand::ReplaceClassBytes{
+                                           ca::str::Utf8String::from_cstr("workspace/Subject.class"),
+                                           assemble("workspace/Subject", replacedSubjectSource())}},
+                                       MutationRequest{});
     ASSERT_TRUE(result.is_ok()) << result.status.message;
     ASSERT_TRUE(result.committed);
     EXPECT_EQ(2U, result.methodVersions.recorded);
@@ -341,7 +348,7 @@ TEST(MjAnalysisEditTest, ClassJasmReassemblyUsesBatchFace)
 
     WorkspaceBase workspace;
     ASSERT_TRUE(
-        workspace.openJar(ca::str::Utf8StringRef::from_string_view(jarPath.string())).is_ok());
+        workspace.open(ca::str::Utf8StringRef::from_string_view(jarPath.string())).is_ok());
 
     auto db = openOrDie(dbPath);
     ASSERT_TRUE(ingestIntoAnalysisDb(workspace, db).is_ok());
@@ -350,9 +357,11 @@ TEST(MjAnalysisEditTest, ClassJasmReassemblyUsesBatchFace)
     // 整类 Jasm 重汇编（patch_apply_jasm 同款路径）：无聚焦成员，批量面
     // 兜底。导入桥未落基线版本，首个绑定编辑对受影响类全方法落当前版本
     // （value 语义变了、virtualValue 是首记）。
-    auto result = workspace.applyJasm(ca::str::Utf8StringRef::from_cstr("workspace/Subject.class"),
-                                      utf16("Subject.jasm").ref(),
-                                      utf16(replacedSubjectSource()).ref());
+    auto result = applyEdit(workspace,
+                                       EditCommand{EditCommand::Jasm{
+                                           ca::str::Utf8String::from_cstr("workspace/Subject.class"),
+                                           utf16("Subject.jasm"), utf16(replacedSubjectSource())}},
+                                       MutationRequest{});
     ASSERT_TRUE(result.is_ok()) << result.status.message;
     ASSERT_TRUE(result.committed);
     EXPECT_EQ(2U, result.methodVersions.recorded);
@@ -367,15 +376,17 @@ TEST(MjAnalysisEditTest, UnregisteredIdentitySkipsRecording)
 
     WorkspaceBase workspace;
     ASSERT_TRUE(
-        workspace.openJar(ca::str::Utf8StringRef::from_string_view(jarPath.string())).is_ok());
+        workspace.open(ca::str::Utf8StringRef::from_string_view(jarPath.string())).is_ok());
 
     // 空库（未 ingest）：类/成员身份都不在，编辑成功但落库全跳过，不报错。
     auto db = openOrDie(dbPath);
     workspace.bindAnalysisDb(&db);
 
-    auto batch = workspace.applyJasm(ca::str::Utf8StringRef::from_cstr("workspace/Subject.class"),
-                                     utf16("Subject.jasm").ref(),
-                                     utf16(replacedSubjectSource()).ref());
+    auto batch = applyEdit(workspace,
+                                      EditCommand{EditCommand::Jasm{
+                                          ca::str::Utf8String::from_cstr("workspace/Subject.class"),
+                                          utf16("Subject.jasm"), utf16(replacedSubjectSource())}},
+                                      MutationRequest{});
     ASSERT_TRUE(batch.is_ok()) << batch.status.message;
     ASSERT_TRUE(batch.committed);
     EXPECT_EQ(0U, batch.methodVersions.recorded);
@@ -388,8 +399,9 @@ TEST(MjAnalysisEditTest, UnregisteredIdentitySkipsRecording)
     EXPECT_EQ(2U, revert.methodVersions.skipped);
 
     // 单方法面同口径：聚焦成员无身份 → 跳过 1。
-    auto focused = workspace.applyClassMutation(
-        replaceInsnZero(InstructionKind::Simple, 0x04, 0));
+    auto focused = applyEdit(workspace,
+                                        EditCommand{EditCommand::ClassMutation{replaceInsnZero(InstructionKind::Simple, 0x04, 0)}},
+                                        MutationRequest{});
     ASSERT_TRUE(focused.is_ok()) << focused.status.message;
     EXPECT_EQ(1U, focused.methodVersions.skipped);
 }
@@ -401,14 +413,15 @@ TEST(MjAnalysisEditTest, UnboundDbKeepsEditsInert)
 
     WorkspaceBase workspace;
     ASSERT_TRUE(
-        workspace.openJar(ca::str::Utf8StringRef::from_string_view(jarPath.string())).is_ok());
+        workspace.open(ca::str::Utf8StringRef::from_string_view(jarPath.string())).is_ok());
 
     auto db = openOrDie(dbPath);
     ASSERT_TRUE(ingestIntoAnalysisDb(workspace, db).is_ok());
     // 不绑定：编辑行为与旧版完全一致，侧账全零，库零写入。
 
-    auto result = workspace.applyClassMutation(
-        replaceInsnZero(InstructionKind::Simple, 0x04, 0));
+    auto result = applyEdit(workspace,
+                                       EditCommand{EditCommand::ClassMutation{replaceInsnZero(InstructionKind::Simple, 0x04, 0)}},
+                                       MutationRequest{});
     ASSERT_TRUE(result.is_ok()) << result.status.message;
     ASSERT_TRUE(result.committed);
     EXPECT_EQ(0U, result.methodVersions.recorded);
@@ -429,7 +442,7 @@ TEST(MjAnalysisEditTest, RevertClassRecordsRestoredFingerprint)
 
     WorkspaceBase workspace;
     ASSERT_TRUE(
-        workspace.openJar(ca::str::Utf8StringRef::from_string_view(jarPath.string())).is_ok());
+        workspace.open(ca::str::Utf8StringRef::from_string_view(jarPath.string())).is_ok());
 
     const std::vector<ca::u8> originalBytes =
         assemble("workspace/Subject", subjectSource());
@@ -441,8 +454,9 @@ TEST(MjAnalysisEditTest, RevertClassRecordsRestoredFingerprint)
     const ca::i64 valueId = memberIdOrDie(db, "workspace/Subject", "value", "()I");
 
     // 编辑（单方法面）→ revert（恢复原字节，批量面）。
-    auto edited = workspace.applyClassMutation(
-        replaceInsnZero(InstructionKind::Simple, 0x04, 0));
+    auto edited = applyEdit(workspace,
+                                       EditCommand{EditCommand::ClassMutation{replaceInsnZero(InstructionKind::Simple, 0x04, 0)}},
+                                       MutationRequest{});
     ASSERT_TRUE(edited.is_ok()) << edited.status.message;
     EXPECT_EQ(1U, edited.methodVersions.recorded);
 
@@ -474,7 +488,7 @@ TEST(MjAnalysisEditTest, UndoRedoRestoresAndReappliesFingerprints)
 
     WorkspaceBase workspace;
     ASSERT_TRUE(
-        workspace.openJar(ca::str::Utf8StringRef::from_string_view(jarPath.string())).is_ok());
+        workspace.open(ca::str::Utf8StringRef::from_string_view(jarPath.string())).is_ok());
 
     const std::vector<ca::u8> originalBytes =
         assemble("workspace/Subject", subjectSource());
@@ -485,8 +499,9 @@ TEST(MjAnalysisEditTest, UndoRedoRestoresAndReappliesFingerprints)
 
     const ca::i64 valueId = memberIdOrDie(db, "workspace/Subject", "value", "()I");
 
-    auto edited = workspace.applyClassMutation(
-        replaceInsnZero(InstructionKind::Simple, 0x04, 0));
+    auto edited = applyEdit(workspace,
+                                       EditCommand{EditCommand::ClassMutation{replaceInsnZero(InstructionKind::Simple, 0x04, 0)}},
+                                       MutationRequest{});
     ASSERT_TRUE(edited.is_ok()) << edited.status.message;
     EXPECT_EQ(1U, edited.methodVersions.recorded);
 
@@ -521,6 +536,52 @@ TEST(MjAnalysisEditTest, UndoRedoRestoresAndReappliesFingerprints)
     auto redoFp = std::move(currentAfterRedo).unwrap();
     ASSERT_TRUE(redoFp.has_value());
     EXPECT_TRUE(*redoFp == fingerprintOfBytes(editedBytes, "value"));
+}
+
+
+TEST(MjAnalysisEditTest, RenameResourceRebuildsLocationForPlainEntries)
+{
+    // 回归：非 class/manifest 条目（UnknownResource 形态）rename 必须按新 URI
+    // 重建资源对象——IResource 自带 location 是 jar 导出条目名来源，只换容器
+    // map 键会产出 entry 与声明名失配的坏罐（重开后新条目名不可见）。
+    const auto jarPath = writeFixtureJar();
+
+    WorkspaceBase workspace;
+    ASSERT_TRUE(
+        workspace.open(ca::str::Utf8StringRef::from_string_view(jarPath.string())).is_ok());
+
+    // 造普通资源条目：ResourceBytes upsert 对非 class 骨架内容落 UnknownResource。
+    const std::vector<ca::u8> blob{'h', 'e', 'l', 'l', 'o'};
+    auto upserted = applyEdit(workspace,
+                              EditCommand{EditCommand::ResourceBytes{
+                                  ca::str::Utf8String::from_cstr("workspace/asset.txt"), blob}},
+                              MutationRequest{});
+    ASSERT_TRUE(upserted.is_ok()) << upserted.status.message;
+
+    auto renamed = applyEdit(workspace,
+                            EditCommand{EditCommand::RenameResource{
+                                ca::str::Utf8String::from_cstr("workspace/asset.txt"),
+                                ca::str::Utf8String::from_cstr("workspace/renamed.txt")}},
+                            MutationRequest{});
+    ASSERT_TRUE(renamed.is_ok()) << renamed.status.message;
+
+    // 导出 → 重开：新 URI 可见、字节原样、旧 URI 消失（坏罐断言面）。
+    const auto outPath = test::getTempOutPath("mjt_analysis_edit_rename_export.jar");
+    std::error_code ec;
+    std::filesystem::remove(outPath, ec);
+    ASSERT_TRUE(workspace.exportArtifact(
+                    ca::str::Utf8StringRef::from_string_view(outPath.string())).is_ok());
+
+    WorkspaceBase reopened;
+    ASSERT_TRUE(reopened.open(
+                    ca::str::Utf8StringRef::from_string_view(outPath.string())).is_ok());
+    auto readBack = readResource(
+        *reopened.workingContainer(), ca::str::Utf8StringRef::from_cstr("workspace/renamed.txt"));
+    ASSERT_TRUE(readBack.is_ok());
+    EXPECT_EQ(blob, std::move(readBack).unwrap().bytes);
+    auto gone = readResource(
+        *reopened.workingContainer(), ca::str::Utf8StringRef::from_cstr("workspace/asset.txt"));
+    EXPECT_TRUE(gone.is_err());
 }
 
 }   // namespace mjt::workspace

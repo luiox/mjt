@@ -231,7 +231,7 @@ TEST(MjAnalysisEditSyncTest, EditReanchorsEntryAndUndoResurrectsOriginalAnchor)
 
     WorkspaceBase workspace;
     ASSERT_TRUE(
-        workspace.openJar(ca::str::Utf8StringRef::from_string_view(jarPath.string())).is_ok());
+        workspace.open(ca::str::Utf8StringRef::from_string_view(jarPath.string())).is_ok());
 
     auto db = openOrDie(dbPath);
     ASSERT_TRUE(ingestIntoAnalysisDb(workspace, db).is_ok());
@@ -243,9 +243,11 @@ TEST(MjAnalysisEditSyncTest, EditReanchorsEntryAndUndoResurrectsOriginalAnchor)
 
     // 编辑（整类重汇编）：条目换锚（同 path 新 sha → 新 entry_id），类事实
     // upsert 换锚，搜索可见域不丢类。
-    auto edited = workspace.applyJasm(
-        ca::str::Utf8StringRef::from_cstr("workspace/Subject.class"),
-        utf16("Subject.jasm").ref(), utf16(replacedSubjectSource()).ref());
+    auto edited = applyEdit(workspace,
+                                       EditCommand{EditCommand::Jasm{
+                                           ca::str::Utf8String::from_cstr("workspace/Subject.class"),
+                                           utf16("Subject.jasm"), utf16(replacedSubjectSource())}},
+                                       MutationRequest{});
     ASSERT_TRUE(edited.is_ok()) << edited.status.message;
     ASSERT_TRUE(edited.committed);
     EXPECT_FALSE(edited.analysisSync.failed);
@@ -293,7 +295,7 @@ TEST(MjAnalysisEditSyncTest, RefSlicesFollowMethodBodyEditsAndVanishingMethods)
 
     WorkspaceBase workspace;
     ASSERT_TRUE(
-        workspace.openJar(ca::str::Utf8StringRef::from_string_view(jarPath.string())).is_ok());
+        workspace.open(ca::str::Utf8StringRef::from_string_view(jarPath.string())).is_ok());
 
     auto db = openOrDie(dbPath);
     ASSERT_TRUE(ingestIntoAnalysisDb(workspace, db).is_ok());
@@ -301,9 +303,11 @@ TEST(MjAnalysisEditSyncTest, RefSlicesFollowMethodBodyEditsAndVanishingMethods)
 
     // 编辑一：call 改调 virtualValue——方法体切片换新（方法引用 + owner
     // 类型引用两行，目标换新）。
-    auto retargeted = workspace.applyJasm(
-        ca::str::Utf8StringRef::from_cstr("workspace/Caller.class"),
-        utf16("Caller.jasm").ref(), utf16(callerVirtualCallSource()).ref());
+    auto retargeted = applyEdit(workspace,
+                                           EditCommand{EditCommand::Jasm{
+                                               ca::str::Utf8String::from_cstr("workspace/Caller.class"),
+                                               utf16("Caller.jasm"), utf16(callerVirtualCallSource())}},
+                                           MutationRequest{});
     ASSERT_TRUE(retargeted.is_ok()) << retargeted.status.message;
     EXPECT_FALSE(retargeted.analysisSync.failed);
 
@@ -329,9 +333,11 @@ TEST(MjAnalysisEditSyncTest, RefSlicesFollowMethodBodyEditsAndVanishingMethods)
     EXPECT_TRUE(sawOwnerType);
 
     // 编辑二：call 去引用——方法还在，切片写空。
-    auto dereferenced = workspace.applyJasm(
-        ca::str::Utf8StringRef::from_cstr("workspace/Caller.class"),
-        utf16("Caller.jasm").ref(), utf16(callerNoRefSource()).ref());
+    auto dereferenced = applyEdit(workspace,
+                                             EditCommand{EditCommand::Jasm{
+                                                 ca::str::Utf8String::from_cstr("workspace/Caller.class"),
+                                                 utf16("Caller.jasm"), utf16(callerNoRefSource())}},
+                                             MutationRequest{});
     ASSERT_TRUE(dereferenced.is_ok()) << dereferenced.status.message;
     EXPECT_FALSE(dereferenced.analysisSync.failed);
     EXPECT_EQ(0U, dereferenced.analysisSync.slicesCleared);
@@ -347,9 +353,11 @@ TEST(MjAnalysisEditSyncTest, RefSlicesFollowMethodBodyEditsAndVanishingMethods)
 
     // 编辑三：call 方法整个消失——库内成员行保留（身份只增不删），切片
     // 清空并计数。
-    auto vanished = workspace.applyJasm(
-        ca::str::Utf8StringRef::from_cstr("workspace/Caller.class"),
-        utf16("Caller.jasm").ref(), utf16(callerNoMethodSource()).ref());
+    auto vanished = applyEdit(workspace,
+                                         EditCommand{EditCommand::Jasm{
+                                             ca::str::Utf8String::from_cstr("workspace/Caller.class"),
+                                             utf16("Caller.jasm"), utf16(callerNoMethodSource())}},
+                                         MutationRequest{});
     ASSERT_TRUE(vanished.is_ok()) << vanished.status.message;
     EXPECT_FALSE(vanished.analysisSync.failed);
     EXPECT_EQ(1U, vanished.analysisSync.slicesCleared);
@@ -365,15 +373,17 @@ TEST(MjAnalysisEditSyncTest, LibraryWithoutImportSkipsWholesale)
 
     WorkspaceBase workspace;
     ASSERT_TRUE(
-        workspace.openJar(ca::str::Utf8StringRef::from_string_view(jarPath.string())).is_ok());
+        workspace.open(ca::str::Utf8StringRef::from_string_view(jarPath.string())).is_ok());
 
     // 绑库但不导入：无输入行可挂锚——编辑成功，同步整体跳过（开期导入建行）。
     auto db = openOrDie(dbPath);
     workspace.bindAnalysisDb(&db);
 
-    auto edited = workspace.applyJasm(
-        ca::str::Utf8StringRef::from_cstr("workspace/Subject.class"),
-        utf16("Subject.jasm").ref(), utf16(replacedSubjectSource()).ref());
+    auto edited = applyEdit(workspace,
+                                       EditCommand{EditCommand::Jasm{
+                                           ca::str::Utf8String::from_cstr("workspace/Subject.class"),
+                                           utf16("Subject.jasm"), utf16(replacedSubjectSource())}},
+                                       MutationRequest{});
     ASSERT_TRUE(edited.is_ok()) << edited.status.message;
     ASSERT_TRUE(edited.committed);
     EXPECT_FALSE(edited.analysisSync.failed);

@@ -891,13 +891,14 @@ jbc::core::AttrSlot* ensureAnnotationSlot(jbc::core::ClassFile&       cf,
 
 jasm::Result<jasm::JvmJasmClass> ClassMutationService::applyJasm(
     const ca::str::Utf8StringRef& uri, ca::str::Utf16StringRef sourceName,
-    ca::str::Utf16StringRef source, jasm::ValidationMode validationMode)
+    ca::str::Utf16StringRef source, jasm::ValidationMode validationMode,
+    jasm::FrameMode frameMode)
 {
     // 重建管线的校验门跟随请求档位：off 时 assemble 后跳过 validate。
     jasm::JvmJasmContext context;
     context.validationMode = validationMode;
     jasm::ResourceJasmService service(*container_);
-    return service.assemble(uri.to_std_string(), sourceName, source, context);
+    return service.assemble(uri.to_std_string(), sourceName, source, context, frameMode);
 }
 
 ClassMutationOutcome ClassMutationService::apply(const ClassMutation& mutation,

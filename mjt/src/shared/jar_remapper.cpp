@@ -16,6 +16,8 @@
 #include "shared/i18n_errors.hpp"
 #include "shared/status_convert.hpp"
 
+#include "workspace/analysis_ops.hpp"
+
 namespace mjt {
 namespace {
 
@@ -171,11 +173,17 @@ std::vector<std::string> classNames(const mjbase::model::ResourceContainer& cont
     return names;
 }
 
-std::vector<std::string> classNames(const mjt::workspace::IWorkspace&         workspace,
+std::vector<std::string> classNames(const mjt::workspace::WorkspaceBase&         workspace,
                                     mjt::workspace::WorkspaceErrorInfo&       status)
 {
     std::vector<std::string> names;
-    auto classes = workspace.listClasses();
+    const auto* container = workspace.workingContainer();
+    if (container == nullptr) {
+        status.code    = mjt::workspace::WorkspaceError::InvalidArgument;
+        status.message = "list classes: workspace is not loaded";
+        return names;
+    }
+    auto classes = mjt::workspace::listClasses(*container, workspace.lvtJarFallbackFlag());
     if (classes.is_err()) {
         status = std::move(classes).unwrap_err();
         return names;
@@ -249,7 +257,7 @@ ca::StatusOr<bool> remapJar(const JarRemapRequest& request)
 }
 
 mjt::workspace::WorkspaceErrorInfo buildWorkspaceRemapPlan(
-    mjt::workspace::IWorkspace& workspace, const WorkspaceRemapRequest& request,
+    mjt::workspace::WorkspaceBase& workspace, const WorkspaceRemapRequest& request,
     MemberRemapPlan& plan, RemapPolicy& policy, IntermediateMapping* mappings)
 {
     mjt::workspace::WorkspaceErrorInfo status;
@@ -260,7 +268,7 @@ mjt::workspace::WorkspaceErrorInfo buildWorkspaceRemapPlan(
 }
 
 mjt::workspace::ImpactAnalysis analyzeWorkspaceRemap(
-    mjt::workspace::IWorkspace& workspace, const WorkspaceRemapRequest& request)
+    mjt::workspace::WorkspaceBase& workspace, const WorkspaceRemapRequest& request)
 {
     mjt::workspace::ImpactAnalysis result;
     MemberRemapPlan plan;
