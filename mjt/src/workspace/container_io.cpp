@@ -15,6 +15,7 @@
 
 #include "edit_support.hpp"
 #include "export_manifest.hpp"
+#include "dex_domain.hpp"
 
 namespace mjt::workspace {
 
@@ -433,6 +434,129 @@ WorkspaceResult<ImportedArtifact> classFileImport(
     }
 }
 
+/// @brief zip magic 前置定性（.apk 路由键之外的伪装在此拦下）。
+bool isZipContainer(const std::string& path)
+{
+    std::ifstream input(fsPath(path), std::ios::binary);
+    ca::u8        head[4] = {};
+    input.read(reinterpret_cast<char*>(head), sizeof(head));
+    return input.gcount() == 4 && head[0] == 'P' && head[1] == 'K' && head[2] == 0x03 &&
+           head[3] == 0x04;
+}
+
+/// @brief 整文件字节读取（裸 dex 装载面）。
+std::vector<ca::u8> readFileBytes(const std::filesystem::path& path)
+{
+    std::ifstream             input(path, std::ios::binary);
+    std::vector<ca::u8>       bytes;
+    char                      buffer[4096];
+    while (input.read(buffer, sizeof(buffer)) || input.gcount() > 0)
+        bytes.insert(bytes.end(), buffer, buffer + input.gcount());
+    return bytes;
+}
+
+/// @brief apk 导入行：整 zip 容器导入（条目面与 jar 同构，dex 条目按
+///        UnknownResource 记）+ 根级 *.dex 提取建 dex 域（libdex DOM）。
+///
+/// 只读分析原型：无导出行（exportFn 空）；验证门不在此处（容器型格式
+/// gateUris 恒空，与 jar 同口径）。
+WorkspaceResult<ImportedArtifact> apkImport(
+    const std::string& path, ca::str::Utf8StringRef pathRef,
+    const mjbase::jar::IJarReader::EntryNameDecoder& decoder)
+{
+    (void)pathRef;
+    if (path.empty())
+        return ca::core::Err(
+            error(WorkspaceError::InvalidArgument, "open APK", "path is empty"));
+    namespace fs = std::filesystem;
+    std::error_code filesystemError;
+    const auto      status = fs::status(fsPath(path), filesystemError);
+    if (filesystemError || !fs::exists(status))
+        return ca::core::Err(error(WorkspaceError::NotFound, "open APK", path));
+    if (!fs::is_regular_file(status))
+        return ca::core::Err(
+            error(WorkspaceError::InvalidArgument, "open APK", "path is not a regular file"));
+    if (!isZipContainer(path))
+        return ca::core::Err(
+            error(WorkspaceError::InvalidArgument, "open APK", "not a zip container: " + path));
+    try {
+        // dex 域先建（无根级 dex 条目 = InvalidArgument，非 apk 输入）：
+        // 独立 reader 遍历——容器导入消费自己的 reader 实例。
+        auto               dexReader = std::make_unique<mjbase::jar::JvmJarReader>(utf8Ref(path));
+        auto               domain    = DexDomain::loadFromJarReader(*dexReader);
+        if (domain.is_err()) return ca::core::Err(std::move(domain).unwrap_err());
+
+        model::ResourceContainer loaded;
+        auto                     imported =
+            decoder ? model::ResourceHelper::importFromJar(loaded, path, decoder)
+                    : model::ResourceHelper::importFromJar(loaded, path);
+        if (imported.is_err())
+            return ca::core::Err(modelFailure("open APK", std::move(imported).unwrap_err()));
+        auto original = cloneContainer(loaded);
+        if (original.is_err()) return ca::core::Err(std::move(original).unwrap_err());
+        auto working = cloneContainer(loaded);
+        if (working.is_err()) return ca::core::Err(std::move(working).unwrap_err());
+
+        ImportedArtifact artifact;
+        artifact.original  = std::move(original).unwrap();
+        artifact.working   = std::move(working).unwrap();
+        artifact.dexDomain = std::move(domain).unwrap();
+        return ca::core::Ok(std::move(artifact));
+    }
+    catch (const std::exception& exception) {
+        return ca::core::Err(
+            error(WorkspaceError::DataLoss, "open APK", exception.what()));
+    }
+}
+
+/// @brief 裸 dex 导入行：单 dex 文件装 UnknownResource 容器（条目 uri =
+///        文件路径，与 openClass 单工件口径一致）+ dex 域。只读分析原型。
+WorkspaceResult<ImportedArtifact> dexImport(
+    const std::string& path, ca::str::Utf8StringRef pathRef,
+    const mjbase::jar::IJarReader::EntryNameDecoder& decoder)
+{
+    (void)pathRef;
+    (void)decoder;
+    if (path.empty())
+        return ca::core::Err(
+            error(WorkspaceError::InvalidArgument, "open DEX", "path is empty"));
+    namespace fs = std::filesystem;
+    std::error_code filesystemError;
+    const auto      status = fs::status(fsPath(path), filesystemError);
+    if (filesystemError || !fs::exists(status))
+        return ca::core::Err(error(WorkspaceError::NotFound, "open DEX", path));
+    if (!fs::is_regular_file(status))
+        return ca::core::Err(
+            error(WorkspaceError::InvalidArgument, "open DEX", "path is not a regular file"));
+    try {
+        std::vector<ca::u8> bytes = readFileBytes(fsPath(path));
+        // dex magic 前置定性（"dex\n"；版本位 035..041 由 libdex 校验）。
+        if (bytes.size() < 8 || bytes[0] != 'd' || bytes[1] != 'e' || bytes[2] != 'x' ||
+            bytes[3] != '\n')
+            return ca::core::Err(
+                error(WorkspaceError::InvalidArgument, "open DEX", "not a dex file: " + path));
+        auto domain = DexDomain::loadFromDexBytes(bytes, path);
+        if (domain.is_err()) return ca::core::Err(std::move(domain).unwrap_err());
+
+        model::ResourceContainer loaded;
+        loaded.addResource(path, std::make_unique<model::UnknownResource>(path, bytes));
+        auto original = cloneContainer(loaded);
+        if (original.is_err()) return ca::core::Err(std::move(original).unwrap_err());
+        auto working = cloneContainer(loaded);
+        if (working.is_err()) return ca::core::Err(std::move(working).unwrap_err());
+
+        ImportedArtifact artifact;
+        artifact.original  = std::move(original).unwrap();
+        artifact.working   = std::move(working).unwrap();
+        artifact.dexDomain = std::move(domain).unwrap();
+        return ca::core::Ok(std::move(artifact));
+    }
+    catch (const std::exception& exception) {
+        return ca::core::Err(
+            error(WorkspaceError::DataLoss, "open DEX", exception.what()));
+    }
+}
+
 }   // namespace
 
 WorkspaceResult<std::unique_ptr<model::ResourceContainer>> cloneContainer(
@@ -453,6 +577,11 @@ WorkspaceResult<std::unique_ptr<model::ResourceContainer>> cloneContainer(
     if (err.is_err()) return ca::core::Err(std::move(err));
     return ca::core::Ok(std::move(result));
 }
+
+ImportedArtifact::~ImportedArtifact()                       = default;
+ImportedArtifact::ImportedArtifact()                        = default;
+ImportedArtifact::ImportedArtifact(ImportedArtifact&&)      = default;
+ImportedArtifact& ImportedArtifact::operator=(ImportedArtifact&&) = default;
 
 ContainerIoRegistry& ContainerIoRegistry::instance()
 {
@@ -497,6 +626,10 @@ ContainerIoRegistry::ContainerIoRegistry()
     entries_.push_back({ContainerFormat::Jar, "jar", {true}, &jarImport, &jarExport});
     entries_.push_back({ContainerFormat::ClassFile, "class", {false}, &classFileImport,
                        &classFileExport});
+    // apk/dex：只读分析原型（dex 域装载；无导出行——exportArtifact 对空
+    // exportFn 报 Unimplemented）。
+    entries_.push_back({ContainerFormat::Apk, "apk", {false}, &apkImport, nullptr});
+    entries_.push_back({ContainerFormat::Dex, "dex", {false}, &dexImport, nullptr});
 }
 
 ContainerFormat formatForPath(const std::string& path) noexcept

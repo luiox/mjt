@@ -142,6 +142,11 @@ add_requires("libjclassfile 0.0.2")
 -- 常量建模。mjbase 0.0.31 门控 libjbc>=0.4.22，直接抬到 0.4.27 单实例。
 includes("xmake/packages/libjbc.lua")
 add_requires("libjbc 0.4.27")
+-- libdex 走项目内联包定义（git 直连 + commit 锁）：DEX 单文件读写库，
+-- luiox-repo 中心包仓尚无词条（先例同 libjbc）；其嵌套 libca/libjstr 由
+-- 定义内 add_deps 钉到上面的单源版本。
+includes("xmake/packages/libdex.lua")
+add_requires("libdex 0.0.1")
 add_requires("libjstd 0.0.1")
 add_requires("libjdk_finder 0.1.1")
 add_requires("libjhasm 0.3.3")

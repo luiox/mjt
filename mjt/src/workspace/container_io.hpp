@@ -33,6 +33,8 @@ enum class ContainerFormat : ca::u8
     None = 0,
     Jar,
     ClassFile,
+    Apk,   ///< apk 容器（dex 域装载；只读分析原型，docs/apk-dex-support-plan.md §3）
+    Dex,   ///< 裸 dex 文件（dex 域装载）
 };
 
 /// @brief 格式能力声明（主会话按位查询，不再 switch 枚举猜 jar 假设）。
@@ -41,9 +43,22 @@ struct ContainerCapabilities final
     bool hasManifest = false;
 };
 
+/// @brief dex 域聚合器（dex_domain.hpp；只读分析事实层）。ImportedArtifact
+///        的 dex 槽经前置声明挂靠——apk/dex importer 的产物携带。
+class DexDomain;
+
 /// @brief importer 产物：不可变原始快照 + 可修改工作副本 + 保真基线素材。
 struct ImportedArtifact final
 {
+    /// @brief 特殊成员 out-of-line（container_io.cpp）：dexDomain 槽的
+    ///        unique_ptr 删除器/移动赋值析旧需要 DexDomain 完整类型——值
+    ///        消费方不必连带 include dex_domain.hpp。显式析构抑制隐式移动，
+    ///        按五法则一并补 defaulted 移动构造/赋值与默认构造。
+    ~ImportedArtifact();
+    ImportedArtifact();
+    ImportedArtifact(ImportedArtifact&&);
+    ImportedArtifact& operator=(ImportedArtifact&&);
+
     std::unique_ptr<model::ResourceContainer> original;
     std::unique_ptr<model::ResourceContainer> working;
     /// 源 jar 的 META-INF/MANIFEST.MF 原始字节（#74 旁路捕获）；nullopt =
@@ -54,6 +69,9 @@ struct ImportedArtifact final
     /// 打开期验证门作用域（classfile 格式 = 本类；容器型格式为空——沿旧
     /// openJar/openClass 门禁口径）。
     std::vector<std::string> gateUris;
+    /// apk/dex 格式的 dex 域（libdex DOM 聚合；jvm 格式恒空）。会话经此
+    /// 回答类事实/引用/层次/smali 面——jbc 会话族对这些查询走容器+jbc 会话。
+    std::unique_ptr<DexDomain> dexDomain;
 };
 
 /// @brief exporter 所需的工作区事实（自由函数只认容器与 URI）。

@@ -120,6 +120,13 @@ public:
     void buildFor(const model::ResourceContainer&         container,
                   const std::vector<ca::str::Utf8String>& uris);
 
+    /// @brief 预建注入面（dex 域扫描结果的装配口）：三桶值语义重建，行序
+    ///        由调用方保证（dex 域 = class_def 序 + 指令程序序，与 build 的
+    ///        容器遍历序同构）。
+    static ReferenceScan fromParts(std::vector<MethodReference> methods,
+                                   std::vector<FieldReference>  fields,
+                                   std::vector<TypeReference>   types);
+
     /// 精确目标查询：编码目标为 owner/name/descriptor 的方法引用。
     std::vector<MethodReference> methodReferencesTo(const ca::str::Utf8StringRef& owner,
                                                     const ca::str::Utf8StringRef& name,

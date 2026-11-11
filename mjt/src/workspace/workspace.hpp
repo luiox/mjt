@@ -35,6 +35,8 @@ class AnalysisDb;   ///< 分析数据库连接（analysis_db.hpp；此处仅前�
 // 经 workspace_types.hpp 的别名以原相对形引用，引擎正文零改动。
 namespace mjt::workspace {
 
+class DexDomain;   ///< dex 域聚合器（dex_domain.hpp；apk/裸 dex 会话的事实后端）
+
 /// @file workspace.hpp
 /// @brief WorkspaceBase：可回滚的、单线程持有的 class/JAR 分析与编辑工作区（具体会话对象）。
 ///
@@ -101,6 +103,11 @@ public:
 
     /// @brief 当前主制品格式（container_io 注册表口径）；未加载时返回 None。
     ContainerFormat format() const noexcept { return format_; }
+
+    /// @brief 会话是否由 dex 域承载（apk/裸 dex 输入；只读分析原型）。
+    bool isDexBacked() const noexcept { return dexDomain_ != nullptr; }
+    /// @brief dex 域访问器（非 dex 会话为 nullptr；生命周期随会话）。
+    const DexDomain* dexDomain() const noexcept { return dexDomain_.get(); }
 
     /// @brief 当前主资源的来源路径。
     const ca::str::Utf8String& sourcePath() const noexcept;
@@ -403,6 +410,9 @@ private:
     ContainerFormat format_ = ContainerFormat::None;
     ca::str::Utf8String sourcePath_;
     ca::str::Utf8String primaryClassUri_;
+    /// dex 域（apk/裸 dex 格式的 importer 产物；jvm 格式恒空）。只读分析
+    /// 原型的类事实/引用/层次/smali 查询后端。
+    std::unique_ptr<DexDomain> dexDomain_;
     ca::u64      revision_ = 0;
     /// LVT 显示名策略 jar 级兜底旗标缓存（revision 键控懒算；打开新主资源
     /// 时置 computed=false 重算）。mutable：查询路径（const）内懒算。

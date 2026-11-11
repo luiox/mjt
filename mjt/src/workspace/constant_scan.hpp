@@ -84,6 +84,14 @@ NumberNarrowKeys numberNarrowKeys(const std::string& query);
 ///        先宽化——查询侧同键）且值可整表示、|v| < 2^63 时另带 valueInt。
 std::vector<mjbase::project::DbNumberRecord> cpNumberRecords(const jbc::core::ClassFile& cf);
 
+/// @brief 数值行装配原语（dex 域常量面与 JVM 面共用单源）：整型行 /
+///        Float 行（位型收窄键 = 宽化后 double 的 IEEE 位型）/ Double 行。
+///        insnIndex/opcode 由调用方填（常量池行恒 -1/-1）。
+mjbase::project::DbNumberRecord dbIntNumberRecord(ca::i64 insnIndex, ca::i32 opcode,
+                                                  mjbase::project::DbNumberKind kind, ca::i64 value);
+mjbase::project::DbNumberRecord dbFloat32NumberRecord(ca::i64 insnIndex, ca::i32 opcode, float value);
+mjbase::project::DbNumberRecord dbFloat64NumberRecord(ca::i64 insnIndex, ca::i32 opcode, double value);
+
 /// @brief 单个方法的数值字面量切片（name+descriptor 身份键，库成员行解析用）。
 struct MethodNumberSlice
 {

@@ -12,6 +12,7 @@
 #include "jbc/ir/units.hpp"
 #include "mjbase/project/entry_shape.hpp"
 #include "constant_scan.hpp"
+#include "dex_domain.hpp"
 #include "reference_scan.hpp"
 #include "workspace.hpp"
 
@@ -71,10 +72,13 @@ AnalysisIngestError databaseError(mjbase::project::AnalysisDbError error)
 ///        "class"/"manifest"/"resource"，jar/unknown 按不透明 resource
 ///        记——登记语义 B4 起保持不变，更细的形态切面（路径 facet、jar
 ///        伪装形态）由 census 投影/导出层细化，见 analysis_census）。
+///        dex 条目（apk 根级 *.dex / 裸 dex）单列 "dex"——二进制字节码容器，
+///        不参与资源串抽取（可打印 run 扫描会产生噪声行）。
 Utf8String entryKind(const std::string& type)
 {
     if (type == "class") return Utf8String::from_cstr("class");
     if (type == "manifest") return Utf8String::from_cstr("manifest");
+    if (type == "dex") return Utf8String::from_cstr("dex");
     return Utf8String::from_cstr("resource");
 }
 
@@ -154,8 +158,10 @@ ca::Result<AnalysisIngestStats, AnalysisIngestError> ingestIntoAnalysisDb(
 
         // 资源串抽取（schema v13）：非 class 条目的可打印 run——与引擎
         // resourceStrings 活扫描同一事实源（readResource 的 bytesOf 序列化
-        // 同形），抽取规则在 constant_scan 单源。entry_id 在登记后回填。
-        if (resource.type.to_std_string() != "class") {
+        // 同形），抽取规则在 constant_scan 单源。dex 条目跳过（二进制字节码
+        // 容器，run 扫描是噪声）。entry_id 在登记后回填。
+        if (resource.type.to_std_string() != "class" &&
+            resource.type.to_std_string() != "dex") {
             resourceValues.emplace(resource.uri.to_std_string(),
                                    resourceStringRecords(bytes));
         }
@@ -192,8 +198,11 @@ ca::Result<AnalysisIngestStats, AnalysisIngestError> ingestIntoAnalysisDb(
 
     //-- 类事实（类头 + 成员清单，class 条目关联） ----------------------------
 
-    auto classInfos = listClasses(*workspace.workingContainer(),
-                                workspace.lvtJarFallbackFlag());
+    // dex 会话：类事实直接出自 dex 域（容器自由函数只认 jbc class 条目）。
+    WorkspaceResult<std::vector<ClassInfo>> classInfos =
+        workspace.isDexBacked() && workspace.dexDomain() != nullptr
+            ? workspace.dexDomain()->listClasses()
+            : listClasses(*workspace.workingContainer(), workspace.lvtJarFallbackFlag());
     if (classInfos.is_err()) {
         return ca::core::Err(workspaceError(std::move(classInfos).unwrap_err()));
     }
@@ -312,26 +321,21 @@ ca::Result<AnalysisIngestStats, AnalysisIngestError> ingestIntoAnalysisDb(
     }
 
     //-- 常量事实面（cp_strings / number_literals，mjbase schema v12）-----------
-    // 逐类重读字节建 jbc 会话（引擎 sessionOf 同形输入），抽取层与引擎搜索/
-    // 编辑同步同一事实源。整库走查攒 DbClassConstantFaces，走查收尾后单次
+    // dex 会话：DexDomain 常量面直接出切片（const-string→strings、静态初值/
+    // const 字面量→numbers），jbc 会话段整段跳过。jar 会话：逐类重读字节建
+    // jbc 会话（引擎 sessionOf 同形输入），抽取层与引擎搜索/编辑同步同一
+    // 事实源。两路径同构攒 DbClassConstantFaces，走查收尾后单次
     // replaceConstantFaces 整库单事务重建（mjbase 0.0.29 整库入口）——
     // 逐类/逐方法切片调用各自开一事务，windows 上每事务 WAL fsync（fat 夹具
     // ≈ 4.4 万次调用）实证悬崖由此消除。批次锚与 replaceReferences 同批：
     // 每类 (2, class_id)、每个出现的方法 (3, member_id)（mjbase 整库入口
     // 合批落锚，INSERT OR IGNORE 幂等）；增量编辑仍走逐切片入口（edit_sync）。
+    const bool dexBacked = workspace.isDexBacked();
+    const DexDomain* dexDomain = workspace.dexDomain();
     std::vector<mjbase::project::DbClassConstantFaces> classFaces;
     for (const ClassInfo& info : classList) {
         const auto entry = entryIdByPath.find(info.resourceUri.to_std_string());
         if (entry == entryIdByPath.end()) continue;
-        auto content = readResource(*workspace.workingContainer(), info.resourceUri.ref());
-        if (content.is_err()) {
-            return ca::core::Err(workspaceError(std::move(content).unwrap_err()));
-        }
-        auto bytes = std::move(content).unwrap().bytes;
-        auto opened = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(bytes));
-        if (opened.is_err()) continue;   // 引擎搜索同款宽容：畸形 class 跳过
-        auto held = std::move(opened).unwrap();
-
         auto found = db.findClass(utf8Ref(info.internalName.to_std_string()));
         if (found.is_err()) {
             return ca::core::Err(databaseError(std::move(found).unwrap_err()));
@@ -341,12 +345,46 @@ ca::Result<AnalysisIngestStats, AnalysisIngestError> ingestIntoAnalysisDb(
 
         mjbase::project::DbClassConstantFaces faces;
         faces.classId    = classRow->classId;
-        faces.cpStrings  = cpStringRecords(held->backing());
-        faces.cpNumbers  = cpNumberRecords(held->backing());
+        const std::string internalName = info.internalName.to_std_string();
+
+        std::vector<MethodNumberSlice> methodSlices;
+        if (dexBacked && dexDomain != nullptr) {
+            // dex 域常量面（引用集口径见 dex_domain.hpp；入库失败 fail-closed
+            // ——类事实已随批登记，缺席即状态不一致，不静默丢面）。
+            auto dexStrings = dexDomain->cpStringRecords(internalName);
+            if (dexStrings.is_err()) {
+                return ca::core::Err(workspaceError(std::move(dexStrings).unwrap_err()));
+            }
+            auto dexNumbers = dexDomain->cpNumberRecords(internalName);
+            if (dexNumbers.is_err()) {
+                return ca::core::Err(workspaceError(std::move(dexNumbers).unwrap_err()));
+            }
+            auto dexSlices = dexDomain->methodNumberSlices(internalName);
+            if (dexSlices.is_err()) {
+                return ca::core::Err(workspaceError(std::move(dexSlices).unwrap_err()));
+            }
+            faces.cpStrings = std::move(dexStrings).unwrap();
+            faces.cpNumbers = std::move(dexNumbers).unwrap();
+            methodSlices    = std::move(dexSlices).unwrap();
+        }
+        else {
+            auto content = readResource(*workspace.workingContainer(), info.resourceUri.ref());
+            if (content.is_err()) {
+                return ca::core::Err(workspaceError(std::move(content).unwrap_err()));
+            }
+            auto bytes = std::move(content).unwrap().bytes;
+            auto opened = jbc::ir::makeSessionFromBytes(jbc::core::ByteView(bytes));
+            if (opened.is_err()) continue;   // 引擎搜索同款宽容：畸形 class 跳过
+            auto held = std::move(opened).unwrap();
+
+            faces.cpStrings = cpStringRecords(held->backing());
+            faces.cpNumbers = cpNumberRecords(held->backing());
+            methodSlices    = methodNumberSlices(*held);
+        }
         stats.constantStrings += faces.cpStrings.size();
         stats.constantNumbers += faces.cpNumbers.size();
 
-        auto members = db.listMembers(utf8Ref(info.internalName.to_std_string()));
+        auto members = db.listMembers(utf8Ref(internalName));
         if (members.is_err()) {
             return ca::core::Err(databaseError(std::move(members).unwrap_err()));
         }
@@ -355,9 +393,10 @@ ca::Result<AnalysisIngestStats, AnalysisIngestError> ingestIntoAnalysisDb(
             if (row.kind != mjbase::project::DbMemberKind::Method) continue;
             methodIds[{row.name.to_std_string(), row.descriptor.to_std_string()}] = row.memberId;
         }
-        for (auto& slice : methodNumberSlices(*held)) {
+        for (auto& slice : methodSlices) {
             const auto id = methodIds.find({slice.name, slice.descriptor});
             if (id == methodIds.end()) continue;   // 成员行缺席（防御）：类事实已随批登记，重跑自愈
+            if (slice.records.empty()) continue;   // 无数值行不落成员切片（mjbase 逐切片锚行只携带真实覆盖）
             mjbase::project::DbMemberNumberSlices memberNumbers;
             memberNumbers.memberId = id->second;
             memberNumbers.records  = std::move(slice.records);

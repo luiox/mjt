@@ -86,6 +86,21 @@ DbNumberRecord float64Record(ca::i64 insnIndex, ca::i32 opcode, double value)
 
 }   // namespace
 
+DbNumberRecord dbIntNumberRecord(ca::i64 insnIndex, ca::i32 opcode, DbNumberKind kind, ca::i64 value)
+{
+    return intRecord(insnIndex, opcode, kind, value);
+}
+
+DbNumberRecord dbFloat32NumberRecord(ca::i64 insnIndex, ca::i32 opcode, float value)
+{
+    return float32Record(insnIndex, opcode, value);
+}
+
+DbNumberRecord dbFloat64NumberRecord(ca::i64 insnIndex, ca::i32 opcode, double value)
+{
+    return float64Record(insnIndex, opcode, value);
+}
+
 ConstantUtf8Facet constantUtf8Facet(std::string_view value)
 {
     if (value.empty()) return ConstantUtf8Facet::Name;
