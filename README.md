@@ -52,7 +52,7 @@ On Windows the executable embeds an `activeCodePage=UTF-8` and `longPathAware` m
 
 ## CLI usage
 
-The `mjt` binary is a plain command-line tool (`xmake build mjt`) covering nine batch-style commands over JARs and mapping files. Exit codes: `0` success (including `--help`), `1` usage error (missing argument, missing input file, unknown format name, class selector without a match, invalid flag value), `2` runtime failure (open, parse, repair, export, decompile, extraction, scan or disassembly failure).
+The `mjt` binary is a plain command-line tool (`xmake build mjt`) covering ten batch-style commands over JARs and mapping files. Exit codes: `0` success (including `--help`), `1` usage error (missing argument, missing input file, unknown format name, class selector without a match, invalid flag value), `2` runtime failure (open, parse, repair, export, decompile, extraction, scan or disassembly failure).
 
 ```sh
 mjt --version          # print tool version
@@ -148,6 +148,14 @@ mjt subs -i <jar> -c <internalName> [--json]
 
 Lists the fields and methods of one class: name, descriptor, raw access flags (JVMS bitmask, decimal) and a `native` marker for methods. Fields come first, each group in classfile declaration order; the header reports the class kind (same derivation as `mjt classes`). An unknown class exits `1`; `--json` emits the same data with stable English keys.
 
+### `mjt hexdump`: raw class byte dump
+
+```sh
+mjt hexdump -i <jar> <class> [--offset N] [--length N] [--width N] [--no-ascii]
+```
+
+Prints the raw bytes of one class as xxd-style rows (`%08x` offset, hex bytes with a half-line separator, ASCII column with non-printables as `.`). The class is located by `<class>`: a resource URI (`fixture/Alpha.class`) or internal name (`fixture/Alpha`) matches exactly first, otherwise the first entry whose name contains the selector wins. `--offset` / `--length` window the dump (`--length -1`, the default, means "to the end of the class"), `--width` sets the bytes-per-line count (default `16`), and `--no-ascii` hides the right-hand ASCII column. An offset past the end of the class prints an explicit empty note instead of rows; negative offsets, non-positive widths and lengths below `-1` are usage errors. This is a pure byte-level view: no class parsing involved, so it works on bytes `disasm` cannot render.
+
 Locale: message text follows the `MJT_LANG` environment variable (`en_US` default, `zh_CN` supported).
 
 ## Repository layout
@@ -155,7 +163,7 @@ Locale: message text follows the `MJT_LANG` environment variable (`en_US` defaul
 ```
 mjt/mcp/src/     MCP server and tool set (core product code)
 mjt/mcp/test/    MCP-layer unit tests
-mjt/cli/         `mjt` CLI binary (info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs)
+mjt/cli/         `mjt` CLI binary (info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs / hexdump)
 mjt/test/cli/    CLI-layer unit tests
 mjt/src/shared/  capabilities shared across the MCP tool set
                  (decompiler integration, jar remapping, workspace…)

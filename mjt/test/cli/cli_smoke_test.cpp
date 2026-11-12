@@ -308,8 +308,37 @@ TEST(MjtCliSmokeTest, SubsCommandListsMembersAndReportsMissingClass)
     EXPECT_EQ(missing.exitCode, 1);
 }
 
-TEST(MjtCliSmokeTest, JarFixCommandRepairsAndReports)
+TEST(MjtCliSmokeTest, HexdumpCommandPrintsBytesAndReportsErrors)
 {
+    const auto jar = cli_fixture::writeInfoJar();
+
+    const auto text = runCli("hexdump -i \"" + jar.string() + "\" fixture/Alpha");
+    EXPECT_EQ(text.exitCode, 0);
+    EXPECT_NE(text.output.find("ca fe ba be"), std::string::npos);
+    EXPECT_NE(text.output.find("|"), std::string::npos);
+
+    const auto window = runCli("hexdump -i \"" + jar.string() +
+                               "\" fixture/Alpha --offset 0 --length 4 --no-ascii");
+    EXPECT_EQ(window.exitCode, 0);
+    EXPECT_NE(window.output.find("ca fe ba be"), std::string::npos);
+    EXPECT_EQ(window.output.find("|"), std::string::npos);
+
+    const auto missing = runCli("hexdump -i \"" + jar.string() + "\" fixture/NoSuch");
+    EXPECT_EQ(missing.exitCode, 1);
+    EXPECT_NE(missing.output.find("fixture/NoSuch"), std::string::npos);
+
+    const auto noClass = runCli("hexdump -i \"" + jar.string() + "\"");
+    EXPECT_EQ(noClass.exitCode, 1);
+
+    const auto badOffset =
+        runCli("hexdump -i \"" + jar.string() + "\" fixture/Alpha --offset -1");
+    EXPECT_EQ(badOffset.exitCode, 1);
+
+    const auto missingJar = runCli("hexdump -i mjt_cli_smoke_hexdump_missing.jar Alpha");
+    EXPECT_EQ(missingJar.exitCode, 1);
+}
+
+TEST(MjtCliSmokeTest, JarFixCommandRepairsAndReports){
     const auto inJar  = cli_fixture::writeBrokenJar();
     const auto outJar = test::getTempOutPath("mjt_cli_smoke_fixed.jar");
     std::error_code ec;

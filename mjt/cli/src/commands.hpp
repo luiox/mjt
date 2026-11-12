@@ -525,4 +525,50 @@ void renderSubsText(const SubsReport& report, OutputSink& sink);
 /// @brief 渲染 subs JSON（键稳定英文；文本字段经 json::escape 转义）。
 void renderSubsJson(const SubsReport& report, OutputSink& sink);
 
+// ── hexdump ────────────────────────────────────────────────────────
+
+/// @brief hexdump 命令错误：类别定退出码分支，message 为已渲染文案。
+struct HexdumpError
+{
+    enum class Kind
+    {
+        InvalidArgument, ///< --offset/--length/--width 值非法或缺 <class>（用法 → 退出码 1）
+        ClassNotFound,   ///< <class> 选择器在 jar 内无命中（→ 退出码 1）
+        Runtime,         ///< jar 打开 / 类字节读取失败（→ 退出码 2）
+    };
+    Kind        kind    = Kind::Runtime;
+    std::string message;
+};
+
+/// @brief hexdump 渲染窗口选项（CLI 旗标直传；collect 校验 + 渲染共用输入）。
+struct HexdumpOptions
+{
+    ca::i64 offset    = 0;    ///< 起始偏移（字节）
+    ca::i64 length    = -1;   ///< 显示字节数；-1 = 到类字节末尾（哨兵值）
+    ca::i64 width     = 16;   ///< 每行字节数
+    bool    showAscii = true; ///< false = --no-ascii（隐藏右侧 ASCII 列）
+};
+
+/// @brief 单类原始字节报告（渲染与断言共用）。
+struct HexdumpReport
+{
+    std::string jarPath;       ///< 输入 jar 路径（原样回显）
+    std::string classUri;      ///< 命中的资源 URI（容器条目 URI，含 .class 后缀）
+    std::string internalName;  ///< 命中类的内部名
+    std::vector<ca::u8> bytes; ///< 类原始字节
+};
+
+/// @brief 采集单类原始字节：workspace 打开 → listClassSummaries 类选择 → readClassBytes 读取类原始字节。
+///
+/// 类选择：URI / 内名精确命中优先；无精确命中取首个包含选择器的子串候选（listClassSummaries 内名字典序，多命中属歧义输入，取确定性序，单命中语义不变）。旗标防御：负 offset 会负索引字节向量；width <= 0 让渲染步进不推进；length < -1 与 -1（整个 class）哨兵冲突，一律 InvalidArgument（退出码 1）。
+ca::Result<HexdumpReport, HexdumpError> collectHexdump(const std::string& jarPath,
+                                                       const std::string& classSelector,
+                                                       const HexdumpOptions& options);
+
+/// @brief 渲染 xxd 风格十六进制转储。
+///
+/// 行形：`%08zx` 偏移 + 两空格，每字节 `%02x `，半行宽处补一空格分隔；短行按每缺一字节三空格补齐（半行宽处再多一空格）；ASCII 列 ` |...|` 以空格补到行宽。偏移越过类字节末尾时只输出越界提示行（调用方保持退出码 0）。
+void renderHexdumpText(const HexdumpReport& report, const HexdumpOptions& options,
+                       OutputSink& sink);
+
 }   // namespace mjt::cli

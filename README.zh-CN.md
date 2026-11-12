@@ -65,7 +65,7 @@ Windows 下 exe 嵌了 `activeCodePage=UTF-8` 与 `longPathAware` 的 manifest�
 
 ## CLI 用法
 
-`mjt` 是普通命令行工具（`xmake build mjt`），九个面向 JAR 与 mapping
+`mjt` 是普通命令行工具（`xmake build mjt`），十个面向 JAR 与 mapping
 文件的批处理式命令。退出码约定：`0` 成功（含 `--help`）、`1` 用法错误
 （参数缺失、输入文件不存在、格式名不识别、类选择器无命中、旗标值非法）、
 `2` 运行失败（打开、解析、修复、导出、反编译、抽取、扫描或反汇编失败）。
@@ -213,6 +213,14 @@ mjt subs -i <jar> -c <internalName> [--json]
 形态（与 `mjt classes` 同源派生）。类不存在退出码 `1`；`--json` 输出同一数据
 （键为稳定英文）。
 
+### `mjt hexdump`：类原始字节转储
+
+```sh
+mjt hexdump -i <jar> <class> [--offset N] [--length N] [--width N] [--no-ascii]
+```
+
+以 xxd 风格行打印单类的原始字节（`%08x` 偏移、hex 字节带半行分隔、ASCII 列不可打印字符显示为 `.`）。`<class>` 定位类：资源 URI（`fixture/Alpha.class`）或内部名（`fixture/Alpha`）精确命中优先，否则取首个名字包含选择器的条目。`--offset` / `--length` 窗口化输出（`--length -1` 缺省表示“到类字节末尾”），`--width` 设置每行字节数（缺省 `16`），`--no-ascii` 隐藏右侧 ASCII 列。偏移越过类字节末尾时输出明确的空提示而非数据行；负偏移、非正宽度与小于 `-1` 的长度都是用法错误。这是纯字节级视图，不解析 class，`disasm` 无法渲染的字节这里照常可读。
+
 语言：文案跟随 `MJT_LANG` 环境变量（缺省 `en_US`，支持 `zh_CN`）。
 
 ## 仓库结构
@@ -220,7 +228,7 @@ mjt subs -i <jar> -c <internalName> [--json]
 ```
 mjt/mcp/src/     MCP 服务器与工具集（核心产品代码）
 mjt/mcp/test/    MCP 层单测
-mjt/cli/         `mjt` CLI 二进制（info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs）
+mjt/cli/         `mjt` CLI 二进制（info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs / hexdump）
 mjt/test/cli/    CLI 层单测
 mjt/src/shared/  MCP 工具集共用的底层能力（反编译接入、jar 重映射、workspace…）
 skills/          MCP 技能定义

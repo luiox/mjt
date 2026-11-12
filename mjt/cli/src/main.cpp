@@ -1,7 +1,6 @@
 /// @file        main.cpp
 /// @brief       `mjt` CLI 入口：ca::opt 命令树（info / mapping / jar fix /
-///              decompile / strings / xref / classes / disasm / subs）+ 全局
-///              --version/--help + 退出码映射。
+///              decompile / strings / xref / classes / disasm / subs / hexdump）+ 全局 --version/--help + 退出码映射。
 ///
 /// 退出码约定（README「CLI usage」同文）：0 成功（含 --help）/ 1 用法错误
 /// （参数缺失、文件不存在、格式名不识别、类选择器无命中、旗标值非法）/
@@ -461,8 +460,36 @@ int runSubs(const ca::opt::ParseResult& args)
     return mjt::cli::kExitOk;
 }
 
+/// `mjt hexdump -i <jar> <class> [--offset N] [--length N] [--width N] [--no-ascii]`。
+///
+/// <class> 为位置参数（URI / 内名精确命中优先，无精确命中退子串候选）。旗标值非法 / 类选择器无命中 = 用法 1；jar 打开 / 类字节读取失败 = 运行 2。
+int runHexdump(const ca::opt::ParseResult& args)
+{
+    const std::string input = args.get("input");
+    if (!requireInputFile(input))
+        return usageFailure(mjt::shared::trfStr("mjt.cli.err.input_missing", {input}));
+
+    mjt::cli::HexdumpOptions options;
+    options.offset    = static_cast<ca::i64>(args.get_int("offset", 0));
+    options.length    = static_cast<ca::i64>(args.get_int("length", -1));
+    options.width     = static_cast<ca::i64>(args.get_int("width", 16));
+    options.showAscii = !args.has("no-ascii");
+
+    const auto& positionals = args.positionals();
+    const std::string className = positionals.empty() ? std::string{} : positionals.front();
+
+    auto report = mjt::cli::collectHexdump(input, className, options);
+    if (report.is_err()) {
+        const auto error = std::move(report).unwrap_err();
+        const bool usage = error.kind != mjt::cli::HexdumpError::Kind::Runtime;
+        return usage ? usageFailure(error.message) : runFailure(error.message);
+    }
+    mjt::cli::renderHexdumpText(std::move(report).unwrap(), options, mjt::out());
+    return mjt::cli::kExitOk;
+}
+
 /// 命令树：根（--version）→ info / mapping / jar → fix / decompile / strings /
-/// xref / classes / disasm / subs。
+/// xref / classes / disasm / subs / hexdump。
 ca::opt::Command buildCommandLine()
 {
     ca::opt::Command root;
@@ -744,6 +771,46 @@ ca::opt::Command buildCommandLine()
     subs.args.push_back(subsJson);
     root.subcommands.push_back(std::move(subs));
 
+    // hexdump：单类原始字节十六进制转储（<class> 位置参数；--offset / --length / --width 窗口，--no-ascii 隐藏 ASCII 列）。旗标文案复用共享表 mjt.cmd.hexdump.*（与 MCP 共用同一份文案，避免两处漂移）。
+    ca::opt::Command hexdump;
+    hexdump.name = "hexdump";
+    hexdump.help = mjt::shared::trfStr("mjt.cli.hexdump.help");
+    ca::opt::Arg hexdumpInput = input;
+    hexdump.args.push_back(hexdumpInput);
+    ca::opt::Arg hexdumpClass;
+    hexdumpClass.name    = "class";
+    hexdumpClass.kind    = ca::opt::OptKind::Positional;
+    hexdumpClass.metavar = "<class>";
+    hexdumpClass.help    = mjt::shared::trfStr("mjt.cmd.hexdump.param.class.desc");
+    hexdump.args.push_back(hexdumpClass);
+    ca::opt::Arg offset;
+    offset.name          = "offset";
+    offset.kind          = ca::opt::OptKind::Int;
+    offset.metavar       = "<n>";
+    offset.help          = mjt::shared::trfStr("mjt.cmd.hexdump.param.offset.desc");
+    offset.default_value = "0";
+    hexdump.args.push_back(offset);
+    ca::opt::Arg length;
+    length.name          = "length";
+    length.kind          = ca::opt::OptKind::Int;
+    length.metavar       = "<n>";
+    length.help          = mjt::shared::trfStr("mjt.cmd.hexdump.param.length.desc");
+    length.default_value = "-1";
+    hexdump.args.push_back(length);
+    ca::opt::Arg width;
+    width.name          = "width";
+    width.kind          = ca::opt::OptKind::Int;
+    width.metavar       = "<n>";
+    width.help          = mjt::shared::trfStr("mjt.cmd.hexdump.param.width.desc");
+    width.default_value = "16";
+    hexdump.args.push_back(width);
+    ca::opt::Arg noAscii;
+    noAscii.name = "no-ascii";
+    noAscii.kind = ca::opt::OptKind::Flag;
+    noAscii.help = mjt::shared::trfStr("mjt.cmd.hexdump.param.no_ascii.desc");
+    hexdump.args.push_back(noAscii);
+    root.subcommands.push_back(std::move(hexdump));
+
     return root;
 }
 
@@ -784,6 +851,7 @@ int main(int argc, char* argv[])
     if (path.size() == 1 && path.front() == "classes") return runClasses(args);
     if (path.size() == 1 && path.front() == "disasm") return runDisasm(args);
     if (path.size() == 1 && path.front() == "subs") return runSubs(args);
+    if (path.size() == 1 && path.front() == "hexdump") return runHexdump(args);
     if (path.size() == 2 && path.front() == "jar" && path[1] == "fix") return runJarFix(args);
 
     std::cerr << ca::opt::help_text(parser.root());
