@@ -338,6 +338,35 @@ TEST(MjtCliSmokeTest, HexdumpCommandPrintsBytesAndReportsErrors)
     EXPECT_EQ(missingJar.exitCode, 1);
 }
 
+TEST(MjtCliSmokeTest, EvalCommandEvaluatesAndReportsErrors)
+{
+    const auto value = runCli("eval \"1 + 2 * 3\"");
+    EXPECT_EQ(value.exitCode, 0);
+    EXPECT_NE(value.output.find("7"), std::string::npos);
+
+    const auto bound = runCli("eval -v x=10,y=20 \"x + y\"");
+    EXPECT_EQ(bound.exitCode, 0);
+    EXPECT_NE(bound.output.find("30"), std::string::npos);
+
+    const auto unbound = runCli("eval \"x + 0\"");
+    EXPECT_EQ(unbound.exitCode, 0);
+    EXPECT_NE(unbound.output.find("(var x"), std::string::npos);
+
+    // 缺表达式 = 用法 1（错误行 + 详细用法）。
+    const auto missing = runCli("eval");
+    EXPECT_EQ(missing.exitCode, 1);
+    EXPECT_NE(missing.output.find("expression"), std::string::npos);
+
+    // 解析失败 = 用法 1。
+    const auto broken = runCli("eval \"1 +\"");
+    EXPECT_EQ(broken.exitCode, 1);
+
+    // 绑定串非法 = 用法 1。
+    const auto badVars = runCli("eval -v x \"1\"");
+    EXPECT_EQ(badVars.exitCode, 1);
+    EXPECT_NE(badVars.output.find("x"), std::string::npos);
+}
+
 TEST(MjtCliSmokeTest, JarFixCommandRepairsAndReports){
     const auto inJar  = cli_fixture::writeBrokenJar();
     const auto outJar = test::getTempOutPath("mjt_cli_smoke_fixed.jar");

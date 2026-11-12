@@ -221,6 +221,17 @@ mjt hexdump -i <jar> <class> [--offset N] [--length N] [--width N] [--no-ascii]
 
 以 xxd 风格行打印单类的原始字节（`%08x` 偏移、hex 字节带半行分隔、ASCII 列不可打印字符显示为 `.`）。`<class>` 定位类：资源 URI（`fixture/Alpha.class`）或内部名（`fixture/Alpha`）精确命中优先，否则取首个名字包含选择器的条目。`--offset` / `--length` 窗口化输出（`--length -1` 缺省表示“到类字节末尾”），`--width` 设置每行字节数（缺省 `16`），`--no-ascii` 隐藏右侧 ASCII 列。偏移越过类字节末尾时输出明确的空提示而非数据行；负偏移、非正宽度与小于 `-1` 的长度都是用法错误。这是纯字节级视图，不解析 class，`disasm` 无法渲染的字节这里照常可读。
 
+### `mjt eval`：表达式求值与化简
+
+```sh
+mjt eval "1 + 2 * 3"                  # 7
+mjt eval -v x=10,y=20 "x + y"         # 30
+mjt eval "x + 0"                      # 未绑定变量打印 S-表达式
+mjt eval -s "(x ^ y) + 2*(x & y)"     # 化简形式
+```
+
+经 mjbase expr 管线求值或化简数学表达式（`parseExpression` → 可选 `simplify` → `eval`；与 Python SDK `analysis_evaluate` 绑定同一引擎）。算子：`+ - * / % & | ^ ~ << >> >>>`（标准 C 优先级）；十进制与十六进制（`0xFF`）字面量、具名变量。`-v k=v,k2=v2` 将变量绑定为整数值；绑定串畸形或表达式无法解析退出码 `1`。含未绑定变量的表达式不算失败：化简后的 S-表达式打印到 stdout、退出码 `0`（带 `-s` 先应用 MBA 代数恒等式，`(x ^ y) + 2*(x & y)` 化简为 `x + y`）。其余求值失败（深度超限）退出码 `2`。
+
 语言：文案跟随 `MJT_LANG` 环境变量（缺省 `en_US`，支持 `zh_CN`）。
 
 ## 仓库结构

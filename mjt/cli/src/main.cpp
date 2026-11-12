@@ -1,6 +1,6 @@
 /// @file        main.cpp
 /// @brief       `mjt` CLI 入口：ca::opt 命令树（info / mapping / jar fix /
-///              decompile / strings / xref / classes / disasm / subs / hexdump）+ 全局 --version/--help + 退出码映射。
+///              decompile / strings / xref / classes / disasm / subs / hexdump / eval）+ 全局 --version/--help + 退出码映射。
 ///
 /// 退出码约定（README「CLI usage」同文）：0 成功（含 --help）/ 1 用法错误
 /// （参数缺失、文件不存在、格式名不识别、类选择器无命中、旗标值非法）/
@@ -488,8 +488,31 @@ int runHexdump(const ca::opt::ParseResult& args)
     return mjt::cli::kExitOk;
 }
 
+/// `mjt eval [-s|--simplify] [-v|--vars <k=v,...>] <expression>`。
+///
+/// <expression> 为位置参数（多余位置 token 忽略）。缺表达式 = 用法 1（stderr 错误行 + stdout 详细用法）；绑定串非法 / 表达式解析失败 = 用法 1；深度超限等求值错误 = 运行 2；含未绑定变量 = 打印 S-表达式退出 0。
+int runEval(const ca::opt::ParseResult& args)
+{
+    const auto& positionals   = args.positionals();
+    const std::string exprStr = positionals.empty() ? std::string{} : positionals.front();
+
+    auto outcome = mjt::cli::evaluateExpression(exprStr, args.get("vars"), args.has("simplify"));
+    if (outcome.is_err()) {
+        const auto error = std::move(outcome).unwrap_err();
+        if (error.kind == mjt::cli::EvalError::Kind::MissingExpression) {
+            usageFailure(error.message);
+            mjt::cli::renderEvalUsage(mjt::out());
+            return mjt::cli::kExitUsage;
+        }
+        const bool usage = error.kind != mjt::cli::EvalError::Kind::EvalFailed;
+        return usage ? usageFailure(error.message) : runFailure(error.message);
+    }
+    mjt::cli::renderEvalOutcome(std::move(outcome).unwrap(), mjt::out());
+    return mjt::cli::kExitOk;
+}
+
 /// 命令树：根（--version）→ info / mapping / jar → fix / decompile / strings /
-/// xref / classes / disasm / subs / hexdump。
+/// xref / classes / disasm / subs / hexdump / eval。
 ca::opt::Command buildCommandLine()
 {
     ca::opt::Command root;
@@ -811,6 +834,32 @@ ca::opt::Command buildCommandLine()
     hexdump.args.push_back(noAscii);
     root.subcommands.push_back(std::move(hexdump));
 
+    // eval：表达式求值/化简（<expression> 位置参数；-s 化简、-v 变量绑定）。
+    // 旗标文案复用共享表 mjt.cmd.eval.*（与 MCP 共用同一份文案）。
+    ca::opt::Command evalCmd;
+    evalCmd.name = "eval";
+    evalCmd.help = mjt::shared::trfStr("mjt.cli.eval.help");
+    ca::opt::Arg evalExpr;
+    evalExpr.name    = "expression";
+    evalExpr.kind    = ca::opt::OptKind::Positional;
+    evalExpr.metavar = "<expression>";
+    evalExpr.help    = mjt::shared::trfStr("mjt.cmd.eval.param.expression.desc");
+    evalCmd.args.push_back(evalExpr);
+    ca::opt::Arg simplify;
+    simplify.name    = "simplify";
+    simplify.aliases = {"-s"};
+    simplify.kind    = ca::opt::OptKind::Flag;
+    simplify.help    = mjt::shared::trfStr("mjt.cmd.eval.param.simplify.desc");
+    evalCmd.args.push_back(simplify);
+    ca::opt::Arg vars;
+    vars.name    = "vars";
+    vars.aliases = {"-v"};
+    vars.kind    = ca::opt::OptKind::String;
+    vars.metavar = "<k=v,...>";
+    vars.help    = mjt::shared::trfStr("mjt.cmd.eval.param.vars.desc");
+    evalCmd.args.push_back(vars);
+    root.subcommands.push_back(std::move(evalCmd));
+
     return root;
 }
 
@@ -852,6 +901,7 @@ int main(int argc, char* argv[])
     if (path.size() == 1 && path.front() == "disasm") return runDisasm(args);
     if (path.size() == 1 && path.front() == "subs") return runSubs(args);
     if (path.size() == 1 && path.front() == "hexdump") return runHexdump(args);
+    if (path.size() == 1 && path.front() == "eval") return runEval(args);
     if (path.size() == 2 && path.front() == "jar" && path[1] == "fix") return runJarFix(args);
 
     std::cerr << ca::opt::help_text(parser.root());

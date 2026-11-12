@@ -3,7 +3,7 @@
 # {n} are positional placeholders, repeatable/reorderable
 
 # ── root / shared ───────────────────────────────────────────
-mjt.cli.root.help=JVM bytecode toolkit (info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs / hexdump)
+mjt.cli.root.help=JVM bytecode toolkit (info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs / hexdump / eval)
 mjt.cli.root.version_help=print version and exit
 mjt.cli.opt.input=input path (-i <path>)
 mjt.cli.opt.output=output path (-o <path>); must not be the same file as the input
@@ -172,3 +172,6 @@ mjt.cli.subs.err.class_info_failed=cannot read class info: {0}
 
 # ── hexdump ─────────────────────────────────────────────────
 mjt.cli.hexdump.help=hex-dump the raw bytes of one class in xxd-style rows (offset / length / width windows, optional ASCII column)
+
+# ── eval ────────────────────────────────────────────────────
+mjt.cli.eval.help=evaluate or simplify a math expression (constant folding, MBA algebraic simplification, variable bindings); unbound expressions print the simplified form

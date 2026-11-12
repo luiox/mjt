@@ -156,6 +156,17 @@ mjt hexdump -i <jar> <class> [--offset N] [--length N] [--width N] [--no-ascii]
 
 Prints the raw bytes of one class as xxd-style rows (`%08x` offset, hex bytes with a half-line separator, ASCII column with non-printables as `.`). The class is located by `<class>`: a resource URI (`fixture/Alpha.class`) or internal name (`fixture/Alpha`) matches exactly first, otherwise the first entry whose name contains the selector wins. `--offset` / `--length` window the dump (`--length -1`, the default, means "to the end of the class"), `--width` sets the bytes-per-line count (default `16`), and `--no-ascii` hides the right-hand ASCII column. An offset past the end of the class prints an explicit empty note instead of rows; negative offsets, non-positive widths and lengths below `-1` are usage errors. This is a pure byte-level view: no class parsing involved, so it works on bytes `disasm` cannot render.
 
+### `mjt eval`: expression evaluation and simplification
+
+```sh
+mjt eval "1 + 2 * 3"                  # 7
+mjt eval -v x=10,y=20 "x + y"         # 30
+mjt eval "x + 0"                      # unbound variables print the S-expression
+mjt eval -s "(x ^ y) + 2*(x & y)"     # simplified form
+```
+
+Evaluates or simplifies a mathematical expression through the mjbase expr pipeline (`parseExpression` → optional `simplify` → `eval`; the same engine the Python SDK's `analysis_evaluate` binds). Operators: `+ - * / % & | ^ ~ << >> >>>` with standard C precedence; decimal and hex (`0xFF`) literals and named variables. `-v k=v,k2=v2` binds variables to integer values; a malformed binding string or an unparsable expression exits `1`. An expression with unbound variables is not a failure: the simplified S-expression form prints to stdout with exit `0` (with `-s` the MBA algebraic identities are applied first, so `(x ^ y) + 2*(x & y)` reduces to `x + y`). Other evaluation failures (depth limit exceeded) exit `2`.
+
 Locale: message text follows the `MJT_LANG` environment variable (`en_US` default, `zh_CN` supported).
 
 ## Repository layout

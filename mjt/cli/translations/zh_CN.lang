@@ -3,7 +3,7 @@
 # {n} 为位置占位符，可重复/可换序
 
 # ── 根 / 共享 ───────────────────────────────────────────────
-mjt.cli.root.help=JVM 字节码工具（info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs / hexdump）
+mjt.cli.root.help=JVM 字节码工具（info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs / hexdump / eval）
 mjt.cli.root.version_help=输出版本号并退出
 mjt.cli.opt.input=输入路径（-i <path>）
 mjt.cli.opt.output=输出路径（-o <path>）；不得与输入同一文件
@@ -172,3 +172,6 @@ mjt.cli.subs.err.class_info_failed=读取类信息失败: {0}
 
 # ── hexdump ─────────────────────────────────────────────────
 mjt.cli.hexdump.help=单类原始字节的 xxd 风格十六进制转储（偏移/长度/宽度窗口，ASCII 列可选）
+
+# ── eval ────────────────────────────────────────────────────
+mjt.cli.eval.help=数学表达式求值/化简（常量折叠、MBA 代数化简、变量绑定）；含未绑定变量的表达式打印化简形

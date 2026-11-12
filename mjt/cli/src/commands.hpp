@@ -571,4 +571,44 @@ ca::Result<HexdumpReport, HexdumpError> collectHexdump(const std::string& jarPat
 void renderHexdumpText(const HexdumpReport& report, const HexdumpOptions& options,
                        OutputSink& sink);
 
+// ── eval ───────────────────────────────────────────────────────────
+
+/// @brief eval 命令错误：类别定退出码分支，message 为已渲染文案。
+struct EvalError
+{
+    enum class Kind
+    {
+        InvalidVarSpec,   ///< --vars 绑定串非法（用法 → 退出码 1）
+        MissingExpression, ///< 缺 <expression> 位置参数（用法 → 退出码 1）
+        ParseFailed,      ///< 表达式解析失败（用法 → 退出码 1）
+        EvalFailed,       ///< 求值失败（深度超限等，非 unbound；运行 → 退出码 2）
+    };
+    Kind        kind    = Kind::EvalFailed;
+    std::string message;
+};
+
+/// @brief 一次表达式求值的结果（渲染与断言共用）。
+///
+/// evaluated = true 时 value 为数值结果；false 时 symbolic 承载含未绑定变量表达式的 S-表达式形（unbound 不算失败，退出码 0）。
+struct EvalOutcome
+{
+    bool        evaluated = false;
+    ca::i64     value     = 0; ///< evaluated 时的数值结果
+    std::string symbolic;     ///< !evaluated 时的 S-表达式
+};
+
+/// @brief 求值/化简表达式：--vars 绑定解析 → parseExpression →（可选）simplify → eval。unbound（未绑定变量）走 symbolic 输出通道（成功）；其余求值错误（深度超限等）返回 EvalFailed（退出码 2）。
+/// @param exprStr   表达式文本（中缀；十进制/十六进制字面量与变量）
+/// @param varSpec   "k=v,k2=v2" 形绑定串；空 = 无绑定
+/// @param doSimplify 求值前先过化简管线（折叠常量、应用恒等式）
+ca::Result<EvalOutcome, EvalError> evaluateExpression(const std::string& exprStr,
+                                                      const std::string& varSpec,
+                                                      bool doSimplify);
+
+/// @brief 渲染求值结果：数值一行（%lld）或 S-表达式一行。
+void renderEvalOutcome(const EvalOutcome& outcome, OutputSink& sink);
+
+/// @brief 渲染 eval 详细用法（算子表与示例；i18n 键 mjt.cmd.eval.out.usage）。缺表达式错误后的伴随输出。
+void renderEvalUsage(OutputSink& sink);
+
 }   // namespace mjt::cli
