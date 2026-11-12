@@ -15,6 +15,33 @@ namespace {
 
 using namespace test_support;
 
+TEST(McpServerTest, QueriesSupplementaryClassfileText)
+{
+    McpSessionHarness server;
+    const auto fixture = test::getTopProjectPath() / "test_resource" / "asm-test" /
+                         "origin" / "jdk8" / "AllStructures.class";
+    const auto opened = call(server, "project_open", {{"path", fixture.u8string()}});
+    ASSERT_FALSE(opened.at("result").at("isError")) << opened.dump();
+    const auto projectId = payload(opened).at("project_id").get<std::string>();
+    const auto queried = call(server, "class_query",
+                              {{"project_id", projectId},
+                               {"kind", "class"},
+                               {"class", "jdk8/AllStructures"}});
+    ASSERT_FALSE(queried.at("result").at("isError")) << queried.dump();
+    const auto& names = payload(queried).at("inner_classes");
+    EXPECT_NE(std::find(names.begin(), names.end(), "\xf0\x9d\x94\xbb"), names.end());
+
+    const auto searched = call(server, "search",
+                               {{"project_id", projectId},
+                                {"kind", "strings"},
+                                {"query", "\xf0\x9d\x94\xbb"}});
+    ASSERT_FALSE(searched.at("result").at("isError")) << searched.dump();
+    const auto& rows = payload(searched).at("items");
+    EXPECT_TRUE(std::any_of(rows.begin(), rows.end(), [](const Json& row) {
+        return row.at("value") == "jdk8/AllStructures$\xf0\x9d\x94\xbb";
+    })) << searched.dump();
+}
+
 TEST(McpServerTest, PreservesParityFixtureEdgesAcrossQueriesTransactionsAndExport)
 {
     McpSessionHarness server;

@@ -149,7 +149,7 @@ std::vector<std::string> innerClassNames(jbc::core::ClassFile& cf)
         const auto& ic  = static_cast<const jbc::core::InnerClassesAttr&>(*body);
         for (const jbc::core::InnerClassesAttr::Row& row : ic.rows) {
             if (row.innerNameCp == 0) continue;
-            const auto name = utf8Text(cf, row.innerNameCp);
+            const auto name = mjbase::jasm::classFileUtf8ToString(cf.utf8(row.innerNameCp));
             if (!name.empty()) names.push_back(name);
         }
     }

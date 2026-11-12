@@ -27,6 +27,7 @@
 #include "smali/disassemble.hpp"
 
 #include "mjbase/asm/remapper/member_remapper.hpp"
+#include "mjbase/jasm/classfile_utf8.hpp"
 #include "mjbase/jar/jar_reader.hpp"
 
 #include "classfile_support.hpp"
@@ -1296,11 +1297,12 @@ WorkspaceResult<std::vector<DbStringRecord>> DexDomain::cpStringRecords(
     std::vector<DbStringRecord> records;
     std::set<std::string> seen;
     const auto pushString = [&](DbStringKind kind, ConstantUtf8Facet facet, const std::string& value) {
-        if (value.empty() || !seen.insert(value).second) return;
+        const auto decoded = mjbase::jasm::classFileUtf8ToString(value);
+        if (decoded.empty() || !seen.insert(decoded).second) return;
         DbStringRecord record;
         record.kind  = kind;
         record.facet = dbUtf8Facet(facet);
-        record.value = utf8(value);
+        record.value = utf8(decoded);
         records.push_back(std::move(record));
     };
     for (ca::u32 index : literalIndexes) {

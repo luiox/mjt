@@ -12,6 +12,7 @@
 
 #include "jbc/core/opcode.hpp"
 #include "libca/str/utf16_string.hpp"
+#include "mjbase/jasm/classfile_utf8.hpp"
 
 #include "classfile_support.hpp"
 
@@ -143,13 +144,13 @@ std::vector<mjbase::project::DbStringRecord> cpStringRecords(const jbc::core::Cl
             if (stringBackedUtf8.count(index) > 0) continue;
             record.kind  = mjbase::project::DbStringKind::Utf8;
             record.facet = dbUtf8Facet(constantUtf8Facet(cf.cp.utf8Of(index)));
-            record.value = utf8(support::utf8Text(cf, index));
+            record.value = utf8(mjbase::jasm::classFileUtf8ToString(cf.utf8(index)));
         }
         else if (entry.tag == jbc::core::CpTag::String) {
             // String 行 facet 落库归一 0（mjbase 侧已做，此处显式不预分）。
             record.kind  = mjbase::project::DbStringKind::String;
             record.facet = mjbase::project::DbUtf8Facet::Name;
-            record.value = utf8(support::utf8Text(cf, entry.a));
+            record.value = utf8(mjbase::jasm::classFileUtf8ToString(cf.utf8(entry.a)));
         }
         else {
             continue;
