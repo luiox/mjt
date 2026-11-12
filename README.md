@@ -52,7 +52,7 @@ On Windows the executable embeds an `activeCodePage=UTF-8` and `longPathAware` m
 
 ## CLI usage
 
-The `mjt` binary is a plain command-line tool (`xmake build mjt`) covering eleven batch-style commands over JARs and mapping files. Exit codes: `0` success (including `--help`), `1` usage error (missing argument, missing input file, unknown format name, class selector without a match, invalid flag value), `2` runtime failure (open, parse, repair, export, decompile, extraction, scan or disassembly failure).
+The `mjt` binary is a plain command-line tool (`xmake build mjt`) covering twelve batch-style commands over JARs and mapping files. Exit codes: `0` success (including `--help`), `1` usage error (missing argument, missing input file, unknown format name, class selector without a match, invalid flag value), `2` runtime failure (open, parse, repair, export, decompile, extraction, scan or disassembly failure).
 
 ```sh
 mjt --version          # print tool version
@@ -177,6 +177,18 @@ Answers a narrow question for every reflection sink call site (`Class.forName`, 
 
 Output: three `# ` summary lines (classes scanned, resolved/pending/unsupported counts with resolution rate, per-API distribution) followed by one binding line per call site (`[state] api class=… member=… params=… reason=… target=… <- site insn=N`). With `--json` the summary moves to stderr and stdout carries a pure JSON array (stable English keys); `--unresolved` keeps only pending bindings; `--bindings-of <class>` filters to one source class (internal or dotted name, normalized like `xref`). Jar open or analysis failure exits `2`.
 
+### `mjt cfg`: single-method CFG as Graphviz dot
+
+```sh
+mjt cfg -i <input.jar|.class> [-c <class>] [-m <name[:descriptor]>] [-o <out.dot>]
+```
+
+Dumps one method's block-level control-flow graph in Graphviz dot. The analysis kernel is the mjbase/asm `ControlFlowGraph` (block splitting + edge classification + exception edges), plus `CfgTraversal` (reverse postorder) and `DominatorTree` for the comment metadata. Input is a `.jar` (then `-c <internalName>` is required) or a `.class` file (class name inferred from the file name, `.class` suffix stripped). `-m <spec>` selects the method: `name` matches across descriptors, more than one match is an ambiguity error (exit `1`, use `name:descriptor` for an exact pick), and an omitted spec takes the first method that has a body. A method without a body (abstract / native) prints an explicit empty graph with a `no body` comment line and exits `0`.
+
+Output shape: a quoted `digraph "<class>.<method><descriptor>"` header; `//` comment lines for the class / method / entry block (`B0`), the reverse postorder, and one `// idom: B<n> <- …` line per reachable block; one `B<n> [label="…" shape=box]` node per block whose label lists the block's instructions in program order as `<pc>: <mnemonic> <operands>` (branch targets rendered as target block numbers, constant-pool references resolved to text: `owner.name desc` for members, class internal names, quoted string literals; float/double constants as `0x…` bit patterns); and one labeled edge per control-flow edge. Edge labels are the mjbase EdgeKind stable names (`fallthrough`, `branch`, `condition`, `switch`, `exception`), with exception edges styled `dashed` and carrying the catch type (`exception: java/lang/Exception`, or `exception: any` for a catch-all handler). With `-o` the dot text overwrites the given file (failure exits `2`); without it stdout carries the dot and nothing else.
+
+The result is a **block-level CFG**, not an SSA instruction-level graph: nodes are basic blocks with an instruction overview inside, edges carry EdgeKind labels (exception edges carry the catch type), and entry / RPO / idom facts appear as comment lines.
+
 Locale: message text follows the `MJT_LANG` environment variable (`en_US` default, `zh_CN` supported).
 
 ## Repository layout
@@ -184,7 +196,7 @@ Locale: message text follows the `MJT_LANG` environment variable (`en_US` defaul
 ```
 mjt/mcp/src/     MCP server and tool set (core product code)
 mjt/mcp/test/    MCP-layer unit tests
-mjt/cli/         `mjt` CLI binary (info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs / hexdump / eval / reflect)
+mjt/cli/         `mjt` CLI binary (info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs / hexdump / eval / reflect / cfg)
 mjt/test/cli/    CLI-layer unit tests
 mjt/src/shared/  capabilities shared across the MCP tool set
                  (decompiler integration, jar remapping, workspace…)

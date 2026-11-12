@@ -65,7 +65,7 @@ Windows 下 exe 嵌了 `activeCodePage=UTF-8` 与 `longPathAware` 的 manifest�
 
 ## CLI 用法
 
-`mjt` 是普通命令行工具（`xmake build mjt`），十一个面向 JAR 与 mapping
+`mjt` 是普通命令行工具（`xmake build mjt`），十二个面向 JAR 与 mapping
 文件的批处理式命令。退出码约定：`0` 成功（含 `--help`）、`1` 用法错误
 （参数缺失、输入文件不存在、格式名不识别、类选择器无命中、旗标值非法）、
 `2` 运行失败（打开、解析、修复、导出、反编译、抽取、扫描或反汇编失败）。
@@ -242,6 +242,18 @@ mjt reflect -i <jar> [--json] [--unresolved] [--bindings-of <class>]
 
 输出：三行 `# ` 摘要（扫描类数、resolved/pending/unsupported 计数与 resolved 比例、按 API 分布），随后每个调用点一行绑定（`[state] api class=… member=… params=… reason=… target=… <- site insn=N`）。`--json` 时摘要走 stderr，stdout 为纯 JSON 数组（键为稳定英文）；`--unresolved` 只看 pending 绑定；`--bindings-of <class>` 按来源类过滤（内部名或点分名，与 `xref` 用同一归一规则）。jar 打开或分析失败退出码 `2`。
 
+### `mjt cfg`：单方法 CFG 的 Graphviz dot 导出
+
+```sh
+mjt cfg -i <input.jar|.class> [-c <class>] [-m <name[:descriptor]>] [-o <out.dot>]
+```
+
+以 Graphviz dot 导出单方法的块级控制流图。分析内核是 mjbase/asm `ControlFlowGraph`（切块、边分类、异常边），加上 `CfgTraversal`（逆后序）与 `DominatorTree` 供注释元数据。输入是 `.jar`（此时必须 `-c <internalName>`）或 `.class` 文件（类名从文件名推断，剥 `.class` 后缀）。`-m <spec>` 选方法：`name` 跨描述符匹配，多命中报多义错误（退出码 `1`，精确选取用 `name:descriptor`）；缺省 spec 取第一个带方法体的方法。无方法体的方法（abstract / native）输出带 `no body` 注释行的明确空图，退出码 `0`。
+
+输出形状：带引号的 `digraph "<class>.<method><descriptor>"` 头；`//` 注释行给出类 / 方法 / 入口块（`B0`）、逆后序，以及每个可达块一行 `// idom: B<n> <- …`；每块一个 `B<n> [label="…" shape=box]` 节点，label 按程序序列出块内指令 `<pc>: <助记符> <操作数>`（分支目标渲染为目标块号，常量池引用解析成文本：成员 `owner.name desc`、类内部名、带引号字符串字面量；float/double 常量按 `0x…` 位模式）；每条控制流边一行带标注的边。边标注是 mjbase EdgeKind 稳定名（`fallthrough`、`branch`、`condition`、`switch`、`exception`），异常边带 `dashed` 样式与 catch 类型（`exception: java/lang/Exception`，全捕获 handler 为 `exception: any`）。带 `-o` 时 dot 文本覆盖写入指定文件（失败退出码 `2`）；省略时 stdout 只承载 dot 文本，别无他物。
+
+输出是**块级 CFG**，不是 SSA 指令级图：节点 = 基本块 + 块内指令概览，边按 EdgeKind 标注（异常边带 catch 类型），entry / RPO / idom 以注释行呈现。
+
 语言：文案跟随 `MJT_LANG` 环境变量（缺省 `en_US`，支持 `zh_CN`）。
 
 ## 仓库结构
@@ -249,7 +261,7 @@ mjt reflect -i <jar> [--json] [--unresolved] [--bindings-of <class>]
 ```
 mjt/mcp/src/     MCP 服务器与工具集（核心产品代码）
 mjt/mcp/test/    MCP 层单测
-mjt/cli/         `mjt` CLI 二进制（info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs / hexdump / eval / reflect）
+mjt/cli/         `mjt` CLI 二进制（info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs / hexdump / eval / reflect / cfg）
 mjt/test/cli/    CLI 层单测
 mjt/src/shared/  MCP 工具集共用的底层能力（反编译接入、jar 重映射、workspace…）
 skills/          MCP 技能定义

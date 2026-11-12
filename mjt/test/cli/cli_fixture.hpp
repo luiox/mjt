@@ -846,4 +846,173 @@ inline BackendProbe probeBackend(mjt::DecompilerKind kind)
     return probe;
 }
 
+// ── cfg / dataflow 语料（块级 CFG / slot 级 def-use / 局部槽活跃）────────
+
+/// 简单语料源：静态 add(II)I 直线体 + 同名重载 over(I)I / over(J)J（ambiguous 选择样本）。
+inline std::vector<ca::u8> assembleDfSampleClass()
+{
+    return assembleClass(
+        R"JASM(.super java/lang/Object
+.class public super fixture/DfSample {
+  .method public static add (II)I {
+    code: {
+      iload_0
+      iload_1
+      iadd
+      ireturn
+    }
+  }
+  .method public static over (I)I {
+    code: {
+      iconst_1
+      ireturn
+    }
+  }
+  .method public static over (J)J {
+    code: {
+      lconst_1
+      lreturn
+    }
+  }
+}
+)JASM");
+}
+
+/// 抽象类语料源：无方法体的 api(I)V（abstract 无 code 三态样本）。
+inline std::vector<ca::u8> assembleDfAbstractClass()
+{
+    return assembleClass(
+        R"JASM(.class public abstract fixture/DfAbstract {
+  .method public abstract api (I)V {}
+}
+)JASM");
+}
+
+/// @brief 流程语料（jbc 会话构造，jasm 文本没有 try-catch 语义）：静态 flow(II)I，体含循环回边、条件分支、try-catch（athrow → handler，catch java/lang/Exception）、静态字段读取与槽 2 双定义汇合。版本 49（无 StackMapTable 义务；域分析走 DomainEngine 不读帧属性）。
+///
+/// 指令序（槽位：0=a 1=b 2=acc 3=i 4=exc）：
+///   iconst_0; istore_2; iconst_0; istore_3;
+///   loop: iload_3; iload_1; if_icmpge end; iload_2; iload_0; iadd;
+///         istore_2; iinc 3 1; goto loop;
+///   end:  getstatic Flow.counter; pop; iload_2; istore_2;
+///   try:  iload_2; iconst_1; if_icmpge skip; aconst_null; athrow;
+///   skip: iload_2; ireturn;
+///   handler: astore 4; iload_2; ireturn
+inline std::vector<ca::u8> buildFlowClass()
+{
+    using jbc::core::Op;
+    using jbc::ir::CodeEditor;
+    using jbc::ir::InsnId;
+    using jbc::ir::LabelId;
+
+    auto opened = jbc::ir::makeSession(jbc::ir::NewClassSeed{
+        (49u << 16), 0x0021, "fixture/Flow", "java/lang/Object", {}});
+    if (opened.is_err()) throw std::runtime_error("fixture flow session failed");
+    auto session = std::move(opened).unwrap();
+
+    auto added = session->addMethod(
+        {"flow", "(II)I", 0x0009 /* public static */, true, 3, 5});
+    if (added.is_err()) throw std::runtime_error("fixture flow addMethod failed");
+    auto fieldAdded = session->addField({"counter", "I", 0x0009 /* public static */});
+    if (fieldAdded.is_err()) throw std::runtime_error("fixture flow addField failed");
+
+    auto promoted = jbc::ir::promoteMethod(*session, added.unwrap());
+    if (promoted.is_err()) throw std::runtime_error("fixture flow promote failed");
+    auto code = std::move(promoted).unwrap();
+    CodeEditor editor(*code);
+
+    // append 校验要求目标标签锚定活指令：先临时锚定、落位后 rebind（mjbase cfg_test 同此纪律）。
+    const auto append = [&](jbc::ir::Insn insn) {
+        const auto r = editor.append(std::move(insn));
+        if (r.is_err()) throw std::runtime_error("fixture flow append failed");
+        return r.unwrap();
+    };
+    const auto bind = [&](LabelId label, InsnId anchor) {
+        if (editor.bindLabel(label, anchor).is_err())
+            throw std::runtime_error("fixture flow bindLabel failed");
+    };
+
+    append(CodeEditor::simple(Op::ICONST_0));
+    append(CodeEditor::simple(Op::ISTORE_2));
+    append(CodeEditor::simple(Op::ICONST_0));
+    const InsnId loopHead = append(CodeEditor::simple(Op::ISTORE_3));
+    const LabelId loop = editor.createLabel(loopHead).unwrap();   // 终位即此处
+
+    append(CodeEditor::simple(Op::ILOAD_3));
+    append(CodeEditor::simple(Op::ILOAD_1));
+    const LabelId end = editor.createLabel(loopHead).unwrap();    // 临时锚定
+    append(CodeEditor::branch(Op::IF_ICMPGE, end));
+    append(CodeEditor::simple(Op::ILOAD_2));
+    append(CodeEditor::simple(Op::ILOAD_0));
+    append(CodeEditor::simple(Op::IADD));
+    append(CodeEditor::simple(Op::ISTORE_2));
+    append(CodeEditor::iinc(3, 1));
+    append(CodeEditor::branch(Op::GOTO, loop));
+
+    const InsnId endHead = append(CodeEditor::cpInsn(
+        Op::GETSTATIC, session->internFieldRef("fixture/Flow", "counter", "I")));
+    bind(end, endHead);                                           // end 终位落定
+    append(CodeEditor::simple(Op::POP));
+    append(CodeEditor::simple(Op::ILOAD_2));
+    append(CodeEditor::simple(Op::ISTORE_2));
+
+    const InsnId tryHead = append(CodeEditor::simple(Op::ILOAD_2));
+    const LabelId tryStart = editor.createLabel(tryHead).unwrap();
+    append(CodeEditor::simple(Op::ICONST_1));
+    const LabelId skip = editor.createLabel(tryHead).unwrap();    // 临时锚定
+    append(CodeEditor::branch(Op::IF_ICMPGE, skip));
+    append(CodeEditor::simple(Op::ACONST_NULL));
+    append(CodeEditor::simple(Op::ATHROW));
+
+    const InsnId skipHead = append(CodeEditor::simple(Op::ILOAD_2));
+    bind(skip, skipHead);                                         // skip 终位落定
+    append(CodeEditor::simple(Op::IRETURN));
+
+    const InsnId handlerHead = append(CodeEditor::local(Op::ASTORE, 4));
+    const LabelId handler = editor.createLabel(handlerHead).unwrap();
+    append(CodeEditor::local(Op::ILOAD, 2));
+    append(CodeEditor::simple(Op::IRETURN));
+
+    code->exc.push_back({tryStart, skip, handler,
+                         session->internClass("java/lang/Exception")});
+
+    if (!jbc::ir::lowerMethod(*session, added.unwrap()).is_ok())
+        throw std::runtime_error("fixture flow lower failed");
+    auto written = jbc::core::writeClass(session->backing());
+    if (written.is_err()) throw std::runtime_error("fixture flow write failed");
+    return std::move(written).unwrap();
+}
+
+/// cfg / dataflow 语料 jar：DfSample（直线 / 重载）+ DfAbstract（无方法体）
+/// + Flow（循环 / try-catch / 字段 / 双定义汇合）。
+inline std::filesystem::path writeDfFixtureJar()
+{
+    mjbase::model::ResourceContainer container;
+    container.addResource("fixture/DfSample.class",
+                          std::make_unique<mjbase::model::ClassResource>(
+                              "fixture/DfSample.class", assembleDfSampleClass()));
+    container.addResource("fixture/DfAbstract.class",
+                          std::make_unique<mjbase::model::ClassResource>(
+                              "fixture/DfAbstract.class", assembleDfAbstractClass()));
+    container.addResource("fixture/Flow.class",
+                          std::make_unique<mjbase::model::ClassResource>(
+                              "fixture/Flow.class", buildFlowClass()));
+    const auto path = test::getTempOutPath("mjt_cli_df_fixture.jar");
+    mjbase::model::ResourceHelper::exportToJar(container, path.string());
+    return path;
+}
+
+/// .class 直读语料：Flow 类字节写临时 .class 文件（类名从路径推断样本）。
+inline std::filesystem::path writeFlowClassFile()
+{
+    const auto bytes = buildFlowClass();
+    const auto path  = test::getTempOutPath("mjt_cli_df_flow.class");
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out.write(reinterpret_cast<const char*>(bytes.data()),
+              static_cast<std::streamsize>(bytes.size()));
+    out.close();
+    if (!out) throw std::runtime_error("failed to write flow fixture class file");
+    return path;
+}
+
 }   // namespace cli_fixture

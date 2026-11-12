@@ -3,7 +3,7 @@
 # {n} 为位置占位符，可重复/可换序
 
 # ── 根 / 共享 ───────────────────────────────────────────────
-mjt.cli.root.help=JVM 字节码工具（info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs / hexdump / eval / reflect）
+mjt.cli.root.help=JVM 字节码工具（info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs / hexdump / eval / reflect / cfg）
 mjt.cli.root.version_help=输出版本号并退出
 mjt.cli.opt.input=输入路径（-i <path>）
 mjt.cli.opt.output=输出路径（-o <path>）；不得与输入同一文件
@@ -178,3 +178,9 @@ mjt.cli.eval.help=数学表达式求值/化简（常量折叠、MBA 代数化简
 
 # ── reflect ─────────────────────────────────────────────────
 mjt.cli.reflect.help=分析反射 sink 调用点并解析目标；无法解析的调用点记为 pending，不算错误（--json / --unresolved / --bindings-of）
+
+# ── cfg ─────────────────────────────────────────────────────
+mjt.cli.cfg.help=以 Graphviz dot 导出单方法的块级 CFG（mjbase/asm 模型：块节点、按 EdgeKind 标注的边、RPO / 支配树注释）
+mjt.cli.cfg.written=dot 已写入: {0}
+mjt.cli.cfg.err.write_failed=无法写出 '{0}'。
+

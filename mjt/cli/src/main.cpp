@@ -1,6 +1,6 @@
 /// @file        main.cpp
 /// @brief       `mjt` CLI 入口：ca::opt 命令树（info / mapping / jar fix /
-///              decompile / strings / xref / classes / disasm / subs / hexdump / eval / reflect）+ 全局 --version/--help + 退出码映射。
+///              decompile / strings / xref / classes / disasm / subs / hexdump / eval / reflect / cfg）+ 全局 --version/--help + 退出码映射。
 ///
 /// 退出码约定（README「CLI usage」同文）：0 成功（含 --help）/ 1 用法错误
 /// （参数缺失、文件不存在、格式名不识别、类选择器无命中、旗标值非法）/
@@ -538,8 +538,47 @@ int runReflect(const ca::opt::ParseResult& args)
     return mjt::cli::kExitOk;
 }
 
+/// cfg 错误 → 退出码分支（Usage = 用法 1；Runtime = 运行 2）。
+int analysisFailure(mjt::cli::CfgError error)
+{
+    return error.kind == mjt::cli::CfgError::Kind::Usage
+               ? usageFailure(std::move(error.message))
+               : runFailure(std::move(error.message));
+}
+
+
+/// `mjt cfg -i <input.jar|.class> [-c <class>] [-m <name[:desc]>] [-o <out.dot>]`。
+///
+/// 方法选择：spec "name" 或 "name:descriptor"，多命中报 ambiguous（退出码 1）；未指定取第一个带方法体的方法。无方法体方法（abstract / native）输出明确空图退出 0。dot 输出 -o 覆盖写文件否则 stdout。
+int runCfg(const ca::opt::ParseResult& args)
+{
+    const std::string input = args.get("input");
+    if (!requireInputFile(input))
+        return usageFailure(mjt::shared::trfStr("mjt.cli.err.input_missing", {input}));
+
+    auto report = mjt::cli::collectCfg(input, args.get("class"), args.get("method"));
+    if (report.is_err()) return analysisFailure(std::move(report).unwrap_err());
+    const auto value = std::move(report).unwrap();
+
+    const std::string output = args.get("output");
+    if (!output.empty()) {
+        std::FILE* file = std::fopen(output.c_str(), "wb");
+        if (file == nullptr)
+            return runFailure(mjt::shared::trfStr("mjt.cli.cfg.err.write_failed", {output}));
+        {
+            mjt::OutputSink sink(file);
+            mjt::cli::renderCfgDot(value, sink);
+        }
+        std::fclose(file);
+        mjt::out().puts(mjt::shared::trfStr("mjt.cli.cfg.written", {output}));
+        return mjt::cli::kExitOk;
+    }
+    mjt::cli::renderCfgDot(value, mjt::out());
+    return mjt::cli::kExitOk;
+}
+
 /// 命令树：根（--version）→ info / mapping / jar → fix / decompile / strings /
-/// xref / classes / disasm / subs / hexdump / eval / reflect。
+/// xref / classes / disasm / subs / hexdump / eval / reflect / cfg。
 ca::opt::Command buildCommandLine()
 {
     ca::opt::Command root;
@@ -911,6 +950,27 @@ ca::opt::Command buildCommandLine()
     reflect.args.push_back(bindingsOf);
     root.subcommands.push_back(std::move(reflect));
 
+    // cfg：单方法块级 CFG dot 导出（-o 可选）。旗标文案复用共享表 mjt.cmd.cfg.*（与 MCP 共用同一份文案，避免两处漂移）。
+    ca::opt::Command cfg;
+    cfg.name = "cfg";
+    cfg.help = mjt::shared::trfStr("mjt.cli.cfg.help");
+    ca::opt::Arg cfgInput = input;
+    cfg.args.push_back(cfgInput);
+    ca::opt::Arg cfgClass = classArg;
+    cfgClass.name       = "class";
+    cfgClass.help       = mjt::shared::trfStr("mjt.cmd.cfg.param.class.desc");
+    cfgClass.required   = false;
+    cfg.args.push_back(cfgClass);
+    ca::opt::Arg cfgMethod = member;
+    cfgMethod.name    = "method";
+    cfgMethod.help    = mjt::shared::trfStr("mjt.cmd.cfg.param.method.desc");
+    cfg.args.push_back(cfgMethod);
+    ca::opt::Arg cfgOutput = output;
+    cfgOutput.required     = false;
+    cfgOutput.help         = mjt::shared::trfStr("mjt.cmd.cfg.param.output.desc");
+    cfg.args.push_back(cfgOutput);
+    root.subcommands.push_back(std::move(cfg));
+
     return root;
 }
 
@@ -954,6 +1014,7 @@ int main(int argc, char* argv[])
     if (path.size() == 1 && path.front() == "hexdump") return runHexdump(args);
     if (path.size() == 1 && path.front() == "eval") return runEval(args);
     if (path.size() == 1 && path.front() == "reflect") return runReflect(args);
+    if (path.size() == 1 && path.front() == "cfg") return runCfg(args);
     if (path.size() == 2 && path.front() == "jar" && path[1] == "fix") return runJarFix(args);
 
     std::cerr << ca::opt::help_text(parser.root());

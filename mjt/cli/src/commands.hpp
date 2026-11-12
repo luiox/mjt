@@ -1,7 +1,6 @@
 /// @file        commands.hpp
-/// @brief       `mjt` CLI 命令核心面：info / mapping / jar fix / decompile /
-///              strings / xref 六个命令的纯逻辑入口与报告结构（main 与 gtest
-///              共链）。
+/// @brief       `mjt` CLI 命令核心面：各命令的纯逻辑入口与报告结构（main 与
+///              gtest 共链）。
 ///
 /// 分层契约：本模块只做「打开制品 → 调 workspace/mjbase 既有面 → 产出可
 /// 断言的报告结构」，命令行解析（ca::opt）与退出码映射归 main.cpp；渲染
@@ -681,5 +680,85 @@ void renderReflectText(const ReflectReport& report, OutputSink& sink);
 
 /// @brief 渲染 JSON 数组（键稳定英文；文本字段经 json::escape 转义；仅数组本体，摘要行走 stderr 由 main 分工）。
 void renderReflectJson(const ReflectReport& report, OutputSink& sink);
+
+// ── cfg ────────────────────────────────────────────────────────────
+
+/// @brief cfg 命令错误：类别定退出码分支，message 为已渲染文案。
+///
+/// Usage 是用户可纠正的选择问题（jar 输入缺 -c / 类或方法选择器无命中 /
+/// 方法多义，→ 退出码 1）；Runtime 是 jar 打开 / 字节读取 / class 解析 /
+/// CFG 构建失败（→ 退出码 2）。
+struct CfgError
+{
+    enum class Kind
+    {
+        Usage,   ///< 用法错误（→ 退出码 1）
+        Runtime, ///< 运行失败（→ 退出码 2）
+    };
+    Kind        kind    = Kind::Runtime;
+    std::string message;
+};
+
+/// @brief 一条指令的已渲染单行（mnemonic + 操作数文本；CP 属性引用经常量池解析成文本：成员 `owner.name desc`、类名内部名、ldc 常量按种类渲染，float/double 以 `0x` 位模式十六进制呈现）。
+struct CfgInsnLine
+{
+    ca::u32     pc   = 0;   ///< 原始字节码 pc（kNoPc 哨兵渲染为 "-"）
+    std::string text;
+};
+
+/// @brief 一个基本块（mjbase/asm ControlFlowGraph 块的字符串快照）。
+struct CfgBlock
+{
+    ca::u32 id             = 0;
+    bool    entry          = false;   ///< 0 号块（程序序首块）
+    bool    terminated     = false;   ///< 末条指令是 return 族 / athrow
+    std::vector<CfgInsnLine> insns;    ///< 程序序（含块首 leader）
+};
+
+/// @brief 一条控制流边；kind 为稳定名（fallthrough / branch / condition / switch / exception，EdgeKind 枚举序）。
+struct CfgEdge
+{
+    ca::u32     from = 0;
+    ca::u32     to   = 0;
+    const char* kind = "";
+    std::string detail;   ///< exception：catch 类型名或 "any"；其余为空
+};
+
+/// @brief 支配树一行（仅可达块有 idom；入口块自支配）。
+struct CfgDominator
+{
+    ca::u32 block        = 0;
+    bool    reachable    = false;
+    bool    entrySelfDom = false;   ///< idom == 自身（入口块）
+    ca::i32 idom         = -1;    ///< 直接支配者块号；入口 / 不可达为 -1
+};
+
+/// @brief 单方法块级 CFG 报告（渲染与断言共用；自持有，无 jbc 句柄）。
+///
+/// 分析内核是 mjbase/asm ControlFlowGraph + CfgTraversal + DominatorTree（异常边含内）。报告是块级视图：节点 = 基本块、块内 jbc 指令概览。hasBody = false（abstract / native）时 blocks / edges / 遍历全空，输出明确空图（只含注释行，退出码 0）。
+struct CfgReport
+{
+    std::string className;
+    std::string methodName;
+    std::string descriptor;
+    bool    instance = false;   ///< 非 static
+    bool    hasBody  = false;
+    std::vector<CfgBlock> blocks;
+    std::vector<CfgEdge>  edges;
+    /// @brief 逆后序块号（CfgTraversal.reversePostorder；入口在前）。
+    std::vector<ca::u32>        reversePostorder;
+    std::vector<CfgDominator>   dominators;
+    /// @brief 边计数（按 kind 稳定名升序；与 edges 行数一致的对账列）。
+    std::vector<std::pair<const char*, ca::usize>> edgeCounts;
+};
+
+/// @brief 采集单方法块级 CFG：输入读取与方法选择见 method_analysis.hpp；CFG 构建失败（分支 / 异常表边界无法解析）返回 Runtime。
+ca::Result<CfgReport, CfgError> collectCfg(const std::string& inputPath,
+                                           const std::string& className,
+                                           const std::string& methodSpec);
+
+/// @brief 渲染 Graphviz dot（digraph 头 + 注释行元数据（entry / RPO / idom）+ 块节点 + 按 kind 标注的边；标签文本经 dot 转义，可被 dot4j / graphviz 渲染）。无方法体时渲染只含注释的空图。
+void renderCfgDot(const CfgReport& report, OutputSink& sink);
+
 
 }   // namespace mjt::cli

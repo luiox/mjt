@@ -3,7 +3,7 @@
 # {n} are positional placeholders, repeatable/reorderable
 
 # ── root / shared ───────────────────────────────────────────
-mjt.cli.root.help=JVM bytecode toolkit (info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs / hexdump / eval / reflect)
+mjt.cli.root.help=JVM bytecode toolkit (info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs / hexdump / eval / reflect / cfg)
 mjt.cli.root.version_help=print version and exit
 mjt.cli.opt.input=input path (-i <path>)
 mjt.cli.opt.output=output path (-o <path>); must not be the same file as the input
@@ -178,3 +178,9 @@ mjt.cli.eval.help=evaluate or simplify a math expression (constant folding, MBA 
 
 # ── reflect ─────────────────────────────────────────────────
 mjt.cli.reflect.help=analyze reflection sink call sites and resolve their targets; unresolvable call sites are reported as pending, not errors (--json / --unresolved / --bindings-of)
+
+# ── cfg ─────────────────────────────────────────────────────
+mjt.cli.cfg.help=dump a method's block-level CFG as Graphviz dot (mjbase/asm model: block nodes, EdgeKind-labeled edges, RPO / dominator comments)
+mjt.cli.cfg.written=dot written to: {0}
+mjt.cli.cfg.err.write_failed=cannot write '{0}'.
+
