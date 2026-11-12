@@ -65,7 +65,7 @@ Windows 下 exe 嵌了 `activeCodePage=UTF-8` 与 `longPathAware` 的 manifest�
 
 ## CLI 用法
 
-`mjt` 是普通命令行工具（`xmake build mjt`），十三个面向 JAR 与 mapping
+`mjt` 是普通命令行工具（`xmake build mjt`），九个面向 JAR 与 mapping
 文件的批处理式命令。退出码约定：`0` 成功（含 `--help`）、`1` 用法错误
 （参数缺失、输入文件不存在、格式名不识别、类选择器无命中、旗标值非法）、
 `2` 运行失败（打开、解析、修复、导出、反编译、抽取、扫描或反汇编失败）。
@@ -213,64 +213,6 @@ mjt subs -i <jar> -c <internalName> [--json]
 形态（与 `mjt classes` 同源派生）。类不存在退出码 `1`；`--json` 输出同一数据
 （键为稳定英文）。
 
-### `mjt hexdump`：类原始字节转储
-
-```sh
-mjt hexdump -i <jar> <class> [--offset N] [--length N] [--width N] [--no-ascii]
-```
-
-以 xxd 风格行打印单类的原始字节（`%08x` 偏移、hex 字节带半行分隔、ASCII 列不可打印字符显示为 `.`）。`<class>` 定位类：资源 URI（`fixture/Alpha.class`）或内部名（`fixture/Alpha`）精确命中优先，否则取首个名字包含选择器的条目。`--offset` / `--length` 窗口化输出（`--length -1` 缺省表示“到类字节末尾”），`--width` 设置每行字节数（缺省 `16`），`--no-ascii` 隐藏右侧 ASCII 列。偏移越过类字节末尾时输出明确的空提示而非数据行；负偏移、非正宽度与小于 `-1` 的长度都是用法错误。这是纯字节级视图，不解析 class，`disasm` 无法渲染的字节这里照常可读。
-
-### `mjt eval`：表达式求值与化简
-
-```sh
-mjt eval "1 + 2 * 3"                  # 7
-mjt eval -v x=10,y=20 "x + y"         # 30
-mjt eval "x + 0"                      # 未绑定变量打印 S-表达式
-mjt eval -s "(x ^ y) + 2*(x & y)"     # 化简形式
-```
-
-经 mjbase expr 管线求值或化简数学表达式（`parseExpression` → 可选 `simplify` → `eval`；与 Python SDK `analysis_evaluate` 绑定同一引擎）。算子：`+ - * / % & | ^ ~ << >> >>>`（标准 C 优先级）；十进制与十六进制（`0xFF`）字面量、具名变量。`-v k=v,k2=v2` 将变量绑定为整数值；绑定串畸形或表达式无法解析退出码 `1`。含未绑定变量的表达式不算失败：化简后的 S-表达式打印到 stdout、退出码 `0`（带 `-s` 先应用 MBA 代数恒等式，`(x ^ y) + 2*(x & y)` 化简为 `x + y`）。其余求值失败（深度超限）退出码 `2`。
-
-### `mjt reflect`：反射调用点绑定分析
-
-```sh
-mjt reflect -i <jar> [--json] [--unresolved] [--bindings-of <class>]
-```
-
-对每个反射 sink 调用点回答一个窄问题（`Class.forName`、`ClassLoader.loadClass`、`Class.get*Method(s)` / `get*Field(s)` 成员查找族、`Method.invoke` / `Constructor.newInstance` / `Class.newInstance`、`Field.get` / `set`；`MethodHandles.Lookup` 族仅登记不解析）：目标能否静态确定，且是否真实存在于本 jar。分析器（mjbase `ReflectionBindingAnalyzer`，无法判定的绑定按 Pending 呈现，不误报）折叠方法内值流（`ldc` 常量、StringBuilder 链、`makeConcatWithConstants` recipe、`static final String` 常量与名表），再对容器内真实声明验证解析出的目标；无法静态确定的降级为 `pending` 并带原因（`unknown_args` / `ambiguous_array` / `unknown_receiver` / `no_such_class` / `no_such_member` / `member_enumeration`），目标类不在 jar 内时保持 `pending no_such_class`，不猜外部类。
-
-输出：三行 `# ` 摘要（扫描类数、resolved/pending/unsupported 计数与 resolved 比例、按 API 分布），随后每个调用点一行绑定（`[state] api class=… member=… params=… reason=… target=… <- site insn=N`）。`--json` 时摘要走 stderr，stdout 为纯 JSON 数组（键为稳定英文）；`--unresolved` 只看 pending 绑定；`--bindings-of <class>` 按来源类过滤（内部名或点分名，与 `xref` 用同一归一规则）。jar 打开或分析失败退出码 `2`。
-
-### `mjt cfg`：单方法 CFG 的 Graphviz dot 导出
-
-```sh
-mjt cfg -i <input.jar|.class> [-c <class>] [-m <name[:descriptor]>] [-o <out.dot>]
-```
-
-以 Graphviz dot 导出单方法的块级控制流图。分析内核是 mjbase/asm `ControlFlowGraph`（切块、边分类、异常边），加上 `CfgTraversal`（逆后序）与 `DominatorTree` 供注释元数据。输入是 `.jar`（此时必须 `-c <internalName>`）或 `.class` 文件（类名从文件名推断，剥 `.class` 后缀）。`-m <spec>` 选方法：`name` 跨描述符匹配，多命中报多义错误（退出码 `1`，精确选取用 `name:descriptor`）；缺省 spec 取第一个带方法体的方法。无方法体的方法（abstract / native）输出带 `no body` 注释行的明确空图，退出码 `0`。
-
-输出形状：带引号的 `digraph "<class>.<method><descriptor>"` 头；`//` 注释行给出类 / 方法 / 入口块（`B0`）、逆后序，以及每个可达块一行 `// idom: B<n> <- …`；每块一个 `B<n> [label="…" shape=box]` 节点，label 按程序序列出块内指令 `<pc>: <助记符> <操作数>`（分支目标渲染为目标块号，常量池引用解析成文本：成员 `owner.name desc`、类内部名、带引号字符串字面量；float/double 常量按 `0x…` 位模式）；每条控制流边一行带标注的边。边标注是 mjbase EdgeKind 稳定名（`fallthrough`、`branch`、`condition`、`switch`、`exception`），异常边带 `dashed` 样式与 catch 类型（`exception: java/lang/Exception`，全捕获 handler 为 `exception: any`）。带 `-o` 时 dot 文本覆盖写入指定文件（失败退出码 `2`）；省略时 stdout 只承载 dot 文本，别无他物。
-
-输出是**块级 CFG**，不是 SSA 指令级图：节点 = 基本块 + 块内指令概览，边按 EdgeKind 标注（异常边带 catch 类型），entry / RPO / idom 以注释行呈现。
-
-### `mjt dataflow`：方法内数据流查询
-
-```sh
-mjt dataflow du   -i <input.jar|.class> [-c <class>] [-m <name[:desc]>] [--json]
-mjt dataflow live -i <input.jar|.class> [-c <class>] [-m <name[:desc]>] [--json]
-```
-
-方法选择与 `cfg` 完全一致（spec `name` / `name:descriptor`，多义退出码 `1`，缺省取第一个带方法体的方法）。选中方法无方法体按用法错误拒绝（`no body … no CFG to analyze`，退出码 `1`）。分析内核是 mjbase/asm `MethodDefUse`（`DomainEngine` 帧分析之上的槽级 def-use，异常边走精确档）与 `LivenessView`（局部槽后向 may-liveness）。两者都是**槽级模型**，不是 SSA：定义以参数槽 / 指令槽标号，活跃按局部槽跟踪。
-
-`du` 每个定义一行链。定义标号：`param[k]`（实例方法 0 号渲染为 `param[0]=this`），按描述符播种（long/double 占两槽但只播一个定义）；指令定义为 `i<slot>(<助记符>)`（store 族 / `iinc` 写与栈值产生指令；无使用的 dead store 照样列出）。使用点渲染为 `i<slot>(<助记符>)@stack<k>`（栈顶起第 k 个操作数栈值）或 `i<slot>(<助记符>)@local<k>`（局部槽读），尾缀 `!` 标记到达定义集合溢出分析器 `kMaxDefs` 上界的边；空使用列表渲染 `-`。头行报告链 / 边计数与分析器状态 `ok`（帧分析成功）与 `truncated`（任一到达集合溢出，边集可能不完整）。
-
-`live` 输出入口活跃集，随后每条指令一行（程序序），给出执行前后的**局部槽**活跃集。模型是 mjbase/asm `LivenessView`：局部槽上的后向 may-liveness（`out[b] = ∪ in[succ]`，异常 handler 保守地读一切槽），块内迁移 `in = (out − def) ∪ use`。
-
-`--json`（两个子命令）时 stdout 承载**单个 JSON 对象**：无摘要行混流。`du` 的键：`class`、`method`、`descriptor`、`instance`、`ok`、`truncated`、`unresolved_field_refs`（字段引用常量池条目畸形；字段事实不完整）、`edges`（def→use 边总数）、`chains[]`：每条 `{def, uses[]}`，`def` = `{"kind":"parameter","slot":k}`（实例接收者另带 `"this":true`）或 `{"kind":"instruction","slot":n,"pc":p,"opcode":"…"}`，每个使用点 = `{"insn":n,"pc":p,"opcode":"…","slot":"stack"|"local","index":k,"truncated":bool}`；另有 `field_accesses[]` = `{"insn","pc","opcode","owner","name","descriptor","write","static","object_defs":[def…],"value_defs":[def…],"truncated"}`。`live` 的键：`class`、`method`、`descriptor`、`instance`、`slots`（槽位上界）、`entry_live`（升序槽号）、`points[]` = `{"insn","pc","opcode","live_before":[…],"live_after":[…]}`。文本字段一律 JSON 转义；class 字节畸形退出码 `2`。
-
-输出模型：槽级视图，不是 SSA 指令级图：`du` 链以槽级定义为键（`param[k]` 参数槽、`i<slot>(<助记符>)` 指令槽），使用点按消费指令加操作数栈 / 局部槽位置定位；`live` 是**局部槽**点级活跃（无 SSA value 活跃概念）。`ok` / `truncated` / `unresolved_field_refs` 状态如实呈现部分或降级结果，不隐藏。
-
 语言：文案跟随 `MJT_LANG` 环境变量（缺省 `en_US`，支持 `zh_CN`）。
 
 ## 仓库结构
@@ -278,7 +220,7 @@ mjt dataflow live -i <input.jar|.class> [-c <class>] [-m <name[:desc]>] [--json]
 ```
 mjt/mcp/src/     MCP 服务器与工具集（核心产品代码）
 mjt/mcp/test/    MCP 层单测
-mjt/cli/         `mjt` CLI 二进制（info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs / hexdump / eval / reflect / cfg / dataflow）
+mjt/cli/         `mjt` CLI 二进制（info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs）
 mjt/test/cli/    CLI 层单测
 mjt/src/shared/  MCP 工具集共用的底层能力（反编译接入、jar 重映射、workspace…）
 skills/          MCP 技能定义
