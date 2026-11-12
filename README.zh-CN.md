@@ -65,7 +65,7 @@ Windows 下 exe 嵌了 `activeCodePage=UTF-8` 与 `longPathAware` 的 manifest�
 
 ## CLI 用法
 
-`mjt` 是普通命令行工具（`xmake build mjt`），十个面向 JAR 与 mapping
+`mjt` 是普通命令行工具（`xmake build mjt`），十一个面向 JAR 与 mapping
 文件的批处理式命令。退出码约定：`0` 成功（含 `--help`）、`1` 用法错误
 （参数缺失、输入文件不存在、格式名不识别、类选择器无命中、旗标值非法）、
 `2` 运行失败（打开、解析、修复、导出、反编译、抽取、扫描或反汇编失败）。
@@ -232,6 +232,16 @@ mjt eval -s "(x ^ y) + 2*(x & y)"     # 化简形式
 
 经 mjbase expr 管线求值或化简数学表达式（`parseExpression` → 可选 `simplify` → `eval`；与 Python SDK `analysis_evaluate` 绑定同一引擎）。算子：`+ - * / % & | ^ ~ << >> >>>`（标准 C 优先级）；十进制与十六进制（`0xFF`）字面量、具名变量。`-v k=v,k2=v2` 将变量绑定为整数值；绑定串畸形或表达式无法解析退出码 `1`。含未绑定变量的表达式不算失败：化简后的 S-表达式打印到 stdout、退出码 `0`（带 `-s` 先应用 MBA 代数恒等式，`(x ^ y) + 2*(x & y)` 化简为 `x + y`）。其余求值失败（深度超限）退出码 `2`。
 
+### `mjt reflect`：反射调用点绑定分析
+
+```sh
+mjt reflect -i <jar> [--json] [--unresolved] [--bindings-of <class>]
+```
+
+对每个反射 sink 调用点回答一个窄问题（`Class.forName`、`ClassLoader.loadClass`、`Class.get*Method(s)` / `get*Field(s)` 成员查找族、`Method.invoke` / `Constructor.newInstance` / `Class.newInstance`、`Field.get` / `set`；`MethodHandles.Lookup` 族仅登记不解析）：目标能否静态确定，且是否真实存在于本 jar。分析器（mjbase `ReflectionBindingAnalyzer`，无法判定的绑定按 Pending 呈现，不误报）折叠方法内值流（`ldc` 常量、StringBuilder 链、`makeConcatWithConstants` recipe、`static final String` 常量与名表），再对容器内真实声明验证解析出的目标；无法静态确定的降级为 `pending` 并带原因（`unknown_args` / `ambiguous_array` / `unknown_receiver` / `no_such_class` / `no_such_member` / `member_enumeration`），目标类不在 jar 内时保持 `pending no_such_class`，不猜外部类。
+
+输出：三行 `# ` 摘要（扫描类数、resolved/pending/unsupported 计数与 resolved 比例、按 API 分布），随后每个调用点一行绑定（`[state] api class=… member=… params=… reason=… target=… <- site insn=N`）。`--json` 时摘要走 stderr，stdout 为纯 JSON 数组（键为稳定英文）；`--unresolved` 只看 pending 绑定；`--bindings-of <class>` 按来源类过滤（内部名或点分名，与 `xref` 用同一归一规则）。jar 打开或分析失败退出码 `2`。
+
 语言：文案跟随 `MJT_LANG` 环境变量（缺省 `en_US`，支持 `zh_CN`）。
 
 ## 仓库结构
@@ -239,7 +249,7 @@ mjt eval -s "(x ^ y) + 2*(x & y)"     # 化简形式
 ```
 mjt/mcp/src/     MCP 服务器与工具集（核心产品代码）
 mjt/mcp/test/    MCP 层单测
-mjt/cli/         `mjt` CLI 二进制（info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs / hexdump）
+mjt/cli/         `mjt` CLI 二进制（info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs / hexdump / eval / reflect）
 mjt/test/cli/    CLI 层单测
 mjt/src/shared/  MCP 工具集共用的底层能力（反编译接入、jar 重映射、workspace…）
 skills/          MCP 技能定义

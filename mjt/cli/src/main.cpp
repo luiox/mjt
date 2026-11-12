@@ -1,6 +1,6 @@
 /// @file        main.cpp
 /// @brief       `mjt` CLI 入口：ca::opt 命令树（info / mapping / jar fix /
-///              decompile / strings / xref / classes / disasm / subs / hexdump / eval）+ 全局 --version/--help + 退出码映射。
+///              decompile / strings / xref / classes / disasm / subs / hexdump / eval / reflect）+ 全局 --version/--help + 退出码映射。
 ///
 /// 退出码约定（README「CLI usage」同文）：0 成功（含 --help）/ 1 用法错误
 /// （参数缺失、文件不存在、格式名不识别、类选择器无命中、旗标值非法）/
@@ -26,6 +26,7 @@
 #include "mjbase/log/log_init.hpp"
 
 #include "commands.hpp"
+#include "shared/class_selector.hpp"
 #include "shared/file_io.hpp"
 #include "shared/i18n_errors.hpp"
 #include "shared/output_sink.hpp"
@@ -511,8 +512,34 @@ int runEval(const ca::opt::ParseResult& args)
     return mjt::cli::kExitOk;
 }
 
+/// `mjt reflect -i <jar> [--json] [--unresolved] [--bindings-of <class>]`。
+///
+/// --json 时 `# ` 摘要行走 stderr，stdout 保持纯 JSON 数组（与 xref 命令一致）。--bindings-of 经 normalizeClassSelector 归一（与 xref 一致：剥 .class / L...; 外壳、点分换 slash）。jar 打开 / 分析构建失败 = 运行 2。
+int runReflect(const ca::opt::ParseResult& args)
+{
+    const std::string input = args.get("input");
+    if (!requireInputFile(input))
+        return usageFailure(mjt::shared::trfStr("mjt.cli.err.input_missing", {input}));
+
+    const std::string classFilter = mjt::normalizeClassSelector(args.get("bindings-of"));
+
+    auto report = mjt::cli::collectReflect(input, args.has("unresolved"), classFilter);
+    if (report.is_err())
+        return runFailure(std::move(report).unwrap_err().message);
+    const auto value = std::move(report).unwrap();
+
+    if (args.has("json")) {
+        mjt::cli::renderReflectSummary(value, mjt::err());
+        mjt::cli::renderReflectJson(value, mjt::out());
+    }
+    else {
+        mjt::cli::renderReflectText(value, mjt::out());
+    }
+    return mjt::cli::kExitOk;
+}
+
 /// 命令树：根（--version）→ info / mapping / jar → fix / decompile / strings /
-/// xref / classes / disasm / subs / hexdump / eval。
+/// xref / classes / disasm / subs / hexdump / eval / reflect。
 ca::opt::Command buildCommandLine()
 {
     ca::opt::Command root;
@@ -860,6 +887,30 @@ ca::opt::Command buildCommandLine()
     evalCmd.args.push_back(vars);
     root.subcommands.push_back(std::move(evalCmd));
 
+    // reflect：反射 sink 绑定分析（--json 时 `# ` 摘要走 stderr；--unresolved 只看 Pending；--bindings-of 按来源类过滤）。旗标文案复用共享表 mjt.cmd.reflect.*（与 MCP 共用同一份文案）。
+    ca::opt::Command reflect;
+    reflect.name = "reflect";
+    reflect.help = mjt::shared::trfStr("mjt.cli.reflect.help");
+    ca::opt::Arg reflectInput = input;
+    reflect.args.push_back(reflectInput);
+    ca::opt::Arg reflectJson;
+    reflectJson.name = "json";
+    reflectJson.kind = ca::opt::OptKind::Flag;
+    reflectJson.help = mjt::shared::trfStr("mjt.cmd.reflect.param.json.desc");
+    reflect.args.push_back(reflectJson);
+    ca::opt::Arg unresolved;
+    unresolved.name = "unresolved";
+    unresolved.kind = ca::opt::OptKind::Flag;
+    unresolved.help = mjt::shared::trfStr("mjt.cmd.reflect.param.unresolved.desc");
+    reflect.args.push_back(unresolved);
+    ca::opt::Arg bindingsOf;
+    bindingsOf.name    = "bindings-of";
+    bindingsOf.kind    = ca::opt::OptKind::String;
+    bindingsOf.metavar = "<class>";
+    bindingsOf.help    = mjt::shared::trfStr("mjt.cmd.reflect.param.bindings_of.desc");
+    reflect.args.push_back(bindingsOf);
+    root.subcommands.push_back(std::move(reflect));
+
     return root;
 }
 
@@ -902,6 +953,7 @@ int main(int argc, char* argv[])
     if (path.size() == 1 && path.front() == "subs") return runSubs(args);
     if (path.size() == 1 && path.front() == "hexdump") return runHexdump(args);
     if (path.size() == 1 && path.front() == "eval") return runEval(args);
+    if (path.size() == 1 && path.front() == "reflect") return runReflect(args);
     if (path.size() == 2 && path.front() == "jar" && path[1] == "fix") return runJarFix(args);
 
     std::cerr << ca::opt::help_text(parser.root());

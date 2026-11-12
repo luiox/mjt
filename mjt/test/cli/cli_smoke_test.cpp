@@ -367,6 +367,40 @@ TEST(MjtCliSmokeTest, EvalCommandEvaluatesAndReportsErrors)
     EXPECT_NE(badVars.output.find("x"), std::string::npos);
 }
 
+TEST(MjtCliSmokeTest, ReflectCommandAnalyzesAndReportsErrors)
+{
+    const auto jar = cli_fixture::writeReflectJar();
+
+    const auto text = runCli("reflect -i \"" + jar.string() + "\"");
+    EXPECT_EQ(text.exitCode, 0);
+    EXPECT_NE(text.output.find("sink call sites"), std::string::npos);
+    EXPECT_NE(text.output.find("[resolved]"), std::string::npos);
+    EXPECT_NE(text.output.find("[pending]"), std::string::npos);
+
+    const auto unresolved = runCli("reflect -i \"" + jar.string() + "\" --unresolved");
+    EXPECT_EQ(unresolved.exitCode, 0);
+    EXPECT_EQ(unresolved.output.find("[resolved]"), std::string::npos);
+
+    const auto filtered =
+        runCli("reflect -i \"" + jar.string() + "\" --bindings-of rf.Caller");
+    EXPECT_EQ(filtered.exitCode, 0);
+    EXPECT_NE(filtered.output.find("rf/Caller"), std::string::npos);
+
+    // --json：stdout 纯 JSON 数组 + stderr 摘要（本冒烟 2>&1 合流捕获）。
+    const auto json = runCli("reflect -i \"" + jar.string() + "\" --json");
+    EXPECT_EQ(json.exitCode, 0);
+    EXPECT_NE(json.output.find("\"state\":\"resolved\""), std::string::npos);
+    EXPECT_NE(json.output.find("sink call sites"), std::string::npos);
+
+    // 输入不存在 = 用法 1；存在但打不开（非 jar 字节）= 运行 2。
+    const auto missingInput = runCli("reflect -i mjt_cli_smoke_reflect_missing.jar");
+    EXPECT_EQ(missingInput.exitCode, 1);
+
+    const auto notJarPath = cli_fixture::writeTextFile("mjt_cli_smoke_not_a_jar.txt", "hello");
+    const auto badJar = runCli("reflect -i \"" + notJarPath.string() + "\"");
+    EXPECT_EQ(badJar.exitCode, 2);
+}
+
 TEST(MjtCliSmokeTest, JarFixCommandRepairsAndReports){
     const auto inJar  = cli_fixture::writeBrokenJar();
     const auto outJar = test::getTempOutPath("mjt_cli_smoke_fixed.jar");

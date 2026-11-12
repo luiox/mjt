@@ -604,6 +604,79 @@ inline std::filesystem::path writeClassesJar()
     return path;
 }
 
+// ── reflect 语料（反射 sink 绑定分析）───────────────────────────────
+
+/// reflect 语料源 Target：hello()V / answer()I（供目标存在性验证）。
+inline std::vector<ca::u8> assembleReflectTargetClass()
+{
+    return assembleClass(
+        R"JASM(.super java/lang/Object
+.class public super rf/Target {
+  .method public hello ()V {
+    code: {
+      return
+    }
+  }
+  .method public answer ()I {
+    code: {
+      iconst_1
+      ireturn
+    }
+  }
+}
+)JASM");
+}
+
+/// reflect 语料源 Caller：三个 sink 调用点：byName 字面量 forName，目标类在容器内（resolved 用例）；lookup 经 forName 接收者查无此成员（pending no_such_member 用例）；external 查容器外类（pending no_such_class 用例，不猜测外部类）。
+inline std::vector<ca::u8> assembleReflectCallerClass()
+{
+    return assembleClass(
+        R"JASM(.super java/lang/Object
+.class public super rf/Caller {
+  .method public static byName ()Ljava/lang/Class; {
+    code: {
+      ldc "rf/Target"
+      invokestatic java/lang/Class.forName (Ljava/lang/String;)Ljava/lang/Class;
+      areturn
+    }
+  }
+  .method public static lookup ()Ljava/lang/reflect/Method; {
+    code: {
+      ldc "rf/Target"
+      invokestatic java/lang/Class.forName (Ljava/lang/String;)Ljava/lang/Class;
+      ldc "nope"
+      iconst_0
+      anewarray java/lang/Class
+      invokevirtual java/lang/Class.getMethod (Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;
+      areturn
+    }
+  }
+  .method public static external ()Ljava/lang/Class; {
+    code: {
+      ldc "java/lang/String"
+      invokestatic java/lang/Class.forName (Ljava/lang/String;)Ljava/lang/Class;
+      areturn
+    }
+  }
+}
+)JASM");
+}
+
+/// reflect 语料 jar：Target（供目标存在性验证）+ Caller（三个 sink 调用点）。
+inline std::filesystem::path writeReflectJar()
+{
+    mjbase::model::ResourceContainer container;
+    container.addResource("rf/Target.class",
+                          std::make_unique<mjbase::model::ClassResource>(
+                              "rf/Target.class", assembleReflectTargetClass()));
+    container.addResource("rf/Caller.class",
+                          std::make_unique<mjbase::model::ClassResource>(
+                              "rf/Caller.class", assembleReflectCallerClass()));
+    const auto path = test::getTempOutPath("mjt_cli_reflect_fixture.jar");
+    mjbase::model::ResourceHelper::exportToJar(container, path.string());
+    return path;
+}
+
 // ── decompile 语料（#63 敌意名 + perf 大 jar）───────────────────────
 
 /// 敌意类名长度（单段 UTF-16 单元数）：Windows 单段文件名上限的 ~85 倍，

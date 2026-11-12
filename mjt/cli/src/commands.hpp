@@ -611,4 +611,75 @@ void renderEvalOutcome(const EvalOutcome& outcome, OutputSink& sink);
 /// @brief 渲染 eval 详细用法（算子表与示例；i18n 键 mjt.cmd.eval.out.usage）。缺表达式错误后的伴随输出。
 void renderEvalUsage(OutputSink& sink);
 
+// ── reflect ────────────────────────────────────────────────────────
+
+/// @brief reflect 命令错误：类别定退出码分支，message 为已渲染文案。
+struct ReflectError
+{
+    enum class Kind
+    {
+        Runtime, ///< jar 打开 / 分析器构建失败（→ 退出码 2）
+    };
+    Kind        kind    = Kind::Runtime;
+    std::string message;
+};
+
+/// @brief 一行反射 sink 绑定（mjbase ReflectionBindingAnalyzer 输出转成 std::string 的副本；collect 拷贝驻留，与分析器寿命解耦）。
+struct ReflectBindingRow
+{
+    std::string state;      ///< 绑定状态稳定名（resolved / pending / unsupported）
+    std::string api;        ///< API 分类短标签（"Class.forName" 形态）
+    std::string reason;     ///< Pending 原因稳定名（非 Pending 为空串）
+    std::string className;  ///< 解析出的目标类名（未知为空）
+    std::string memberName; ///< 解析出的成员名（未知为空）
+    ca::i32     paramTypeCount = -1; ///< Class[] 槽可判定的参数类型个数
+    bool        resolved       = false; ///< true = 目标已在容器内验证存在
+    std::string targetOwner;    ///< Resolved 时的目标成员（否则空）
+    std::string targetName;
+    std::string targetDesc;
+    std::string siteClass;  ///< 调用点位置（来源类 / 方法 / 描述符）
+    std::string siteMethod;
+    std::string siteDesc;
+    ca::i32     siteOpcode = -1;
+    ca::i32     siteInsn   = -1;
+};
+
+/// @brief 汇总计量（analyzer summarize 结果；渲染与断言共用）。
+struct ReflectSummary
+{
+    ca::usize total       = 0; ///< sink 调用点总数
+    ca::usize resolved    = 0;
+    ca::usize pending     = 0;
+    ca::usize unsupported = 0;
+    double    ratePercent = 0.0; ///< resolved 比例（0-100；无 sink 为 0）
+    /// @brief API 分布（枚举序，只含非零项）：API 标签 → 计数。
+    std::vector<std::pair<std::string, ca::usize>> apiDistribution;
+};
+
+/// @brief 一次反射绑定分析的报告（渲染与断言共用）。
+struct ReflectReport
+{
+    std::string       jarPath;    ///< 输入 jar 路径（原样回显）
+    std::string       classFilter; ///< --bindings-of 归一后内部名；空 = 不过滤
+    ca::usize         classCount = 0; ///< 容器内 class 形态资源数（摘要行用）
+    ReflectSummary    summary;
+    std::vector<ReflectBindingRow> bindings; ///< 过滤后绑定（扫描顺序）
+};
+
+/// @brief 反射 sink 调用点绑定分析：workspace 打开 → 容器类计数 → mjbase ReflectionBindingAnalyzer 全量构建（无法判定的绑定按 Pending 呈现，不误报）→ --unresolved / --bindings-of 过滤。
+/// @param classFilter 来源类过滤（归一后内部名精确匹配；空 = 不过滤）
+/// @note jar 打开与构建失败都走 Runtime（退出码 2）；类选择器归一是用法校验（归 main）。
+ca::Result<ReflectReport, ReflectError> collectReflect(const std::string& jarPath,
+                                                       bool unresolvedOnly,
+                                                       const std::string& classFilter);
+
+/// @brief 渲染 `# ` 摘要三行（扫描类数 / 三态计数与 resolved 比例 / API 分布）。--json 时调用方把它指到 stderr（stdout 保持纯 JSON 流）。
+void renderReflectSummary(const ReflectReport& report, OutputSink& sink);
+
+/// @brief 渲染人类可读全文（摘要 + 绑定行 `[state] api ... <- site insn=N`；无匹配时输出 none 提示行）。
+void renderReflectText(const ReflectReport& report, OutputSink& sink);
+
+/// @brief 渲染 JSON 数组（键稳定英文；文本字段经 json::escape 转义；仅数组本体，摘要行走 stderr 由 main 分工）。
+void renderReflectJson(const ReflectReport& report, OutputSink& sink);
+
 }   // namespace mjt::cli

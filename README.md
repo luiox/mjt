@@ -52,7 +52,7 @@ On Windows the executable embeds an `activeCodePage=UTF-8` and `longPathAware` m
 
 ## CLI usage
 
-The `mjt` binary is a plain command-line tool (`xmake build mjt`) covering ten batch-style commands over JARs and mapping files. Exit codes: `0` success (including `--help`), `1` usage error (missing argument, missing input file, unknown format name, class selector without a match, invalid flag value), `2` runtime failure (open, parse, repair, export, decompile, extraction, scan or disassembly failure).
+The `mjt` binary is a plain command-line tool (`xmake build mjt`) covering eleven batch-style commands over JARs and mapping files. Exit codes: `0` success (including `--help`), `1` usage error (missing argument, missing input file, unknown format name, class selector without a match, invalid flag value), `2` runtime failure (open, parse, repair, export, decompile, extraction, scan or disassembly failure).
 
 ```sh
 mjt --version          # print tool version
@@ -167,6 +167,16 @@ mjt eval -s "(x ^ y) + 2*(x & y)"     # simplified form
 
 Evaluates or simplifies a mathematical expression through the mjbase expr pipeline (`parseExpression` → optional `simplify` → `eval`; the same engine the Python SDK's `analysis_evaluate` binds). Operators: `+ - * / % & | ^ ~ << >> >>>` with standard C precedence; decimal and hex (`0xFF`) literals and named variables. `-v k=v,k2=v2` binds variables to integer values; a malformed binding string or an unparsable expression exits `1`. An expression with unbound variables is not a failure: the simplified S-expression form prints to stdout with exit `0` (with `-s` the MBA algebraic identities are applied first, so `(x ^ y) + 2*(x & y)` reduces to `x + y`). Other evaluation failures (depth limit exceeded) exit `2`.
 
+### `mjt reflect`: reflection call-site binding analysis
+
+```sh
+mjt reflect -i <jar> [--json] [--unresolved] [--bindings-of <class>]
+```
+
+Answers a narrow question for every reflection sink call site (`Class.forName`, `ClassLoader.loadClass`, the `Class.get*Method(s)` / `get*Field(s)` member-lookup family, `Method.invoke` / `Constructor.newInstance` / `Class.newInstance`, `Field.get` / `set`; `MethodHandles.Lookup` is catalog-only): can the target be determined statically, and does it really exist in this jar? The analyzer (mjbase `ReflectionBindingAnalyzer`; bindings it cannot determine stay `Pending` rather than becoming false positives) folds method-local value flow (`ldc` constants, StringBuilder chains, `makeConcatWithConstants` recipes, `static final String` constants and name tables), then verifies resolved targets against the container's real declarations; anything underdetermined degrades to `pending` with a reason (`unknown_args`, `ambiguous_array`, `unknown_receiver`, `no_such_class`, `no_such_member`, `member_enumeration`), and a target class outside the jar stays `pending no_such_class` rather than guessing.
+
+Output: three `# ` summary lines (classes scanned, resolved/pending/unsupported counts with resolution rate, per-API distribution) followed by one binding line per call site (`[state] api class=… member=… params=… reason=… target=… <- site insn=N`). With `--json` the summary moves to stderr and stdout carries a pure JSON array (stable English keys); `--unresolved` keeps only pending bindings; `--bindings-of <class>` filters to one source class (internal or dotted name, normalized like `xref`). Jar open or analysis failure exits `2`.
+
 Locale: message text follows the `MJT_LANG` environment variable (`en_US` default, `zh_CN` supported).
 
 ## Repository layout
@@ -174,7 +184,7 @@ Locale: message text follows the `MJT_LANG` environment variable (`en_US` defaul
 ```
 mjt/mcp/src/     MCP server and tool set (core product code)
 mjt/mcp/test/    MCP-layer unit tests
-mjt/cli/         `mjt` CLI binary (info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs / hexdump)
+mjt/cli/         `mjt` CLI binary (info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs / hexdump / eval / reflect)
 mjt/test/cli/    CLI-layer unit tests
 mjt/src/shared/  capabilities shared across the MCP tool set
                  (decompiler integration, jar remapping, workspace…)
