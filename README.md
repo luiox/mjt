@@ -52,7 +52,7 @@ On Windows the executable embeds an `activeCodePage=UTF-8` and `longPathAware` m
 
 ## CLI usage
 
-The `mjt` binary is a plain command-line tool (`xmake build mjt`) covering thirteen batch-style commands over JARs and mapping files. Exit codes: `0` success (including `--help`), `1` usage error (missing argument, missing input file, unknown format name, class selector without a match, invalid flag value), `2` runtime failure (open, parse, repair, export, decompile, extraction, scan or disassembly failure).
+The `mjt` binary is a plain command-line tool (`xmake build mjt`) covering nine batch-style commands over JARs and mapping files. Exit codes: `0` success (including `--help`), `1` usage error (missing argument, missing input file, unknown format name, class selector without a match, invalid flag value), `2` runtime failure (open, parse, repair, export, decompile, extraction, scan or disassembly failure).
 
 ```sh
 mjt --version          # print tool version
@@ -148,64 +148,6 @@ mjt subs -i <jar> -c <internalName> [--json]
 
 Lists the fields and methods of one class: name, descriptor, raw access flags (JVMS bitmask, decimal) and a `native` marker for methods. Fields come first, each group in classfile declaration order; the header reports the class kind (same derivation as `mjt classes`). An unknown class exits `1`; `--json` emits the same data with stable English keys.
 
-### `mjt hexdump`: raw class byte dump
-
-```sh
-mjt hexdump -i <jar> <class> [--offset N] [--length N] [--width N] [--no-ascii]
-```
-
-Prints the raw bytes of one class as xxd-style rows (`%08x` offset, hex bytes with a half-line separator, ASCII column with non-printables as `.`). The class is located by `<class>`: a resource URI (`fixture/Alpha.class`) or internal name (`fixture/Alpha`) matches exactly first, otherwise the first entry whose name contains the selector wins. `--offset` / `--length` window the dump (`--length -1`, the default, means "to the end of the class"), `--width` sets the bytes-per-line count (default `16`), and `--no-ascii` hides the right-hand ASCII column. An offset past the end of the class prints an explicit empty note instead of rows; negative offsets, non-positive widths and lengths below `-1` are usage errors. This is a pure byte-level view: no class parsing involved, so it works on bytes `disasm` cannot render.
-
-### `mjt eval`: expression evaluation and simplification
-
-```sh
-mjt eval "1 + 2 * 3"                  # 7
-mjt eval -v x=10,y=20 "x + y"         # 30
-mjt eval "x + 0"                      # unbound variables print the S-expression
-mjt eval -s "(x ^ y) + 2*(x & y)"     # simplified form
-```
-
-Evaluates or simplifies a mathematical expression through the mjbase expr pipeline (`parseExpression` → optional `simplify` → `eval`; the same engine the Python SDK's `analysis_evaluate` binds). Operators: `+ - * / % & | ^ ~ << >> >>>` with standard C precedence; decimal and hex (`0xFF`) literals and named variables. `-v k=v,k2=v2` binds variables to integer values; a malformed binding string or an unparsable expression exits `1`. An expression with unbound variables is not a failure: the simplified S-expression form prints to stdout with exit `0` (with `-s` the MBA algebraic identities are applied first, so `(x ^ y) + 2*(x & y)` reduces to `x + y`). Other evaluation failures (depth limit exceeded) exit `2`.
-
-### `mjt reflect`: reflection call-site binding analysis
-
-```sh
-mjt reflect -i <jar> [--json] [--unresolved] [--bindings-of <class>]
-```
-
-Answers a narrow question for every reflection sink call site (`Class.forName`, `ClassLoader.loadClass`, the `Class.get*Method(s)` / `get*Field(s)` member-lookup family, `Method.invoke` / `Constructor.newInstance` / `Class.newInstance`, `Field.get` / `set`; `MethodHandles.Lookup` is catalog-only): can the target be determined statically, and does it really exist in this jar? The analyzer (mjbase `ReflectionBindingAnalyzer`; bindings it cannot determine stay `Pending` rather than becoming false positives) folds method-local value flow (`ldc` constants, StringBuilder chains, `makeConcatWithConstants` recipes, `static final String` constants and name tables), then verifies resolved targets against the container's real declarations; anything underdetermined degrades to `pending` with a reason (`unknown_args`, `ambiguous_array`, `unknown_receiver`, `no_such_class`, `no_such_member`, `member_enumeration`), and a target class outside the jar stays `pending no_such_class` rather than guessing.
-
-Output: three `# ` summary lines (classes scanned, resolved/pending/unsupported counts with resolution rate, per-API distribution) followed by one binding line per call site (`[state] api class=… member=… params=… reason=… target=… <- site insn=N`). With `--json` the summary moves to stderr and stdout carries a pure JSON array (stable English keys); `--unresolved` keeps only pending bindings; `--bindings-of <class>` filters to one source class (internal or dotted name, normalized like `xref`). Jar open or analysis failure exits `2`.
-
-### `mjt cfg`: single-method CFG as Graphviz dot
-
-```sh
-mjt cfg -i <input.jar|.class> [-c <class>] [-m <name[:descriptor]>] [-o <out.dot>]
-```
-
-Dumps one method's block-level control-flow graph in Graphviz dot. The analysis kernel is the mjbase/asm `ControlFlowGraph` (block splitting + edge classification + exception edges), plus `CfgTraversal` (reverse postorder) and `DominatorTree` for the comment metadata. Input is a `.jar` (then `-c <internalName>` is required) or a `.class` file (class name inferred from the file name, `.class` suffix stripped). `-m <spec>` selects the method: `name` matches across descriptors, more than one match is an ambiguity error (exit `1`, use `name:descriptor` for an exact pick), and an omitted spec takes the first method that has a body. A method without a body (abstract / native) prints an explicit empty graph with a `no body` comment line and exits `0`.
-
-Output shape: a quoted `digraph "<class>.<method><descriptor>"` header; `//` comment lines for the class / method / entry block (`B0`), the reverse postorder, and one `// idom: B<n> <- …` line per reachable block; one `B<n> [label="…" shape=box]` node per block whose label lists the block's instructions in program order as `<pc>: <mnemonic> <operands>` (branch targets rendered as target block numbers, constant-pool references resolved to text: `owner.name desc` for members, class internal names, quoted string literals; float/double constants as `0x…` bit patterns); and one labeled edge per control-flow edge. Edge labels are the mjbase EdgeKind stable names (`fallthrough`, `branch`, `condition`, `switch`, `exception`), with exception edges styled `dashed` and carrying the catch type (`exception: java/lang/Exception`, or `exception: any` for a catch-all handler). With `-o` the dot text overwrites the given file (failure exits `2`); without it stdout carries the dot and nothing else.
-
-The result is a **block-level CFG**, not an SSA instruction-level graph: nodes are basic blocks with an instruction overview inside, edges carry EdgeKind labels (exception edges carry the catch type), and entry / RPO / idom facts appear as comment lines.
-
-### `mjt dataflow`: method-local dataflow queries
-
-```sh
-mjt dataflow du   -i <input.jar|.class> [-c <class>] [-m <name[:desc]>] [--json]
-mjt dataflow live -i <input.jar|.class> [-c <class>] [-m <name[:desc]>] [--json]
-```
-
-Method selection matches `cfg` exactly (spec `name` / `name:descriptor`, ambiguity exits `1`, default first method with a body). A selected method without a body is rejected as a usage error (`no body … no CFG to analyze`, exit `1`). The analysis kernels are mjbase/asm `MethodDefUse` (slot-level def-use over the `DomainEngine` frame analysis, with precise exception edges) and `LivenessView` (local-slot backward may-liveness). Both are **slot-level models**, not SSA: definitions are labeled by parameter / instruction slot, and liveness is tracked per local slot.
-
-`du` prints one chain line per definition. Definitions are labeled `param[k]` (instance methods render slot 0 as `param[0]=this`), seeded from the descriptor (long/double occupy two slots but seed one definition), or `i<slot>(<mnemonic>)` for instruction definitions (store family / `iinc` writes and stack-value producers; a dead store with no uses is still listed). Use points render as `i<slot>(<mnemonic>)@stack<k>` (k-th operand-stack value from the top) or `i<slot>(<mnemonic>)@local<k>` (local-slot read), a trailing `!` marking an edge whose reaching-definition set overflowed the analyzer's `kMaxDefs` bound; an empty use list renders `-`. The header line reports chain / edge counts plus the analyzer states `ok` (frame analysis succeeded) and `truncated` (any reaching set overflowed, so the edge set may be incomplete).
-
-`live` prints the entry live set followed by one row per instruction (program order) with the live-before and live-after **local slot** sets. The model is the mjbase/asm `LivenessView`: backward may-liveness over local slots (`out[b] = ∪ in[succ]`, exception handlers conservatively read every slot), with per-instruction transfer `in = (out − def) ∪ use`.
-
-With `--json` (both subcommands) stdout carries a **single JSON object** with no summary lines. `du` keys: `class`, `method`, `descriptor`, `instance`, `ok`, `truncated`, `unresolved_field_refs` (a malformed field-reference constant pool entry; field facts incomplete), `edges` (total def→use edge count), `chains[]`: each `{def, uses[]}` with `def` = `{"kind":"parameter","slot":k}` (plus `"this":true` for an instance receiver) or `{"kind":"instruction","slot":n,"pc":p,"opcode":"…"}`, and each use = `{"insn":n,"pc":p,"opcode":"…","slot":"stack"|"local","index":k,"truncated":bool}`; plus `field_accesses[]` = `{"insn","pc","opcode","owner","name","descriptor","write","static","object_defs":[def…],"value_defs":[def…],"truncated"}`. `live` keys: `class`, `method`, `descriptor`, `instance`, `slots` (slot-count upper bound), `entry_live` (ascending slot ids), `points[]` = `{"insn","pc","opcode","live_before":[…],"live_after":[…]}`. All text fields are JSON-escaped; malformed class bytes exit `2`.
-
-Output model: a slot-level view, not an SSA instruction-level graph: `du` chains are keyed by slot-level definitions (`param[k]` parameter slots, `i<slot>(<mnemonic>)` instruction slots) with use points located by consuming instruction plus operand-stack / local-slot position, and `live` is per-**local-slot** point liveness (there is no SSA-value liveness concept here). The `ok` / `truncated` / `unresolved_field_refs` states report partial or degraded results faithfully instead of hiding them.
-
 Locale: message text follows the `MJT_LANG` environment variable (`en_US` default, `zh_CN` supported).
 
 ## Repository layout
@@ -213,7 +155,7 @@ Locale: message text follows the `MJT_LANG` environment variable (`en_US` defaul
 ```
 mjt/mcp/src/     MCP server and tool set (core product code)
 mjt/mcp/test/    MCP-layer unit tests
-mjt/cli/         `mjt` CLI binary (info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs / hexdump / eval / reflect / cfg / dataflow)
+mjt/cli/         `mjt` CLI binary (info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs)
 mjt/test/cli/    CLI-layer unit tests
 mjt/src/shared/  capabilities shared across the MCP tool set
                  (decompiler integration, jar remapping, workspace…)
