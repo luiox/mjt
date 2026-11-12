@@ -1,6 +1,5 @@
 /// @file        commands.hpp
-/// @brief       `mjt` CLI 命令核心面：各命令的纯逻辑入口与报告结构（main 与
-///              gtest 共链）。
+/// @brief       `mjt` CLI 命令核心：各命令的纯逻辑入口与报告结构（main 与 gtest 共链）。
 ///
 /// 分层契约：本模块只做「打开制品 → 调 workspace/mjbase 既有面 → 产出可
 /// 断言的报告结构」，命令行解析（ca::opt）与退出码映射归 main.cpp；渲染
@@ -760,5 +759,126 @@ ca::Result<CfgReport, CfgError> collectCfg(const std::string& inputPath,
 /// @brief 渲染 Graphviz dot（digraph 头 + 注释行元数据（entry / RPO / idom）+ 块节点 + 按 kind 标注的边；标签文本经 dot 转义，可被 dot4j / graphviz 渲染）。无方法体时渲染只含注释的空图。
 void renderCfgDot(const CfgReport& report, OutputSink& sink);
 
+// ── dataflow ───────────────────────────────────────────────────────
+
+/// @brief dataflow 命令错误：类别定退出码分支，message 为已渲染文案。
+///
+/// Usage 是用户可纠正的选择问题（选择器无命中 / 多义 / 方法无方法体，
+/// → 退出码 1）；Runtime 是输入读取 / 解析失败（→ 退出码 2）。
+struct DataflowError
+{
+    enum class Kind
+    {
+        Usage,   ///< 用法错误（→ 退出码 1）
+        Runtime, ///< 运行失败（→ 退出码 2）
+    };
+    Kind        kind    = Kind::Usage;
+    std::string message;
+};
+
+/// @brief 定义标号（slot 级模型）。Parameter：入参局部槽号（实例方法 0 号 = this）；Instruction：jbc InsnId.slot + 原 pc + 助记符。
+struct DuDefRef
+{
+    bool        kindParameter = false;   ///< false = instruction 定义
+    ca::u32     slot          = 0;
+    ca::i32     pc            = -1;      ///< instruction 定义的原 pc；参数为 -1
+    std::string opcode;                   ///< instruction 定义的助记符；参数为空
+};
+
+/// @brief 一条 def→use 边的使用点（stack：操作数栈值，index = 栈顶起第几个值；local：局部槽读，index = 槽号）。
+struct DuUsePoint
+{
+    ca::u32     insnSlot = 0;
+    ca::i32     pc       = -1;
+    std::string opcode;
+    bool        stack     = true;
+    ca::u32     index     = 0;
+    bool        truncated = false;   ///< 该使用点的到达集合溢出（边可能缺定义）
+};
+
+/// @brief 一条定义链：def + 全部使用边（uses 按 edges() 交付序）。
+struct DuChain
+{
+    DuDefRef def;
+    std::vector<DuUsePoint> uses;
+};
+
+/// @brief 字段访问事实（get/put 家族；到达定义展开成 def 标号表）。
+struct DuFieldFact
+{
+    ca::u32     insnSlot = 0;
+    ca::i32     pc       = -1;
+    std::string opcode;
+    std::string owner;
+    std::string name;
+    std::string descriptor;
+    bool        write    = false;
+    bool        isStatic = false;
+    std::vector<DuDefRef> objectDefs;   ///< getfield/putfield 接收者到达定义
+    std::vector<DuDefRef> valueDefs;    ///< put* 存入值到达定义
+    bool        truncated = false;
+};
+
+/// @brief 单方法 slot 级 def-use 报告（mjbase/asm MethodDefUse 的字符串快照）。
+///
+/// ok = false（帧分析失败）时 chains / fieldAccesses 为空、状态字段如实呈现，不作为失败退出。truncated = true 表示任一使用点到达定义集合溢出（kMaxDefs 上界），边集不完整。
+struct DuReport
+{
+    std::string className;
+    std::string methodName;
+    std::string descriptor;
+    bool        instance            = false;
+    bool        ok                  = false;
+    bool        truncated           = false;
+    bool        unresolvedFieldRefs = false;   ///< 字段引用 CP 畸形，字段事实不完整
+    ca::usize   edgeCount           = 0;
+    std::vector<DuChain> chains;
+    std::vector<DuFieldFact> fieldAccesses;
+};
+
+/// @brief 采集单方法 slot 级 def-use（入参按签名播种为 Parameter 定义，
+///        long/double 占双槽）。方法无方法体返回 Usage。
+ca::Result<DuReport, DataflowError> collectDataflowDu(const std::string& inputPath,
+                                                      const std::string& className,
+                                                      const std::string& methodSpec);
+
+/// @brief 渲染 du 人类可读表（def / uses 列；use 点形 `i<slot>(mnemonic)@stack<k>` / `@local<k>`，溢出边加 `!` 后缀；空 uses 为 "-"）。
+void renderDuText(const DuReport& report, OutputSink& sink);
+
+/// @brief 渲染 du JSON（单个对象，非数组；键稳定英文，文本字段经 json::escape 转义；仅对象本体，不混摘要行）。
+void renderDuJson(const DuReport& report, OutputSink& sink);
+
+/// @brief 活跃分析的一个点：单条指令执行前 / 后的活跃局部槽集合（mjbase/asm LivenessView 是**局部槽级**后向 may-liveness）。
+struct LivePoint
+{
+    ca::u32     insnSlot = 0;
+    ca::i32     pc       = -1;
+    std::string opcode;
+    std::vector<ca::u32> liveBefore;
+    std::vector<ca::u32> liveAfter;
+};
+
+/// @brief 单方法局部槽活跃报告（程序序点级；entryLive = 首条指令前活跃集）。
+struct LiveReport
+{
+    std::string className;
+    std::string methodName;
+    std::string descriptor;
+    bool        instance  = false;
+    ca::u32     slotCount = 0;   ///< 活跃槽位上界（全部局部操作数 + cat2 高半槽）
+    std::vector<ca::u32> entryLive;
+    std::vector<LivePoint> points;
+};
+
+/// @brief 采集单方法局部槽后向活跃集。CFG 构建失败返回 Runtime（不交付部分集）；方法无方法体返回 Usage。
+ca::Result<LiveReport, DataflowError> collectDataflowLive(const std::string& inputPath,
+                                                          const std::string& className,
+                                                          const std::string& methodSpec);
+
+/// @brief 渲染 live 人类可读表（头 + entry live + 程序序点级 before/after）。
+void renderLiveText(const LiveReport& report, OutputSink& sink);
+
+/// @brief 渲染 live JSON（单个对象；键稳定英文，文本字段经 json::escape）。
+void renderLiveJson(const LiveReport& report, OutputSink& sink);
 
 }   // namespace mjt::cli

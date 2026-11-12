@@ -3,7 +3,7 @@
 # {n} 为位置占位符，可重复/可换序
 
 # ── 根 / 共享 ───────────────────────────────────────────────
-mjt.cli.root.help=JVM 字节码工具（info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs / hexdump / eval / reflect / cfg）
+mjt.cli.root.help=JVM 字节码工具（info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs / hexdump / eval / reflect / cfg / dataflow）
 mjt.cli.root.version_help=输出版本号并退出
 mjt.cli.opt.input=输入路径（-i <path>）
 mjt.cli.opt.output=输出路径（-o <path>）；不得与输入同一文件
@@ -184,3 +184,7 @@ mjt.cli.cfg.help=以 Graphviz dot 导出单方法的块级 CFG（mjbase/asm 模�
 mjt.cli.cfg.written=dot 已写入: {0}
 mjt.cli.cfg.err.write_failed=无法写出 '{0}'。
 
+# ── dataflow ────────────────────────────────────────────────
+mjt.cli.dataflow.help=方法内数据流查询（mjbase/asm slot 级模型：du = 槽级 def-use 链，live = 局部槽后向活跃；--json 为单对象）
+mjt.cli.du.help=打印槽级 def-use 链（param[k] / i<slot> 定义、stack/local 使用点、字段访问事实）
+mjt.cli.live.help=打印局部槽后向 may-liveness（入口活跃集与逐指令 live-before / live-after 槽集）

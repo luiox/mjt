@@ -3,7 +3,7 @@
 # {n} are positional placeholders, repeatable/reorderable
 
 # ── root / shared ───────────────────────────────────────────
-mjt.cli.root.help=JVM bytecode toolkit (info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs / hexdump / eval / reflect / cfg)
+mjt.cli.root.help=JVM bytecode toolkit (info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs / hexdump / eval / reflect / cfg / dataflow)
 mjt.cli.root.version_help=print version and exit
 mjt.cli.opt.input=input path (-i <path>)
 mjt.cli.opt.output=output path (-o <path>); must not be the same file as the input
@@ -184,3 +184,7 @@ mjt.cli.cfg.help=dump a method's block-level CFG as Graphviz dot (mjbase/asm mod
 mjt.cli.cfg.written=dot written to: {0}
 mjt.cli.cfg.err.write_failed=cannot write '{0}'.
 
+# ── dataflow ────────────────────────────────────────────────
+mjt.cli.dataflow.help=method-local dataflow queries on the mjbase/asm slot model (du = slot-level def-use chains, live = local-slot backward liveness; --json single object)
+mjt.cli.du.help=print slot-level def-use chains (param[k] / i<slot> defs, stack/local use points, field access facts)
+mjt.cli.live.help=print local-slot backward may-liveness (entry live set and per-instruction live-before / live-after slot sets)

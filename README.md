@@ -52,7 +52,7 @@ On Windows the executable embeds an `activeCodePage=UTF-8` and `longPathAware` m
 
 ## CLI usage
 
-The `mjt` binary is a plain command-line tool (`xmake build mjt`) covering twelve batch-style commands over JARs and mapping files. Exit codes: `0` success (including `--help`), `1` usage error (missing argument, missing input file, unknown format name, class selector without a match, invalid flag value), `2` runtime failure (open, parse, repair, export, decompile, extraction, scan or disassembly failure).
+The `mjt` binary is a plain command-line tool (`xmake build mjt`) covering thirteen batch-style commands over JARs and mapping files. Exit codes: `0` success (including `--help`), `1` usage error (missing argument, missing input file, unknown format name, class selector without a match, invalid flag value), `2` runtime failure (open, parse, repair, export, decompile, extraction, scan or disassembly failure).
 
 ```sh
 mjt --version          # print tool version
@@ -189,6 +189,23 @@ Output shape: a quoted `digraph "<class>.<method><descriptor>"` header; `//` com
 
 The result is a **block-level CFG**, not an SSA instruction-level graph: nodes are basic blocks with an instruction overview inside, edges carry EdgeKind labels (exception edges carry the catch type), and entry / RPO / idom facts appear as comment lines.
 
+### `mjt dataflow`: method-local dataflow queries
+
+```sh
+mjt dataflow du   -i <input.jar|.class> [-c <class>] [-m <name[:desc]>] [--json]
+mjt dataflow live -i <input.jar|.class> [-c <class>] [-m <name[:desc]>] [--json]
+```
+
+Method selection matches `cfg` exactly (spec `name` / `name:descriptor`, ambiguity exits `1`, default first method with a body). A selected method without a body is rejected as a usage error (`no body … no CFG to analyze`, exit `1`). The analysis kernels are mjbase/asm `MethodDefUse` (slot-level def-use over the `DomainEngine` frame analysis, with precise exception edges) and `LivenessView` (local-slot backward may-liveness). Both are **slot-level models**, not SSA: definitions are labeled by parameter / instruction slot, and liveness is tracked per local slot.
+
+`du` prints one chain line per definition. Definitions are labeled `param[k]` (instance methods render slot 0 as `param[0]=this`), seeded from the descriptor (long/double occupy two slots but seed one definition), or `i<slot>(<mnemonic>)` for instruction definitions (store family / `iinc` writes and stack-value producers; a dead store with no uses is still listed). Use points render as `i<slot>(<mnemonic>)@stack<k>` (k-th operand-stack value from the top) or `i<slot>(<mnemonic>)@local<k>` (local-slot read), a trailing `!` marking an edge whose reaching-definition set overflowed the analyzer's `kMaxDefs` bound; an empty use list renders `-`. The header line reports chain / edge counts plus the analyzer states `ok` (frame analysis succeeded) and `truncated` (any reaching set overflowed, so the edge set may be incomplete).
+
+`live` prints the entry live set followed by one row per instruction (program order) with the live-before and live-after **local slot** sets. The model is the mjbase/asm `LivenessView`: backward may-liveness over local slots (`out[b] = ∪ in[succ]`, exception handlers conservatively read every slot), with per-instruction transfer `in = (out − def) ∪ use`.
+
+With `--json` (both subcommands) stdout carries a **single JSON object** with no summary lines. `du` keys: `class`, `method`, `descriptor`, `instance`, `ok`, `truncated`, `unresolved_field_refs` (a malformed field-reference constant pool entry; field facts incomplete), `edges` (total def→use edge count), `chains[]`: each `{def, uses[]}` with `def` = `{"kind":"parameter","slot":k}` (plus `"this":true` for an instance receiver) or `{"kind":"instruction","slot":n,"pc":p,"opcode":"…"}`, and each use = `{"insn":n,"pc":p,"opcode":"…","slot":"stack"|"local","index":k,"truncated":bool}`; plus `field_accesses[]` = `{"insn","pc","opcode","owner","name","descriptor","write","static","object_defs":[def…],"value_defs":[def…],"truncated"}`. `live` keys: `class`, `method`, `descriptor`, `instance`, `slots` (slot-count upper bound), `entry_live` (ascending slot ids), `points[]` = `{"insn","pc","opcode","live_before":[…],"live_after":[…]}`. All text fields are JSON-escaped; malformed class bytes exit `2`.
+
+Output model: a slot-level view, not an SSA instruction-level graph: `du` chains are keyed by slot-level definitions (`param[k]` parameter slots, `i<slot>(<mnemonic>)` instruction slots) with use points located by consuming instruction plus operand-stack / local-slot position, and `live` is per-**local-slot** point liveness (there is no SSA-value liveness concept here). The `ok` / `truncated` / `unresolved_field_refs` states report partial or degraded results faithfully instead of hiding them.
+
 Locale: message text follows the `MJT_LANG` environment variable (`en_US` default, `zh_CN` supported).
 
 ## Repository layout
@@ -196,7 +213,7 @@ Locale: message text follows the `MJT_LANG` environment variable (`en_US` defaul
 ```
 mjt/mcp/src/     MCP server and tool set (core product code)
 mjt/mcp/test/    MCP-layer unit tests
-mjt/cli/         `mjt` CLI binary (info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs / hexdump / eval / reflect / cfg)
+mjt/cli/         `mjt` CLI binary (info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs / hexdump / eval / reflect / cfg / dataflow)
 mjt/test/cli/    CLI-layer unit tests
 mjt/src/shared/  capabilities shared across the MCP tool set
                  (decompiler integration, jar remapping, workspace…)

@@ -65,7 +65,7 @@ Windows 下 exe 嵌了 `activeCodePage=UTF-8` 与 `longPathAware` 的 manifest�
 
 ## CLI 用法
 
-`mjt` 是普通命令行工具（`xmake build mjt`），十二个面向 JAR 与 mapping
+`mjt` 是普通命令行工具（`xmake build mjt`），十三个面向 JAR 与 mapping
 文件的批处理式命令。退出码约定：`0` 成功（含 `--help`）、`1` 用法错误
 （参数缺失、输入文件不存在、格式名不识别、类选择器无命中、旗标值非法）、
 `2` 运行失败（打开、解析、修复、导出、反编译、抽取、扫描或反汇编失败）。
@@ -254,6 +254,23 @@ mjt cfg -i <input.jar|.class> [-c <class>] [-m <name[:descriptor]>] [-o <out.dot
 
 输出是**块级 CFG**，不是 SSA 指令级图：节点 = 基本块 + 块内指令概览，边按 EdgeKind 标注（异常边带 catch 类型），entry / RPO / idom 以注释行呈现。
 
+### `mjt dataflow`：方法内数据流查询
+
+```sh
+mjt dataflow du   -i <input.jar|.class> [-c <class>] [-m <name[:desc]>] [--json]
+mjt dataflow live -i <input.jar|.class> [-c <class>] [-m <name[:desc]>] [--json]
+```
+
+方法选择与 `cfg` 完全一致（spec `name` / `name:descriptor`，多义退出码 `1`，缺省取第一个带方法体的方法）。选中方法无方法体按用法错误拒绝（`no body … no CFG to analyze`，退出码 `1`）。分析内核是 mjbase/asm `MethodDefUse`（`DomainEngine` 帧分析之上的槽级 def-use，异常边走精确档）与 `LivenessView`（局部槽后向 may-liveness）。两者都是**槽级模型**，不是 SSA：定义以参数槽 / 指令槽标号，活跃按局部槽跟踪。
+
+`du` 每个定义一行链。定义标号：`param[k]`（实例方法 0 号渲染为 `param[0]=this`），按描述符播种（long/double 占两槽但只播一个定义）；指令定义为 `i<slot>(<助记符>)`（store 族 / `iinc` 写与栈值产生指令；无使用的 dead store 照样列出）。使用点渲染为 `i<slot>(<助记符>)@stack<k>`（栈顶起第 k 个操作数栈值）或 `i<slot>(<助记符>)@local<k>`（局部槽读），尾缀 `!` 标记到达定义集合溢出分析器 `kMaxDefs` 上界的边；空使用列表渲染 `-`。头行报告链 / 边计数与分析器状态 `ok`（帧分析成功）与 `truncated`（任一到达集合溢出，边集可能不完整）。
+
+`live` 输出入口活跃集，随后每条指令一行（程序序），给出执行前后的**局部槽**活跃集。模型是 mjbase/asm `LivenessView`：局部槽上的后向 may-liveness（`out[b] = ∪ in[succ]`，异常 handler 保守地读一切槽），块内迁移 `in = (out − def) ∪ use`。
+
+`--json`（两个子命令）时 stdout 承载**单个 JSON 对象**：无摘要行混流。`du` 的键：`class`、`method`、`descriptor`、`instance`、`ok`、`truncated`、`unresolved_field_refs`（字段引用常量池条目畸形；字段事实不完整）、`edges`（def→use 边总数）、`chains[]`：每条 `{def, uses[]}`，`def` = `{"kind":"parameter","slot":k}`（实例接收者另带 `"this":true`）或 `{"kind":"instruction","slot":n,"pc":p,"opcode":"…"}`，每个使用点 = `{"insn":n,"pc":p,"opcode":"…","slot":"stack"|"local","index":k,"truncated":bool}`；另有 `field_accesses[]` = `{"insn","pc","opcode","owner","name","descriptor","write","static","object_defs":[def…],"value_defs":[def…],"truncated"}`。`live` 的键：`class`、`method`、`descriptor`、`instance`、`slots`（槽位上界）、`entry_live`（升序槽号）、`points[]` = `{"insn","pc","opcode","live_before":[…],"live_after":[…]}`。文本字段一律 JSON 转义；class 字节畸形退出码 `2`。
+
+输出模型：槽级视图，不是 SSA 指令级图：`du` 链以槽级定义为键（`param[k]` 参数槽、`i<slot>(<助记符>)` 指令槽），使用点按消费指令加操作数栈 / 局部槽位置定位；`live` 是**局部槽**点级活跃（无 SSA value 活跃概念）。`ok` / `truncated` / `unresolved_field_refs` 状态如实呈现部分或降级结果，不隐藏。
+
 语言：文案跟随 `MJT_LANG` 环境变量（缺省 `en_US`，支持 `zh_CN`）。
 
 ## 仓库结构
@@ -261,7 +278,7 @@ mjt cfg -i <input.jar|.class> [-c <class>] [-m <name[:descriptor]>] [-o <out.dot
 ```
 mjt/mcp/src/     MCP 服务器与工具集（核心产品代码）
 mjt/mcp/test/    MCP 层单测
-mjt/cli/         `mjt` CLI 二进制（info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs / hexdump / eval / reflect / cfg）
+mjt/cli/         `mjt` CLI 二进制（info / mapping / jar fix / decompile / strings / xref / classes / disasm / subs / hexdump / eval / reflect / cfg / dataflow）
 mjt/test/cli/    CLI 层单测
 mjt/src/shared/  MCP 工具集共用的底层能力（反编译接入、jar 重映射、workspace…）
 skills/          MCP 技能定义

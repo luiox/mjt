@@ -1,6 +1,6 @@
 /// @file        main.cpp
 /// @brief       `mjt` CLI 入口：ca::opt 命令树（info / mapping / jar fix /
-///              decompile / strings / xref / classes / disasm / subs / hexdump / eval / reflect / cfg）+ 全局 --version/--help + 退出码映射。
+///              decompile / strings / xref / classes / disasm / subs / hexdump / eval / reflect / cfg / dataflow）+ 全局 --version/--help + 退出码映射。
 ///
 /// 退出码约定（README「CLI usage」同文）：0 成功（含 --help）/ 1 用法错误
 /// （参数缺失、文件不存在、格式名不识别、类选择器无命中、旗标值非法）/
@@ -538,7 +538,7 @@ int runReflect(const ca::opt::ParseResult& args)
     return mjt::cli::kExitOk;
 }
 
-/// cfg 错误 → 退出码分支（Usage = 用法 1；Runtime = 运行 2）。
+/// cfg / dataflow 错误 → 退出码分支（Usage = 用法 1；Runtime = 运行 2）。
 int analysisFailure(mjt::cli::CfgError error)
 {
     return error.kind == mjt::cli::CfgError::Kind::Usage
@@ -546,6 +546,12 @@ int analysisFailure(mjt::cli::CfgError error)
                : runFailure(std::move(error.message));
 }
 
+int analysisFailure(mjt::cli::DataflowError error)
+{
+    return error.kind == mjt::cli::DataflowError::Kind::Usage
+               ? usageFailure(std::move(error.message))
+               : runFailure(std::move(error.message));
+}
 
 /// `mjt cfg -i <input.jar|.class> [-c <class>] [-m <name[:desc]>] [-o <out.dot>]`。
 ///
@@ -577,8 +583,40 @@ int runCfg(const ca::opt::ParseResult& args)
     return mjt::cli::kExitOk;
 }
 
+/// `mjt dataflow du|live -i <input.jar|.class> [-c <class>] [-m <name[:desc]>] [--json]`。
+///
+/// --json 是单个对象（stdout 纯 JSON，无摘要行混流）。
+/// Report 不进模板参数表（只出现在 collect 的返回值里，不可推导）。
+template <typename RenderText, typename RenderJson, typename Collect>
+int runDataflowSub(const ca::opt::ParseResult& args, Collect collect, RenderText renderText,
+                   RenderJson renderJson)
+{
+    const std::string input = args.get("input");
+    if (!requireInputFile(input))
+        return usageFailure(mjt::shared::trfStr("mjt.cli.err.input_missing", {input}));
+
+    auto report = collect(input, args.get("class"), args.get("method"));
+    if (report.is_err()) return analysisFailure(std::move(report).unwrap_err());
+    const auto value = std::move(report).unwrap();
+    if (args.has("json")) renderJson(value, mjt::out());
+    else                  renderText(value, mjt::out());
+    return mjt::cli::kExitOk;
+}
+
+int runDataflowDu(const ca::opt::ParseResult& args)
+{
+    return runDataflowSub(args, mjt::cli::collectDataflowDu, mjt::cli::renderDuText,
+                          mjt::cli::renderDuJson);
+}
+
+int runDataflowLive(const ca::opt::ParseResult& args)
+{
+    return runDataflowSub(args, mjt::cli::collectDataflowLive, mjt::cli::renderLiveText,
+                          mjt::cli::renderLiveJson);
+}
+
 /// 命令树：根（--version）→ info / mapping / jar → fix / decompile / strings /
-/// xref / classes / disasm / subs / hexdump / eval / reflect / cfg。
+/// xref / classes / disasm / subs / hexdump / eval / reflect / cfg / dataflow → du | live。
 ca::opt::Command buildCommandLine()
 {
     ca::opt::Command root;
@@ -971,6 +1009,35 @@ ca::opt::Command buildCommandLine()
     cfg.args.push_back(cfgOutput);
     root.subcommands.push_back(std::move(cfg));
 
+    // dataflow：方法内数据流查询（du = slot 级 def-use，live = 局部槽活跃；--json 单对象）。旗标文案复用共享表 mjt.cmd.dataflow.*。
+    ca::opt::Command dataflow;
+    dataflow.name = "dataflow";
+    dataflow.help = mjt::shared::trfStr("mjt.cli.dataflow.help");
+    ca::opt::Arg dataflowJson;
+    dataflowJson.name = "json";
+    dataflowJson.kind = ca::opt::OptKind::Flag;
+    dataflowJson.help = mjt::shared::trfStr("mjt.cmd.dataflow.param.json.desc");
+    for (const char* sub : {"du", "live"}) {
+        ca::opt::Command leaf;
+        leaf.name = sub;
+        leaf.help = mjt::shared::trfStr(sub == std::string_view{"du"} ? "mjt.cli.du.help"
+                                                                      : "mjt.cli.live.help");
+        ca::opt::Arg leafInput = input;
+        leaf.args.push_back(leafInput);
+        ca::opt::Arg leafClass = classArg;
+        leafClass.name     = "class";
+        leafClass.help     = mjt::shared::trfStr("mjt.cmd.dataflow.param.class.desc");
+        leafClass.required = false;
+        leaf.args.push_back(leafClass);
+        ca::opt::Arg leafMethod = member;
+        leafMethod.name    = "method";
+        leafMethod.help    = mjt::shared::trfStr("mjt.cmd.dataflow.param.method.desc");
+        leaf.args.push_back(leafMethod);
+        leaf.args.push_back(dataflowJson);
+        dataflow.subcommands.push_back(std::move(leaf));
+    }
+    root.subcommands.push_back(std::move(dataflow));
+
     return root;
 }
 
@@ -1015,6 +1082,16 @@ int main(int argc, char* argv[])
     if (path.size() == 1 && path.front() == "eval") return runEval(args);
     if (path.size() == 1 && path.front() == "reflect") return runReflect(args);
     if (path.size() == 1 && path.front() == "cfg") return runCfg(args);
+    if (path.size() == 1 && path.front() == "dataflow") {
+        // 缺子命令不是根帮助，而是指名可用子命令的一行错误。
+        mjt::err().puts(mjt::shared::trfStr("mjt.cmd.dataflow.err.subcommand_required"));
+        mjt::err().puts(mjt::shared::trfStr("mjt.cmd.dataflow.err.available"));
+        return mjt::cli::kExitUsage;
+    }
+    if (path.size() == 2 && path.front() == "dataflow" && path[1] == "du")
+        return runDataflowDu(args);
+    if (path.size() == 2 && path.front() == "dataflow" && path[1] == "live")
+        return runDataflowLive(args);
     if (path.size() == 2 && path.front() == "jar" && path[1] == "fix") return runJarFix(args);
 
     std::cerr << ca::opt::help_text(parser.root());
