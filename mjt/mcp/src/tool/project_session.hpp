@@ -80,7 +80,7 @@ struct ProjectSession final
     mjt::workspace::ContainerRegistry containerRegistry;
     ///角色化容器栈（primary>library>runtime 解析序、shadowed 记录、角色遍历）。
     std::unique_ptr<mjbase::model::MountedContainerSet> containerStack;
-    std::vector<ca::str::Utf8String> mountRestoreErrors;
+    std::map<ca::str::Utf8String, ca::str::Utf8String> mountRestoreErrors;
 
     ///分析库会话（shadow 落分析库：renames 覆盖层按稳定 ID 键控的真源）。
     ///bundle 固定文件 analysis.mjdb，openProjectSession 时 ReadWrite 打开 +

@@ -71,8 +71,8 @@ workspace::WorkspaceResult<workspace::ClassInfo> classInfoForReferences(
     auto primary = read(current.dexDomain(), working);
     if (primary.is_ok() || primary.unwrap_err().code != workspace::WorkspaceError::NotFound)
         return primary;
-    for (const auto& record : session.containerRegistry.records()) {
-        auto mounted = read(record.dexDomain.get(), *record.container);
+    for (const auto* record : session.containerRegistry.resolutionOrder()) {
+        auto mounted = read(record->dexDomain.get(), *record->container);
         if (mounted.is_ok() || mounted.unwrap_err().code != workspace::WorkspaceError::NotFound)
             return mounted;
     }
@@ -143,6 +143,7 @@ std::optional<Json> McpToolService::callMutationTool(
                     session.containerRegistry.detachBySupportId(mounted.id.to_std_string());
                     return toolError("register container failed", &registered);
                 }
+                session.mountRestoreErrors.erase(mounted.path);
                 return toolResult({{"action", action}, {"container", supportingResourceJson(mounted)}});
             }
 
@@ -210,6 +211,7 @@ std::optional<Json> McpToolService::callMutationTool(
             record.container   = container;
             record.dexDomain   = std::move(artifact.dexDomain);
             session.containerRegistry.records().push_back(std::move(record));
+            session.mountRestoreErrors.erase(ownUtf8(containerId));
 
             //新增遮蔽记录透传（挂载 = 重建；新 first-wins 输家逐对上报）。
             //shadowedEntries 重建序不稳定，按 uri 排序保证响应确定性。

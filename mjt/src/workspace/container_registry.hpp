@@ -44,6 +44,19 @@ public:
     std::vector<ContainerRecord>&       records() noexcept { return records_; }
     const std::vector<ContainerRecord>& records() const noexcept { return records_; }
 
+    /// @brief 角色解析序与 MountedContainerSet 一致，同角色保留挂载序。
+    std::vector<const ContainerRecord*> resolutionOrder() const
+    {
+        std::vector<const ContainerRecord*> order;
+        order.reserve(records_.size());
+        for (const auto& record : records_) order.push_back(&record);
+        std::stable_sort(order.begin(), order.end(),
+                         [](const ContainerRecord* left, const ContainerRecord* right) {
+                             return left->role < right->role;
+                         });
+        return order;
+    }
+
     /// @brief 分配一个会话内单调的 support 句柄。
     std::string nextSupportId() { return "support-" + std::to_string(nextId_++); }
 

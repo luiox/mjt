@@ -145,19 +145,28 @@ ca::Status registerPrimaryInput(const fs::path&    bundleDir,
 
     const auto pathKey = mjbase::project::copyLedgerText(jarPath);
     const auto fingerprintKey = mjbase::project::copyLedgerText(fingerprint);
-    AnalysisInput input;
-    input.path        = pathKey.clone();
-    input.fingerprint = fingerprintKey.clone();
-    input.role        = mjbase::project::AnalysisInputRole::Primary;
-
     if (const auto* existing = project.findInput(pathKey.ref())) {
         if (existing->role != mjbase::project::AnalysisInputRole::Primary)
             return ca::ErrStatus(ca::StatusCode::INVALID_ARGUMENT,
                                  "project path is registered as a supporting container");
         if (existing->fingerprint.ref().equals(fingerprintKey.ref())) return ca::OkStatus();
-        if (project.removeInput(pathKey.ref()) != 1)
-            return ca::ErrStatus(ca::StatusCode::INTERNAL,
-                                 "register primary container: stale input could not be removed");
+        // mjbase forbids removing an input with mounted children. Update just the
+        // fingerprint in the validated entity so dependency and annotation IDs survive.
+        auto encoded = mjbase::project::writeAnalysisProjectText(project);
+        if (encoded.is_err())
+            return analysisProjectError(std::move(encoded).unwrap_err(), "serialize project entity");
+        auto entity = nlohmann::json::parse(std::move(encoded).unwrap().to_std_string());
+        for (auto& registered : entity.at("inputs")) {
+            if (registered.at("path") == jarPath) {
+                registered.at("fingerprint") = fingerprint;
+                break;
+            }
+        }
+        const auto updated = entity.dump();
+        auto refreshed = mjbase::project::parseAnalysisProjectText(utf8Ref(updated));
+        if (refreshed.is_err())
+            return analysisProjectError(std::move(refreshed).unwrap_err(), "refresh primary input");
+        project = std::move(refreshed).unwrap();
     }
     else {
         for (const auto& registered : project.inputs()) {
@@ -167,10 +176,14 @@ ca::Status registerPrimaryInput(const fs::path&    bundleDir,
                 "project already binds a different primary container: " +
                     registered.path.to_std_string() + "; create a new project instead");
         }
+        AnalysisInput input;
+        input.path        = pathKey.clone();
+        input.fingerprint = fingerprintKey.clone();
+        input.role        = mjbase::project::AnalysisInputRole::Primary;
+        if (!project.addInput(std::move(input)))
+            return ca::ErrStatus(ca::StatusCode::INTERNAL,
+                                 "register primary container: input rejected");
     }
-    if (!project.addInput(std::move(input)))
-        return ca::ErrStatus(ca::StatusCode::INTERNAL,
-                             "register primary container: input rejected");
     auto written = mjbase::project::writeAnalysisProjectFile(
         utf8Ref(projectFile.string()), project);
     if (written.is_err()) return analysisProjectError(std::move(written).unwrap_err(), "write project entity");
@@ -305,8 +318,8 @@ ca::Status restoreProjectMounts(ProjectSession& session)
         if (input.role == mjbase::project::AnalysisInputRole::Primary) continue;
         const auto status = restoreMount(session, input);
         if (status.is_err())
-            session.mountRestoreErrors.push_back(mjbase::project::copyLedgerText(
-                input.path.to_std_string() + ": " + status.to_string()));
+            session.mountRestoreErrors.emplace(input.path.clone(),
+                                                mjbase::project::copyLedgerText(status.to_string()));
     }
     return ca::OkStatus();
 }
@@ -321,7 +334,12 @@ void addProjectWarnings(const ProjectSession& session, nlohmann::json& result)
         for (const auto& error : errors) values.push_back(error.to_std_string());
         result["analysis_incomplete"] = true;
     };
-    add("mount_restore_errors", session.mountRestoreErrors);
+    if (!session.mountRestoreErrors.empty()) {
+        auto& values = result["mount_restore_errors"] = nlohmann::json::array();
+        for (const auto& [path, error] : session.mountRestoreErrors)
+            values.push_back(path.to_std_string() + ": " + error.to_std_string());
+        result["analysis_incomplete"] = true;
+    }
     if (const auto* dex = session.workspace->dexDomain())
         add("dex_load_errors", dex->dexLoadErrors());
 }
