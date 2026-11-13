@@ -12,8 +12,7 @@
 /// refs/常量面按同一身份语法键控，灌库零漂移（见 docs/apk-dex-support-plan.md §4）。
 ///
 /// 容错纪律与 JVM 扫描同款 fail-open：单类/单方法解码失败（libdex Result
-/// Err）跳过该类/方法，不致命。invoke-custom/call_site 与 method_handle 引用
-/// 未建模（扫描跳过）；注解类型引用未随迁（与 JVM 扫描的注解面同等豁免）。
+/// Err）跳过该类/方法，不致命。注解类型引用未随迁。
 #pragma once
 
 #include <memory>
@@ -95,6 +94,9 @@ public:
 
     //-- 引用面（语义对齐 reference_scan 的 JVM 扫描）--------------------------
 
+    /// @brief 有调用点或方法句柄表时，查询需要保留分析库 schema 无法表达的引用种类。
+    bool hasDynamicReferenceTables() const noexcept;
+
     /// @brief 全域引用扫描（fail-open：单类/单方法解码失败跳过）。
     ReferenceScan buildReferenceScan() const;
     WorkspaceResult<std::vector<ReferenceInfo>> xrefsToMethod(const std::string& owner,
@@ -104,8 +106,7 @@ public:
                                                              const std::string& name,
                                                              const std::string& descriptor) const;
     WorkspaceResult<std::vector<ReferenceInfo>> xrefsToClass(const std::string& internalName) const;
-    /// @brief 方法的直接调用目标；resolved=true 时按 dex 域层次做 CHA 展开
-    ///        （域外类型不可解析，保持直接目标）。
+    /// @brief 直接调用、引导方法和未解析的动态调用点；resolved=true 展开虚调用。
     WorkspaceResult<std::vector<ReferenceInfo>> calleesOfMethod(const std::string& owner,
                                                                 const std::string& name,
                                                                 const std::string& descriptor,

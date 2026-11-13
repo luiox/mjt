@@ -4230,10 +4230,41 @@ std::vector<XrefRow> facadeXref(FacadeSession& s, const XrefRequest& request)
             descriptor = resolveMemberDescriptor(s, owner, name, isField);
     }
 
-    // 会话库（编辑边界增量同步保新鲜；DB-only 面——to/from 都是库直查）。
+    const bool toFace = request.direction == "to";
+    const auto projectRows = [](const std::vector<mjt::workspace::ReferenceInfo>& items) {
+        std::vector<XrefRow> out;
+        out.reserve(items.size());
+        for (const auto& item : items) {
+            XrefRow row;
+            row.sourceClass      = item.sourceClass.to_std_string();
+            row.sourceMethod     = item.sourceMethod.to_std_string();
+            row.sourceDescriptor = item.sourceDescriptor.to_std_string();
+            row.instructionIndex = item.instructionIndex;
+            row.supporting       = item.supporting;
+            row.supportId        = item.supportId.to_std_string();
+            row.target           = item.target.to_std_string();
+            row.kind             = item.kind.to_std_string();
+            out.push_back(std::move(row));
+        }
+        return out;
+    };
+    const auto* dex = s.ws.dexDomain();
+    if (dex && dex->hasDynamicReferenceTables()) {
+        auto rows = [&]() -> mjt::workspace::WorkspaceResult<
+                                 std::vector<mjt::workspace::ReferenceInfo>> {
+            if (!toFace) return dex->calleesOfMethod(owner, name, descriptor, false);
+            if (isMethod) return dex->xrefsToMethod(owner, name, descriptor);
+            if (isField) return dex->xrefsToField(owner, name, descriptor);
+            return dex->xrefsToClass(owner);
+        }();
+        if (rows.is_err())
+            throw std::runtime_error("xref reference query: " + std::move(rows).unwrap_err().message);
+        return projectRows(std::move(rows).unwrap());
+    }
+
+    // 会话库在编辑边界增量同步。
     SessionAnalysisDb&           held = ensureSessionAnalysisDb(s);
     mjbase::project::AnalysisDb& db   = held.analysis();
-    const bool toFace = request.direction == "to";
     auto rows = [&]() -> ca::Result<std::vector<mjbase::project::DbReferenceRecord>,
                                     mjbase::project::AnalysisDbError> {
         if (!toFace)
@@ -4286,21 +4317,7 @@ std::vector<XrefRow> facadeXref(FacadeSession& s, const XrefRequest& request)
     // 引用行收口：sortReferences 全序（无支撑容器挂载，标注无操作）。
     held.engine(s).finalizeReferenceRows(items);
 
-    std::vector<XrefRow> out;
-    out.reserve(items.size());
-    for (auto& item : items) {
-        XrefRow row;
-        row.sourceClass      = item.sourceClass.to_std_string();
-        row.sourceMethod     = item.sourceMethod.to_std_string();
-        row.sourceDescriptor = item.sourceDescriptor.to_std_string();
-        row.instructionIndex = item.instructionIndex;
-        row.supporting       = item.supporting;
-        row.supportId        = item.supportId.to_std_string();
-        row.target           = item.target.to_std_string();
-        row.kind             = item.kind.to_std_string();
-        out.push_back(std::move(row));
-    }
-    return out;
+    return projectRows(items);
 }
 
 namespace {

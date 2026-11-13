@@ -51,6 +51,62 @@ std::filesystem::path writeFixtureApk()
     return path;
 }
 
+TEST(McpDexSessionTest, DistinguishesDynamicCallSitesFromBootstrapAndHandleReferences)
+{
+    McpSessionHarness server;
+    const auto opened = call(server, "project_open",
+                             {{"path", dexResource("invoke_custom.dex").string()}});
+    ASSERT_FALSE(opened.at("result").at("isError")) << opened.dump();
+    const auto projectId = payload(opened).at("project_id").get<std::string>();
+    const std::string owner = "com/mjt/dexfix/Dynamic";
+    const std::string bootstrapDescriptor =
+        "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;"
+        "Ljava/lang/invoke/MethodHandle;)Ljava/lang/invoke/CallSite;";
+    const auto query = [&](const char* target, const char* direction, const char* name,
+                           const std::string& descriptor, bool resolved = false) {
+        Json arguments = {{"project_id", projectId}, {"kind", "references"}, {"target", target},
+                          {"direction", direction}, {"owner", owner}, {"name", name},
+                          {"descriptor", descriptor}};
+        if (resolved) arguments["resolved"] = true;
+        return call(server, "xref_query", arguments);
+    };
+
+    for (const bool resolved : {false, true}) {
+        const auto outgoing = query("method", "from", "run", "(I)I", resolved);
+        ASSERT_FALSE(outgoing.at("result").at("isError")) << outgoing.dump();
+        const auto& rows = payload(outgoing).at("items");
+        ASSERT_EQ(rows.size(), 4U);
+        for (const auto index : {0U, 2U}) {
+            EXPECT_EQ(rows.at(index).at("kind"), "bootstrap");
+            EXPECT_EQ(rows.at(index).at("target"), owner + ".bootstrap" + bootstrapDescriptor);
+            EXPECT_EQ(rows.at(index).at("source").at("instruction_index"), index + 1);
+            EXPECT_EQ(rows.at(index + 1).at("kind"), "dynamic");
+            EXPECT_EQ(rows.at(index + 1).at("target"), "apply(I)I");
+            EXPECT_EQ(rows.at(index + 1).at("source").at("instruction_index"), index + 1);
+        }
+    }
+
+    const auto bootstrap = query("method", "to", "bootstrap", bootstrapDescriptor);
+    ASSERT_FALSE(bootstrap.at("result").at("isError")) << bootstrap.dump();
+    const auto& bootstrapSites = payload(bootstrap).at("items");
+    ASSERT_EQ(bootstrapSites.size(), 2U);
+    EXPECT_EQ(bootstrapSites.at(0).at("kind"), "bootstrap");
+    EXPECT_EQ(bootstrapSites.at(1).at("kind"), "bootstrap");
+
+    const auto handle = query("method", "to", "identity", "(I)I");
+    ASSERT_FALSE(handle.at("result").at("isError")) << handle.dump();
+    const auto& handleSites = payload(handle).at("items");
+    ASSERT_EQ(handleSites.size(), 2U);
+    EXPECT_EQ(handleSites.at(0).at("kind"), "method_handle");
+    EXPECT_EQ(handleSites.at(1).at("kind"), "method_handle");
+
+    const auto field = query("field", "to", "value", "I");
+    ASSERT_FALSE(field.at("result").at("isError")) << field.dump();
+    const auto& fieldSites = payload(field).at("items");
+    ASSERT_EQ(fieldSites.size(), 1U);
+    EXPECT_EQ(fieldSites.at(0).at("kind"), "method_handle");
+}
+
 TEST(McpDexSessionTest, OpensApkAndAnswersDbFirstSurfaces)
 {
     McpSessionHarness server;

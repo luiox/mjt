@@ -107,24 +107,30 @@ double bitsToDouble(ca::u64 bits) noexcept
 }
 
 /// @brief 方法 proto（proto_ids 条目）→ JVM 方法描述符 "(参数)返回"。
-///        libsmali protoText 同款拼接；proto 懒参数取值失败回 "()"（fail-open）。
+std::string protoDescriptorOf(DexFile& dex, ca::u32 protoIdx)
+{
+    if (protoIdx >= dex.protoIds.size()) return {};
+    const ProtoId& proto = dex.protoIds[protoIdx];
+    const auto returnType = textOf(dex.typeDescriptor(proto.returnTypeIdx));
+    auto parameters = dex.protoParameters(protoIdx);
+    if (parameters.is_err() || returnType.empty()) return {};
+    std::string descriptor = "(";
+    const TypeListSpan& span = parameters.unwrap();
+    for (ca::u32 i = 0; i < span.size; ++i) {
+        const auto type = textOf(dex.typeDescriptor(span.at(i)));
+        if (type.empty()) return {};
+        descriptor += type;
+    }
+    descriptor += ")";
+    descriptor += returnType;
+    return descriptor;
+}
+
 std::string methodDescriptorOf(DexFile& dex, ca::u32 methodIdx)
 {
     if (methodIdx >= dex.methodIds.size()) return "()";
-    const MethodId& id = dex.methodIds[methodIdx];
-    if (id.protoIdx >= dex.protoIds.size()) return "()";
-    const ProtoId& proto = dex.protoIds[id.protoIdx];
-    std::string descriptor = "(";
-    auto parameters = dex.protoParameters(id.protoIdx);
-    if (parameters.is_ok()) {
-        const TypeListSpan& span = parameters.unwrap();
-        for (ca::u32 i = 0; i < span.size; ++i) {
-            descriptor += textOf(dex.typeDescriptor(span.at(i)));
-        }
-    }
-    descriptor += ")";
-    descriptor += textOf(dex.typeDescriptor(proto.returnTypeIdx));
-    return descriptor;
+    auto descriptor = protoDescriptorOf(dex, dex.methodIds[methodIdx].protoIdx);
+    return descriptor.empty() ? "()" : std::move(descriptor);
 }
 
 /// @brief 方法身份三元组（owner 为 internal name）；越界回空（调用方跳过）。
@@ -202,6 +208,71 @@ struct RefIndex
     std::vector<TypeReference>   types;
 };
 
+/// @brief DEX method_handle_item tags for field access and method invocation.
+constexpr ca::u16 kLastFieldHandle = 0x03;
+constexpr ca::u16 kInvokeStaticHandle = 0x04;
+constexpr ca::u16 kLastMethodHandle = 0x08;
+
+const EncodedArrayItem* callSiteOf(DexFile& dex, ca::u32 index)
+{
+    auto decoded = dex.callSiteValues(index);
+    if (decoded.is_err() || decoded.unwrap() == nullptr) return nullptr;
+    const auto* site = decoded.unwrap();
+    const auto& values = site->values;
+    if (values.size() < 3 || values[0].type != EncodedValueType::MethodHandle ||
+        values[1].type != EncodedValueType::String ||
+        values[2].type != EncodedValueType::MethodType ||
+        values[0].index >= dex.methodHandles.size() ||
+        dex.methodHandles[values[0].index].handleType != kInvokeStaticHandle ||
+        values[1].index >= dex.stringCount() || values[2].index >= dex.protoIds.size())
+        return nullptr;
+    return site;
+}
+
+void addMethodReference(RefIndex& out, const MethodKey& target, const ReferenceSite& at,
+                        MethodReferenceKind kind)
+{
+    if (!target.valid()) return;
+    out.methods.push_back({{utf8(target.owner), utf8(target.name), utf8(target.descriptor)},
+                           at.clone(), kind});
+    out.types.push_back({utf8(target.owner), at.clone()});
+}
+
+void addFieldReference(RefIndex& out, const FieldKey& target, const ReferenceSite& at,
+                       FieldReferenceKind kind)
+{
+    if (!target.valid()) return;
+    out.fields.push_back({{utf8(target.owner), utf8(target.name), utf8(target.descriptor)},
+                          at.clone(), kind});
+    out.types.push_back({utf8(target.owner), at.clone()});
+}
+
+void addHandleReference(DexFile& dex, ca::u32 index, const ReferenceSite& at, RefIndex& out,
+                        MethodReferenceKind methodKind)
+{
+    if (index >= dex.methodHandles.size()) return;
+    const auto& handle = dex.methodHandles[index];
+    if (handle.handleType <= kLastFieldHandle) {
+        addFieldReference(out, fieldKeyOf(dex, handle.targetIdx), at,
+                          FieldReferenceKind::MethodHandle);
+    }
+    else if (handle.handleType <= kLastMethodHandle) {
+        addMethodReference(out, methodKeyOf(dex, handle.targetIdx), at, methodKind);
+    }
+}
+
+void scanCallSiteReferences(DexFile& dex, ca::u32 index, const ReferenceSite& at, RefIndex& out)
+{
+    const auto* site = callSiteOf(dex, index);
+    if (site == nullptr) return;
+    addHandleReference(dex, site->values.front().index, at, out, MethodReferenceKind::Bootstrap);
+    for (ca::usize i = 3; i < site->values.size(); ++i) {
+        const auto& arg = site->values[i];
+        if (arg.type == EncodedValueType::MethodHandle)
+            addHandleReference(dex, arg.index, at, out, MethodReferenceKind::MethodHandle);
+    }
+}
+
 /// @brief 单类引用扫描：类头声明（super/interfaces，class 级引用 insnIndex=-1）
 ///        + 逐方法指令事实（语义逐条对齐 reference_scan.cpp 的 JVM 扫描）。
 void scanClassRefs(DexFile& dex, ca::u32 classDefIdx, RefIndex& out)
@@ -240,24 +311,14 @@ void scanClassRefs(DexFile& dex, ca::u32 classDefIdx, RefIndex& out)
                 case IndexKind::Method: {
                     // invoke 家族（含 range/polymorphic）：方法引用 + owner
                     // 类型引用。45cc/4rcc 的 protoIndex（MethodType 面）不建模。
-                    const MethodKey target = methodKeyOf(dex, insn.index);
-                    if (!target.valid()) break;
-                    out.methods.push_back({{utf8(target.owner), utf8(target.name),
-                                            utf8(target.descriptor)},
-                                           at.clone(),
-                                           MethodReferenceKind::Direct});
-                    out.types.push_back({utf8(target.owner), at.clone()});
+                    addMethodReference(out, methodKeyOf(dex, insn.index), at,
+                                       MethodReferenceKind::Direct);
                     break;
                 }
                 case IndexKind::Field: {
                     // iget/iput/sget/sput 家族：字段访问 + owner 类型引用。
-                    const FieldKey target = fieldKeyOf(dex, insn.index);
-                    if (!target.valid()) break;
-                    out.fields.push_back({{utf8(target.owner), utf8(target.name),
-                                           utf8(target.descriptor)},
-                                          at.clone(),
-                                          FieldReferenceKind::Direct});
-                    out.types.push_back({utf8(target.owner), at.clone()});
+                    addFieldReference(out, fieldKeyOf(dex, insn.index), at,
+                                      FieldReferenceKind::Direct);
                     break;
                 }
                 case IndexKind::Type: {
@@ -293,12 +354,17 @@ void scanClassRefs(DexFile& dex, ca::u32 classDefIdx, RefIndex& out)
                     }
                     break;
                 }
+                case IndexKind::CallSite:
+                    scanCallSiteReferences(dex, insn.index, at, out);
+                    break;
+                case IndexKind::MethodHandle:
+                    addHandleReference(dex, insn.index, at, out,
+                                       MethodReferenceKind::MethodHandle);
+                    break;
                 case IndexKind::None:
                 case IndexKind::Proto:
-                case IndexKind::CallSite:
-                case IndexKind::MethodHandle:
                 default:
-                    break;   // invoke-custom/call_site/method_handle 未建模。
+                    break;
                 }
             }
         }
@@ -341,7 +407,7 @@ std::vector<ReferenceInfo> collectReferenceInfos(
             reference.target.owner.to_std_string() + "." +
                 reference.target.name.to_std_string() +
                 reference.target.descriptor.to_std_string(),
-            "direct"));
+            methodReferenceKind(reference.kind)));
     }
     for (const FieldReference& reference : index.fields) {
         if (!fieldMatch(reference)) continue;
@@ -350,7 +416,7 @@ std::vector<ReferenceInfo> collectReferenceInfos(
             reference.target.owner.to_std_string() + "." +
                 reference.target.name.to_std_string() +
                 reference.target.descriptor.to_std_string(),
-            "direct"));
+            fieldReferenceKind(reference.kind)));
     }
     for (const TypeReference& reference : index.types) {
         if (!typeMatch(reference)) continue;
@@ -358,6 +424,14 @@ std::vector<ReferenceInfo> collectReferenceInfos(
             referenceInfo(reference.site, reference.targetType.to_std_string(), "type"));
     }
     sortReferences(result);
+    result.erase(std::unique(result.begin(), result.end(),
+                             [](const ReferenceInfo& left, const ReferenceInfo& right) {
+                                 return left.sourceClass == right.sourceClass &&
+                                        left.sourceMethod == right.sourceMethod &&
+                                        left.sourceDescriptor == right.sourceDescriptor &&
+                                        left.instructionIndex == right.instructionIndex &&
+                                        left.kind == right.kind && left.target == right.target;
+                             }), result.end());
     return result;
 }
 
@@ -1077,6 +1151,13 @@ WorkspaceResult<std::vector<ConstantPoolEntryInfo>> DexDomain::constantPool(
 
 //-- 引用面 --------------------------------------------------------------------
 
+bool DexDomain::hasDynamicReferenceTables() const noexcept
+{
+    return std::any_of(dexes_.begin(), dexes_.end(), [](const auto& dex) {
+        return dex && (!dex->callSites.empty() || !dex->methodHandles.empty());
+    });
+}
+
 ReferenceScan DexDomain::buildReferenceScan() const
 {
     RefIndex index = scanAllRefs(dexes_);
@@ -1173,11 +1254,25 @@ WorkspaceResult<std::vector<ReferenceInfo>> DexDomain::calleesOfMethod(
     const DecodedBody body = decodeMethodBody(dex, *source);
     for (ca::u32 index = 0; index < body.insns.size(); ++index) {
         const Insn& insn = body.insns[index];
-        if (insn.indexKind != IndexKind::Method) continue;
-        const MethodKey target = methodKeyOf(dex, insn.index);
-        if (!target.valid()) continue;
+        if (insn.indexKind != IndexKind::Method && insn.indexKind != IndexKind::CallSite)
+            continue;
         const ReferenceSite at{site.sourceClass.clone(), site.sourceMethod.clone(),
                                site.sourceDescriptor.clone(), static_cast<ca::i32>(index)};
+        if (insn.indexKind == IndexKind::CallSite) {
+            const auto* callSite = callSiteOf(dex, insn.index);
+            if (callSite == nullptr) continue;
+            const auto& values = callSite->values;
+            const auto callName = textOf(dex.string(values[1].index));
+            const auto callDescriptor = protoDescriptorOf(dex, values[2].index);
+            if (!callName.empty() && !callDescriptor.empty())
+                result.push_back(referenceInfo(at, callName + callDescriptor, "dynamic"));
+            const auto bootstrap = methodKeyOf(dex, dex.methodHandles[values[0].index].targetIdx);
+            if (bootstrap.valid())
+                result.push_back(referenceInfo(at, methodTargetText(bootstrap), "bootstrap"));
+            continue;
+        }
+        const MethodKey target = methodKeyOf(dex, insn.index);
+        if (!target.valid()) continue;
         const std::string targetText = methodTargetText(target);
         if (seen.insert(targetText).second) {
             result.push_back(referenceInfo(at, targetText, "direct"));

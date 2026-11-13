@@ -4,8 +4,8 @@
 /// ReferenceIndex 的直接引用切片：只回答「哪些扫描过的 class 和方法体
 /// 直接引用给定的 method/field/type」。反射事实族中 class-string 形态
 /// 事实已随迁（字符串常量按 remapper 反射语法识别为类型引用候选）；常量反射
-/// 成员查找、method handle、lambda bootstrap、别名传播与注解/签名/结构元数据
-/// 类型引用未随迁——那些是独立的共享分析设施，待主线落（见批次报告）。
+/// 成员查找、JVM method handle、JVM lambda bootstrap、别名传播与注解/签名/
+/// 结构元数据类型引用未随迁。DEX 的引导方法与方法句柄由 DexDomain 扫描。
 /// 本扫描件覆盖：方法调用（invoke 家族）、字段访问（get/put 家族）、显式类型指令
 /// （new/checkcast/instanceof/anewarray/multianewarray）、LDC class 常量、
 /// LDC class-string 反射候选、member owner 类型引用与 class 头声明
@@ -17,6 +17,7 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <vector>
 
@@ -64,16 +65,19 @@ struct ReferenceSite
     }
 };
 
-/// @brief 方法引用种类。本切片只产出 Direct（编码事实）。
+/// @brief 方法引用种类。
 enum class MethodReferenceKind : ca::u8
 {
     Direct,
+    Bootstrap,
+    MethodHandle,
 };
 
-/// @brief 字段引用种类。本切片只产出 Direct（编码事实）。
+/// @brief 字段引用种类。
 enum class FieldReferenceKind : ca::u8
 {
     Direct,
+    MethodHandle,
 };
 
 /// @brief 一条方法引用事实。
@@ -163,11 +167,11 @@ private:
     std::vector<TypeReference>   types_;
 };
 
-/// @brief MethodReferenceKind → DTO kind 文本（本切片恒 "direct"）。
-std::string methodReferenceKind(MethodReferenceKind kind);
+/// @brief MethodReferenceKind → DTO kind 文本。
+std::string_view methodReferenceKind(MethodReferenceKind kind);
 
-/// @brief FieldReferenceKind → DTO kind 文本（本切片恒 "direct"）。
-std::string fieldReferenceKind(FieldReferenceKind kind);
+/// @brief FieldReferenceKind → DTO kind 文本。
+std::string_view fieldReferenceKind(FieldReferenceKind kind);
 
 /// @brief ReferenceInfo 组装与稳定排序（xref 查询共用）。site 已是 Utf8String
 ///        域，此处按 DTO（std::string）投影。

@@ -260,14 +260,16 @@ std::vector<TypeReference> ReferenceScan::typeReferencesFromClass(
     return result;
 }
 
-std::string methodReferenceKind(MethodReferenceKind)
+std::string_view methodReferenceKind(MethodReferenceKind kind)
 {
+    if (kind == MethodReferenceKind::Bootstrap) return "bootstrap";
+    if (kind == MethodReferenceKind::MethodHandle) return "method_handle";
     return "direct";
 }
 
-std::string fieldReferenceKind(FieldReferenceKind)
+std::string_view fieldReferenceKind(FieldReferenceKind kind)
 {
-    return "direct";
+    return kind == FieldReferenceKind::MethodHandle ? "method_handle" : "direct";
 }
 
 ReferenceInfo referenceInfo(const ReferenceSite& site, std::string_view target, std::string_view kind)

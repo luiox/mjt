@@ -140,6 +140,33 @@ TEST(FacadeContainer, OpensDexWithSmaliAndDatabaseQueries)
     reg.close(s.handle);
 }
 
+TEST(FacadeContainer, ReturnsDexDynamicCallSitesAndHandleReferences)
+{
+    auto& registry = FacadeRegistry::instance();
+    auto& session = registry.create();
+    const auto fixture = fs::current_path() / "test_resource" / "dex" / "invoke_custom.dex";
+    facadeImportJar(session, fixture.u8string());
+
+    XrefRequest request;
+    request.target = "method";
+    request.direction = "from";
+    request.owner = "com/mjt/dexfix/Dynamic";
+    request.name = "run";
+    request.descriptor = "(I)I";
+    const auto callees = facadeXref(session, request);
+    request.direction = "to";
+    request.name = "identity";
+    const auto handles = facadeXref(session, request);
+    registry.close(session.handle);
+
+    ASSERT_EQ(4U, callees.size());
+    EXPECT_EQ("bootstrap", callees.front().kind);
+    EXPECT_EQ("dynamic", callees.at(1).kind);
+    EXPECT_EQ("apply(I)I", callees.at(1).target);
+    ASSERT_EQ(2U, handles.size());
+    EXPECT_EQ("method_handle", handles.front().kind);
+}
+
 TEST(FacadeContainer, LoadClassFileAddsClass)
 {
     // v2 缺口回归位：loose .class 入容器 → 新增类全链（导出 → 重开可见）。

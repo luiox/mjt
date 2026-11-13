@@ -48,9 +48,13 @@ mjt 的主制品打开面（`WorkspaceBase::open`）按扩展名路由 Container
 - apk 导出（`project_export` 对 dex 会话报错——避免产出破坏 v2+ 签名的 zip）。
 - AXML 资源串（AndroidManifest.xml 二进制解析）、pysdk apk/dex 入口、
   jar+apk 混合挂载（`container_mount` 对 dex 会话报错）。
-- invoke-custom/call_site/method_handle 引用建模（refs 扫描跳过，计为未建模）。
 
 ### 2.1 Follow-up 接口
+
+- DEX 的 `invoke-custom` 和 `invoke-custom/range` 在 MCP 和 Python SDK 的出向
+  方法查询中返回 `dynamic`（调用点的名称与描述符）和 `bootstrap`（引导方法）。
+  成员反查和 CLI `xref` 可找到引导方法及 `method_handle` 引用。动态调用的最终目标
+  由运行时决定。
 
 - `edit_apply kind=smali` 接收类内部名 `class`、完整 Smali `source` 和新的
   `.dex` 输出 `path`。`dry_run=true` 只汇编并返回字节数。APK 中的类会输出

@@ -20,6 +20,7 @@
 #include "shared/output_sink.hpp"
 #include "workspace/workspace.hpp"
 #include "workspace/analysis_ops.hpp"
+#include "workspace/dex_domain.hpp"
 #include "workspace/workspace_types.hpp"
 
 namespace mjt::cli {
@@ -88,6 +89,22 @@ void pushReference(std::vector<workspace::ReferenceInfo>& out,
     out.push_back(workspace::referenceInfo(site, target, kind));
 }
 
+void pushReference(std::vector<workspace::ReferenceInfo>& out,
+                   const workspace::MethodReference& reference)
+{
+    const auto kind = reference.kind == workspace::MethodReferenceKind::Direct
+                          ? "method" : workspace::methodReferenceKind(reference.kind);
+    pushReference(out, reference.site, methodTargetText(reference.target), kind);
+}
+
+void pushReference(std::vector<workspace::ReferenceInfo>& out,
+                   const workspace::FieldReference& reference)
+{
+    const auto kind = reference.kind == workspace::FieldReferenceKind::Direct
+                          ? "field" : workspace::fieldReferenceKind(reference.kind);
+    pushReference(out, reference.site, fieldTargetText(reference.target), kind);
+}
+
 /// 全键去重（both 方向自引用边会同时命中 to 与 from 两集）。
 void deduplicateReferences(std::vector<workspace::ReferenceInfo>& references)
 {
@@ -135,8 +152,10 @@ ca::Result<XrefReport, XrefError> collectXref(const std::string& jarPath,
                                  {info.message}));
     }
 
-    // 类选择器存在性（骨架面）：xref 面向 jar 内类，错拼类名响亮失败。
-    auto summaries = workspace::listClassSummaries(*ws.workingContainer());
+    // 类选择器存在性检查：DEX 类由 DEX 域枚举。
+    const auto* dex = ws.dexDomain();
+    auto summaries = dex ? dex->listClassSummaries()
+                         : workspace::listClassSummaries(*ws.workingContainer());
     if (summaries.is_err()) {
         workspace::WorkspaceErrorInfo info = std::move(summaries).unwrap_err();
         return ca::Err(xrefError(XrefError::Kind::Runtime, "mjt.cli.xref.err.open_failed",
@@ -179,11 +198,11 @@ ca::Result<XrefReport, XrefError> collectXref(const std::string& jarPath,
                 pushReference(result, reference.site, reference.targetType.ref(), "type");
             for (const auto& reference : index.methodReferences()) {
                 if (reference.target.owner != className.c_str()) continue;
-                pushReference(result, reference.site, methodTargetText(reference.target), "method");
+                pushReference(result, reference);
             }
             for (const auto& reference : index.fieldReferences()) {
                 if (reference.target.owner != className.c_str()) continue;
-                pushReference(result, reference.site, fieldTargetText(reference.target), "field");
+                pushReference(result, reference);
             }
         }
         else {
@@ -191,21 +210,19 @@ ca::Result<XrefReport, XrefError> collectXref(const std::string& jarPath,
                 for (const auto& reference : index.methodReferences()) {
                     if (reference.target.owner != className.c_str() || reference.target.name != memberName.c_str())
                         continue;
-                    pushReference(result, reference.site, methodTargetText(reference.target),
-                                  "method");
+                    pushReference(result, reference);
                 }
                 for (const auto& reference : index.fieldReferences()) {
                     if (reference.target.owner != className.c_str() || reference.target.name != memberName.c_str())
                         continue;
-                    pushReference(result, reference.site, fieldTargetText(reference.target), "field");
+                    pushReference(result, reference);
                 }
             }
             else {
                 for (const auto& reference : index.methodReferencesTo(classRef, nameRef, descRef))
-                    pushReference(result, reference.site, methodTargetText(reference.target),
-                                  "method");
+                    pushReference(result, reference);
                 for (const auto& reference : index.fieldReferencesTo(classRef, nameRef, descRef))
-                    pushReference(result, reference.site, fieldTargetText(reference.target), "field");
+                    pushReference(result, reference);
             }
         }
     }
@@ -217,14 +234,14 @@ ca::Result<XrefReport, XrefError> collectXref(const std::string& jarPath,
             if (!member.empty() && !memberDescriptor.empty() &&
                 reference.site.sourceDescriptor != memberDescriptor)
                 continue;
-            pushReference(result, reference.site, methodTargetText(reference.target), "method");
+            pushReference(result, reference);
         }
         for (const auto& reference : index.fieldReferencesFromClass(classRef)) {
             if (!member.empty() && reference.site.sourceMethod != memberName.c_str()) continue;
             if (!member.empty() && !memberDescriptor.empty() &&
                 reference.site.sourceDescriptor != memberDescriptor)
                 continue;
-            pushReference(result, reference.site, fieldTargetText(reference.target), "field");
+            pushReference(result, reference);
         }
         for (const auto& reference : index.typeReferencesFromClass(classRef)) {
             if (!member.empty() && reference.site.sourceMethod != memberName.c_str()) continue;
