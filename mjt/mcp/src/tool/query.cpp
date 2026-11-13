@@ -482,7 +482,7 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
             dexVersion = current->dexDomain()->dexVersion();
         }
 
-        return toolResult({{"project_id", arguments.at("project_id")},
+        Json result = {{"project_id", arguments.at("project_id")},
                            {"project_dir", session.projectDir},
                            {"persistence", session.temporary ? "temporary" : "project"},
                            {"source_path", current->sourcePath().to_std_string()},
@@ -499,9 +499,11 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
                                //settings 由 session 工具在状态锁下修改；执行体
                                //不持状态锁，读取默认值时短持（M1 同一口径）。
                                std::lock_guard<std::mutex> lock(mutex_);
-                               return decompilerAvailabilityList(decompilerSettings_);
+                               return decompilerAvailabilityList(decompilerSettings_, current->isDexBacked());
                            }()},
-                           {"store_lock", std::move(lockJson)}});
+                           {"store_lock", std::move(lockJson)}};
+        addProjectWarnings(session, result);
+        return toolResult(std::move(result));
     }
     if (op == "workspace_resources") {
         auto resources = workspace::listResources(*working, arguments.value("include_classes", true));

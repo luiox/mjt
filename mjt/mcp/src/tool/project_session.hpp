@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include <nlohmann/json_fwd.hpp>
+
 #include "libca/core/result.hpp"
 #include "libca/core/status.hpp"
 
@@ -78,6 +80,7 @@ struct ProjectSession final
     mjt::workspace::ContainerRegistry containerRegistry;
     ///角色化容器栈（primary>library>runtime 解析序、shadowed 记录、角色遍历）。
     std::unique_ptr<mjbase::model::MountedContainerSet> containerStack;
+    std::vector<ca::str::Utf8String> mountRestoreErrors;
 
     ///分析库会话（shadow 落分析库：renames 覆盖层按稳定 ID 键控的真源）。
     ///bundle 固定文件 analysis.mjdb，openProjectSession 时 ReadWrite 打开 +
@@ -92,6 +95,8 @@ struct ProjectSession final
     ///（完整类型可见处）。
     std::unique_ptr<MaskExitState> maskExit;
 };
+
+void addProjectWarnings(const ProjectSession& session, nlohmann::json& result);
 
 ///@brief 打开工程会话：创建/复用 bundle、登记 primary 容器、绑定台账引擎。
 ///

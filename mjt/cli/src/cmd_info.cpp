@@ -23,6 +23,7 @@
 #include "workspace/jar_ops.hpp"
 #include "workspace/workspace.hpp"
 #include "workspace/analysis_ops.hpp"
+#include "workspace/dex_domain.hpp"
 
 namespace mjt::cli {
 namespace {
@@ -131,7 +132,8 @@ ca::Result<InfoReport, workspace::WorkspaceErrorInfo> collectInfo(const std::str
     }
 
     // 字节码版本分布：summary_scan 骨架；损坏类被跳过（不进分布，不判失败）。
-    auto summaries = workspace::listClassSummaries(*ws.workingContainer());
+    auto summaries = ws.isDexBacked() ? ws.dexDomain()->listClassSummaries()
+                                      : workspace::listClassSummaries(*ws.workingContainer());
     if (summaries.is_err()) return ca::Err(std::move(summaries).unwrap_err());
     {
         std::map<ca::i32, ca::i64> versions;

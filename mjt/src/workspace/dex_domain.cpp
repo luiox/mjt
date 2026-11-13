@@ -672,7 +672,6 @@ WorkspaceResult<std::unique_ptr<DexDomain>> DexDomain::loadFromJarReader(
     mjbase::jar::IJarReader& reader)
 {
     std::unique_ptr<DexDomain> domain(new DexDomain());
-    std::vector<std::string> parseFailures;
     auto read = reader.read([&](const Utf8String& name, const std::vector<ca::u8>& data) {
         const std::string entry = name.to_std_string();
         // 根级 *.dex 条目（classes*.dex 口径的一般化；子目录条目不取）。
@@ -682,7 +681,7 @@ WorkspaceResult<std::unique_ptr<DexDomain>> DexDomain::loadFromJarReader(
         }
         auto parsed = readDex(ca::core::ByteSlice(data.data(), data.size()), ReadOptions{});
         if (parsed.is_err()) {
-            parseFailures.push_back(entry + ": " + to_string(parsed.unwrap_err()));
+            domain->dexLoadErrors_.push_back(utf8(entry + ": " + to_string(parsed.unwrap_err())));
             return;
         }
         domain->dexes_.push_back(std::move(parsed).unwrap());
@@ -694,9 +693,9 @@ WorkspaceResult<std::unique_ptr<DexDomain>> DexDomain::loadFromJarReader(
             "open apk: container read failed: " + jarErrorText(std::move(read).unwrap_err().kind)});
     }
     if (domain->dexes_.empty()) {
-        const std::string detail = parseFailures.empty()
+        const std::string detail = domain->dexLoadErrors_.empty()
                                        ? "no root *.dex entries (not an apk input)"
-                                       : "dex parse failures: " + parseFailures.front();
+                                       : "dex parse failures: " + domain->dexLoadErrors_.front().to_std_string();
         return ca::core::Err(
             WorkspaceErrorInfo{WorkspaceError::InvalidArgument, "open apk: " + detail});
     }

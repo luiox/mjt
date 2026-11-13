@@ -404,8 +404,7 @@ TEST(MjDexWorkspaceTest, GuardsWriteAndUnsupportedSurfaces)
     WorkspaceBase workspace;
     ASSERT_FALSE(workspace.open(refOf(apkPath.string())).is_err());
 
-    //canExport 现为 isLoaded 口径（对已装载的 dex 会话恒真，无格式能力位）；
-    //apk/dex 无导出行的事实由下面 exportArtifact 的 is_err 覆盖，不再断言。
+    EXPECT_FALSE(workspace.canExport());
     auto exported = workspace.exportArtifact(refOf(test::getTempOutPath("mjt_dex_out.apk").string()));
     EXPECT_TRUE(exported.is_err());
     EXPECT_FALSE(exported.unwrap_err().message.empty());

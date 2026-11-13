@@ -606,7 +606,8 @@ bool WorkspaceBase::isDirty() const
 
 bool WorkspaceBase::canExport() const noexcept
 {
-    return isLoaded();
+    const auto* entry = ContainerIoRegistry::instance().find(format_);
+    return isLoaded() && entry && entry->exportFn;
 }
 
 std::vector<PassDescription> WorkspaceBase::availablePasses()

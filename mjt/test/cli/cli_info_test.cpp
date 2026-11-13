@@ -10,6 +10,7 @@
 #include "commands.hpp"
 #include "shared/output_sink.hpp"
 #include "cli_fixture.hpp"
+#include "test_helper.hpp"
 
 namespace {
 
@@ -28,6 +29,18 @@ bool findCount(const std::vector<std::pair<std::string, ca::i64>>& distribution,
 using CapturedSink = cli_fixture::CapturedSink;
 
 }   // namespace
+
+TEST(MjtCliInfoTest, ReportsDexBytecodeVersions)
+{
+    const auto fixture = test::getTopProjectPath() / "test_resource" / "dex" / "hello_refs.dex";
+    auto result = collectInfo(fixture.u8string());
+    ASSERT_TRUE(result.is_ok()) << result.unwrap_err().message;
+    const auto report = std::move(result).unwrap();
+    ASSERT_EQ(1U, report.versions.size());
+    EXPECT_EQ(35, report.versions.front().first);
+    EXPECT_EQ(report.classes, report.versions.front().second);
+    EXPECT_GT(report.classes, 0);
+}
 
 TEST(MjtCliInfoTest, ReportsCensusCountsKindsShapesVersionsManifest)
 {

@@ -377,5 +377,69 @@ TEST(McpDexSessionTest, MountsApkAlongsideJarAndQueriesItsClassesAndReferences)
     EXPECT_TRUE(payload(after).at("items").empty());
 }
 
+TEST(McpDexSessionTest, ReportsSkippedDexUnitsAndActualProjectCapabilities)
+{
+    McpSessionHarness server;
+    const auto apk = test::getTempOutPath("mjt_partial_dex.apk");
+    test::writeRawZip(apk, {{"classes.dex", readFileBytes(dexResource("hello_refs.dex"))},
+                            {"classes2.dex", {'d', 'e', 'x', '\n', '0', '3', '5', 0}}});
+    const auto opened = call(server, "project_open", {{"path", apk.u8string()}});
+    ASSERT_FALSE(opened.at("result").at("isError")) << opened.dump();
+    const auto& project = payload(opened);
+    EXPECT_EQ(true, project.at("analysis_incomplete"));
+    ASSERT_EQ(1U, project.at("dex_load_errors").size());
+    EXPECT_NE(std::string::npos,
+              project.at("dex_load_errors").at(0).get<std::string>().find("classes2.dex"));
+    const auto info = call(server, "project_info", {{"project_id", project.at("project_id")}});
+    ASSERT_FALSE(info.at("result").at("isError")) << info.dump();
+    const auto& overview = payload(info);
+    EXPECT_EQ(project.at("dex_load_errors"), overview.at("dex_load_errors"));
+    EXPECT_EQ(false, overview.at("exportable"));
+    EXPECT_EQ(Json::array({"classes.dex"}), overview.at("dex_units"));
+    ASSERT_EQ(1U, overview.at("decompilers").size());
+    EXPECT_EQ("jadx", overview.at("decompilers").at(0).at("id"));
+    EXPECT_EQ(true, overview.at("decompilers").at(0).at("active"));
+}
+
+TEST(McpDexSessionTest, RestoresPersistedMountsAndReportsMissingDependencies)
+{
+    McpSessionHarness server;
+    const auto bundle = test::getTempOutPath("mjt_dex_reopen_bundle");
+    const auto dependency = test::getTempOutPath("mjt_dex_reopen_library.dex");
+    std::error_code ec;
+    std::filesystem::remove_all(bundle, ec);
+    std::filesystem::copy_file(dexResource("hello_extra.dex"), dependency,
+                               std::filesystem::copy_options::overwrite_existing);
+    const Json options = {{"path", dexResource("hello_refs.dex").u8string()},
+                          {"project_dir", bundle.u8string()}};
+    const auto opened = call(server, "project_open", options);
+    ASSERT_FALSE(opened.at("result").at("isError")) << opened.dump();
+    const auto projectId = payload(opened).at("project_id");
+    const auto mounted = call(server, "container_mount",
+                              {{"project_id", projectId}, {"role", "library"},
+                               {"path", dependency.u8string()}});
+    ASSERT_FALSE(mounted.at("result").at("isError")) << mounted.dump();
+    EXPECT_FALSE(call(server, "project_close", {{"project_id", projectId}}).at("result").at("isError"));
+
+    const auto reopened = call(server, "project_open", options);
+    ASSERT_FALSE(reopened.at("result").at("isError")) << reopened.dump();
+    const auto reopenedId = payload(reopened).at("project_id");
+    const auto found = call(server, "search",
+                            {{"project_id", reopenedId}, {"kind", "classes"},
+                             {"query", "Extra"}, {"role", "library"}});
+    ASSERT_FALSE(found.at("result").at("isError")) << found.dump();
+    ASSERT_EQ(1U, payload(found).at("items").size());
+    EXPECT_EQ("com/mjt/dexfix/Extra", payload(found).at("items").at(0).at("class"));
+    EXPECT_FALSE(call(server, "project_close", {{"project_id", reopenedId}}).at("result").at("isError"));
+
+    ASSERT_TRUE(std::filesystem::remove(dependency));
+    const auto missing = call(server, "project_open", options);
+    ASSERT_FALSE(missing.at("result").at("isError")) << missing.dump();
+    EXPECT_EQ(true, payload(missing).at("analysis_incomplete"));
+    ASSERT_EQ(1U, payload(missing).at("mount_restore_errors").size());
+    EXPECT_NE(std::string::npos, payload(missing).at("mount_restore_errors").at(0)
+                                    .get<std::string>().find(dependency.filename().u8string()));
+}
+
 }   // namespace
 }   // namespace mjt::mcp
