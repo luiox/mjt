@@ -495,6 +495,51 @@ TEST(McpDexSessionTest, RestoresPersistedMountsAndReportsMissingDependencies)
     ASSERT_EQ(1U, payload(missing).at("mount_restore_errors").size());
     EXPECT_NE(std::string::npos, payload(missing).at("mount_restore_errors").at(0)
                                     .get<std::string>().find(dependency.filename().u8string()));
+
+    std::filesystem::copy_file(dexResource("hello_extra.dex"), dependency);
+    const auto recoveredId = payload(missing).at("project_id");
+    const auto remounted = call(server, "container_mount",
+                                {{"project_id", recoveredId}, {"role", "library"},
+                                 {"path", dependency.u8string()}});
+    ASSERT_FALSE(remounted.at("result").at("isError")) << remounted.dump();
+    const auto recovered = call(server, "project_info", {{"project_id", recoveredId}});
+    ASSERT_FALSE(recovered.at("result").at("isError")) << recovered.dump();
+    EXPECT_FALSE(payload(recovered).contains("mount_restore_errors"));
+    EXPECT_FALSE(payload(recovered).contains("analysis_incomplete"));
+}
+
+TEST(McpDexSessionTest, ReopensUpdatedPrimaryWithItsRegisteredLibrary)
+{
+    McpSessionHarness server;
+    const auto bundle = test::getTempOutPath("mjt_dex_primary_update_bundle");
+    const auto apk = test::getTempOutPath("mjt_dex_primary_update.apk");
+    std::error_code ec;
+    std::filesystem::remove_all(bundle, ec);
+    const auto bytes = readFileBytes(dexResource("hello_refs.dex"));
+    test::writeRawZip(apk, {{"classes.dex", bytes}});
+    const Json options = {{"path", apk.u8string()}, {"project_dir", bundle.u8string()}};
+    const auto opened = call(server, "project_open", options);
+    ASSERT_FALSE(opened.at("result").at("isError")) << opened.dump();
+    const auto id = payload(opened).at("project_id");
+    const auto fingerprint = payload(opened).at("container").at("fingerprint");
+    const auto mounted = call(server, "container_mount",
+                              {{"project_id", id}, {"role", "library"},
+                               {"path", dexResource("hello_extra.dex").u8string()}});
+    ASSERT_FALSE(mounted.at("result").at("isError")) << mounted.dump();
+    const auto closed = call(server, "project_close", {{"project_id", id}});
+    ASSERT_FALSE(closed.at("result").at("isError")) << closed.dump();
+
+    test::writeRawZip(apk, {{"classes.dex", bytes}, {"assets/updated.txt", {'u', 'p', 'd'}}});
+    const auto reopened = call(server, "project_open", options);
+    ASSERT_FALSE(reopened.at("result").at("isError")) << reopened.dump();
+    EXPECT_NE(fingerprint, payload(reopened).at("container").at("fingerprint"));
+    EXPECT_FALSE(payload(reopened).contains("analysis_incomplete"));
+    const auto found = call(server, "search",
+                            {{"project_id", payload(reopened).at("project_id")},
+                             {"kind", "classes"}, {"query", "Extra"}, {"role", "library"}});
+    ASSERT_FALSE(found.at("result").at("isError")) << found.dump();
+    ASSERT_EQ(1U, payload(found).at("items").size());
+    EXPECT_EQ("com/mjt/dexfix/Extra", payload(found).at("items").at(0).at("class"));
 }
 
 }   // namespace

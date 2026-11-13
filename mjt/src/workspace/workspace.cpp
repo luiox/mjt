@@ -693,20 +693,41 @@ std::unique_ptr<model::ResourceContainer> WorkspaceBase::cloneOriginal() const
 std::unique_ptr<model::ResourceContainer> WorkspaceBase::analysisScanContainer() const
 {
     auto merged = std::make_unique<model::ResourceContainer>();
-    if (!dexDomain_) {
-        working_->visitResources([&](std::string_view uri, const model::IResource& resource) {
+    const bool hasMounts = !registry_->records().empty();
+    std::unordered_set<std::string> classOwners;
+    const auto appendJvm = [&](const model::ResourceContainer& source) {
+        std::unordered_set<std::string> localClasses;
+        source.visitResources([&](std::string_view uri, const model::IResource& resource) {
+            if (merged->getResource(uri) != nullptr) return;
+            if (hasMounts) {
+                const auto* clazz =
+                    ca::core::tag_cast::dyn_cast<const model::ClassResource>(&resource);
+                if (clazz) {
+                    auto name = internalNameOfBytes(clazz->get());
+                    if (classOwners.count(name) != 0) return;
+                    if (!name.empty()) localClasses.insert(std::move(name));
+                }
+            }
             auto copied = cloneResource(resource);
             if (copied) merged->addResource(uri, std::move(copied));
         });
+        // Claim names only after reading the whole container so its Multi-Release entries
+        // remain available to the scanner.
+        classOwners.merge(localClasses);
+    };
+    const auto rememberDex = [&](const DexDomain& dex) {
+        const auto& names = dex.classNames();
+        classOwners.insert(names.begin(), names.end());
+    };
+    if (dexDomain_) {
+        if (hasMounts) rememberDex(*dexDomain_);
     }
-    for (const auto& support : registry_->records()) {
-        if (support.dexDomain) continue;
-        support.container->visitResources(
-            [&](std::string_view uri, const model::IResource& resource) {
-                if (merged->getResource(uri) != nullptr) return;   // 主容器 URI 优先
-                auto copied = cloneResource(resource);
-                if (copied) merged->addResource(uri, std::move(copied));
-            });
+    else {
+        appendJvm(*working_);
+    }
+    for (const auto* support : registry_->resolutionOrder()) {
+        if (support->dexDomain) rememberDex(*support->dexDomain);
+        else appendJvm(*support->container);
     }
     return merged;
 }
@@ -731,20 +752,20 @@ std::unordered_map<std::string, std::string> WorkspaceBase::supportingClassIds()
     }
 
     std::unordered_map<std::string, std::string> result;
-    for (const auto& support : registry_->records()) {
-        if (support.dexDomain) {
-            for (const auto& name : support.dexDomain->classNames()) {
-                if (primary.count(name) == 0) result.emplace(name, support.supportId);
+    for (const auto* support : registry_->resolutionOrder()) {
+        if (support->dexDomain) {
+            for (const auto& name : support->dexDomain->classNames()) {
+                if (primary.count(name) == 0) result.emplace(name, support->supportId);
             }
             continue;
         }
-        support.container->visitResources([&](std::string_view, const model::IResource& resource) {
+        support->container->visitResources([&](std::string_view, const model::IResource& resource) {
             const auto* classResource =
                 ca::core::tag_cast::dyn_cast<const model::ClassResource>(&resource);
             if (classResource == nullptr) return;
             const auto name = internalNameOfBytes(classResource->get());
             if (!name.empty() && primary.find(name) == primary.end())
-                result.emplace(name, support.supportId);
+                result.emplace(name, support->supportId);
         });
     }
     return result;
@@ -823,13 +844,13 @@ WorkspaceResult<WorkspaceBase::AnalysisGraph> WorkspaceBase::analysisGraph() con
         else {
             appendClasses(*working_, true);
         }
-        for (const auto& support : registry_->records()) {
-            if (support.dexDomain) {
-                auto appended = appendDexClasses(*support.dexDomain);
+        for (const auto* support : registry_->resolutionOrder()) {
+            if (support->dexDomain) {
+                auto appended = appendDexClasses(*support->dexDomain);
                 if (appended.is_err()) return ca::core::Err(std::move(appended));
             }
             else {
-                appendClasses(*support.container, false);
+                appendClasses(*support->container, false);
             }
         }
 
