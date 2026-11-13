@@ -274,6 +274,8 @@ ca::Result<AnalysisIngestStats, AnalysisIngestError> ingestIntoAnalysisDb(
                     references.typeReferences().size());
 
     for (const MethodReference& reference : references.methodReferences()) {
+        // DB Method rows are used as direct call edges by referencesFromMember.
+        if (reference.kind != MethodReferenceKind::Direct) continue;
         if (primaryClasses.find(reference.site.sourceClass.to_std_string()) ==
             primaryClasses.end())
             continue;
@@ -289,6 +291,7 @@ ca::Result<AnalysisIngestStats, AnalysisIngestError> ingestIntoAnalysisDb(
         records.push_back(std::move(record));
     }
     for (const FieldReference& reference : references.fieldReferences()) {
+        if (reference.kind != FieldReferenceKind::Direct) continue;
         if (primaryClasses.find(reference.site.sourceClass.to_std_string()) ==
             primaryClasses.end())
             continue;

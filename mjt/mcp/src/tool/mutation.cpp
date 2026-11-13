@@ -969,7 +969,11 @@ std::optional<Json> McpToolService::callMutationTool(
         const bool selectorsComplete =
             name == "xref_class" ? !className.empty()
                                  : (!owner.empty() && !member.empty() && !descriptor.empty());
+        // mjbase 的 refs schema 不能保留 DEX 引导方法和方法句柄的引用种类。
+        const auto* dex = current->dexDomain();
+        const bool requiresDexScanner = dex && dex->hasDynamicReferenceTables();
         const bool referencesFromDb = session.analysisDb != nullptr && selectorsComplete &&
+                                      !requiresDexScanner &&
                                       !resolvedExpansion && current->supportingResources().empty();
         std::vector<mjt::workspace::ReferenceInfo> items;
         if (referencesFromDb) {

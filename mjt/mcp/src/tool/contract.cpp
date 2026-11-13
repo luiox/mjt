@@ -568,7 +568,9 @@ Json toolsList()
                 {"enum", {"to", "from"}},
                 {"description",
                  "references kind only: to lists reference sites, from lists call edges "
-                 "(method target only, enables resolved); defaults to to."}}},
+                 "(method target only, enables resolved); defaults to to. DEX call-site rows "
+                 "use kind=dynamic for the encoded name and descriptor and kind=bootstrap "
+                 "for the linker method. Method-handle references use kind=method_handle."}}},
               {"resolved",
                {{"type", "boolean"},
                 {"description",
