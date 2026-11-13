@@ -1,5 +1,5 @@
 /// @file        cmd_strings.cpp
-/// @brief       `mjt strings` 命令核心：常量池字符串抽取（整 jar / 单类）。
+/// @brief       `mjt strings` 命令核心：JVM 常量池与 DEX 字符串抽取。
 ///
 /// 地基：shared 层 StringExtractor（libjclassfile 读面 + 规范 UTF-8 文本解码，
 /// lenient 回调注入与全仓同款）。抽取口径 = 常量池 Utf8 / String / Class 三种
@@ -7,11 +7,13 @@
 /// Utf8，kind 计数在 --json 披露）；--min-len 按规范 UTF-8 字节长度过滤；
 /// 值跨类去重（出现次数 = 常量池条目数，跨类累加）。类遍历走 workspace
 /// listClassSummaries（畸形 class 骨架解码失败即跳过）+ readResource 字节。
+/// DEX 整体按每个单元的 string_ids 计数，单类使用分析库的类级字符串切片。
 #include "commands.hpp"
 
 #include <algorithm>
 #include <map>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -22,6 +24,7 @@
 #include "shared/string_extractor.hpp"
 #include "workspace/workspace.hpp"
 #include "workspace/analysis_ops.hpp"
+#include "workspace/dex_domain.hpp"
 
 namespace mjt::cli {
 namespace {
@@ -98,56 +101,81 @@ ca::Result<StringsReport, StringsError> collectStrings(const std::string& jarPat
                                     {info.message}));
     }
 
-    auto summaries = workspace::listClassSummaries(*ws.workingContainer());
-    if (summaries.is_err()) {
-        workspace::WorkspaceErrorInfo info = std::move(summaries).unwrap_err();
-        return ca::Err(stringsError(StringsError::Kind::Runtime, "mjt.cli.strings.err.open_failed",
-                                    {info.message}));
-    }
-    auto classes = std::move(summaries).unwrap();
-
     StringsReport report;
     report.jarPath     = jarPath;
     report.classFilter = classFilter;
 
-    // 单类模式：内部名精确匹配（Multi-Release 族全部同名条目都扫）。
-    if (!classFilter.empty()) {
-        std::vector<workspace::ClassSummary> selected;
-        for (auto& summary : classes) {
-            if (summary.internalName.to_std_string() == classFilter) selected.push_back(std::move(summary));
-        }
-        if (selected.empty())
-            return ca::Err(stringsError(StringsError::Kind::ClassNotFound,
-                                        "mjt.cli.strings.err.class_not_found", {classFilter}));
-        classes = std::move(selected);
-    }
-    report.classesScanned = static_cast<ca::i64>(classes.size());
-
-    // 畸形类计数：jar 内 .class 条目总数（central directory 口径）− 可解析类。
-    if (classFilter.empty()) {
-        auto totalEntries = countJarClassEntries(jarPath);
-        if (totalEntries.is_ok())
-            report.classesSkipped = static_cast<ca::i64>(totalEntries.unwrap()) -
-                                    report.classesScanned;
-    }
-
-    StringExtractor extractor;
     std::map<std::string, ValueCount, std::less<>> unique;
-    for (const auto& summary : classes) {
-        const std::string internalName = summary.internalName.to_std_string();
-        auto content                   = workspace::readResource(
-        *ws.workingContainer(), summary.resourceUri.ref());
-        if (content.is_err()) continue;   // 类级读取失败按畸形口径跳过
-        const auto entries = extractor.extractAll(std::move(content).unwrap().bytes, internalName);
-        for (auto& entry : entries) {
-            if (static_cast<ca::i64>(entry.value.size()) < minimumLen) continue;
-            auto& slot = unique[entry.value];
-            ++slot.total;
-            switch (entry.type) {
-            case StringEntry::Utf8: ++slot.utf8; break;
-            case StringEntry::String: ++slot.str; break;
-            case StringEntry::Class: ++slot.cls; break;
+    const auto countValue = [&](std::string_view value, StringEntry::Type type) {
+        if (static_cast<ca::i64>(value.size()) < minimumLen) return;
+        auto& slot = unique[std::string(value)];
+        ++slot.total;
+        switch (type) {
+        case StringEntry::Utf8: ++slot.utf8; break;
+        case StringEntry::String: ++slot.str; break;
+        case StringEntry::Class: ++slot.cls; break;
+        }
+    };
+
+    if (const auto* dex = ws.dexDomain()) {
+        if (classFilter.empty()) {
+            report.classesScanned = static_cast<ca::i64>(dex->classCount());
+            dex->visitStringTableValues(
+                [&](std::string_view value) { countValue(value, StringEntry::Utf8); });
+        }
+        else {
+            if (!dex->containsClass(classFilter))
+                return ca::Err(stringsError(StringsError::Kind::ClassNotFound,
+                                            "mjt.cli.strings.err.class_not_found", {classFilter}));
+            auto selected = dex->cpStringRecords(classFilter);
+            if (selected.is_err()) {
+                const auto error = std::move(selected).unwrap_err();
+                return ca::Err(stringsError(StringsError::Kind::Runtime,
+                                            "mjt.cli.strings.err.open_failed", {error.message}));
             }
+            report.classesScanned = 1;
+            for (const auto& entry : std::move(selected).unwrap()) {
+                const auto kind = entry.kind == mjbase::project::DbStringKind::String
+                                      ? StringEntry::String : StringEntry::Utf8;
+                countValue(entry.value.ref(), kind);
+            }
+        }
+    }
+    else {
+        auto summaries = workspace::listClassSummaries(*ws.workingContainer());
+        if (summaries.is_err()) {
+            const auto error = std::move(summaries).unwrap_err();
+            return ca::Err(stringsError(StringsError::Kind::Runtime,
+                                        "mjt.cli.strings.err.open_failed", {error.message}));
+        }
+        auto classes = std::move(summaries).unwrap();
+
+        // 单类模式保留全部同名 Multi-Release 条目。
+        if (!classFilter.empty()) {
+            classes.erase(std::remove_if(classes.begin(), classes.end(), [&](const auto& summary) {
+                              return summary.internalName.ref() != classFilter;
+                          }), classes.end());
+            if (classes.empty())
+                return ca::Err(stringsError(StringsError::Kind::ClassNotFound,
+                                            "mjt.cli.strings.err.class_not_found", {classFilter}));
+        }
+        report.classesScanned = static_cast<ca::i64>(classes.size());
+
+        // 畸形类计数：JAR 内 .class 条目总数减去可解析类。
+        if (classFilter.empty() && ws.format() == workspace::ContainerFormat::Jar) {
+            auto totalEntries = countJarClassEntries(jarPath);
+            if (totalEntries.is_ok())
+                report.classesSkipped = static_cast<ca::i64>(totalEntries.unwrap()) -
+                                        report.classesScanned;
+        }
+
+        StringExtractor extractor;
+        for (const auto& summary : classes) {
+            auto content = workspace::readResource(*ws.workingContainer(), summary.resourceUri.ref());
+            if (content.is_err()) continue;
+            const auto entries = extractor.extractAll(std::move(content).unwrap().bytes,
+                                                      summary.internalName.to_std_string());
+            for (const auto& entry : entries) countValue(entry.value, entry.type);
         }
     }
 

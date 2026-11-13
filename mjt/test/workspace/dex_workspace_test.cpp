@@ -277,6 +277,40 @@ TEST(MjDexWorkspaceTest, OpensApkAndIngestsIntoAnalysisDb)
     EXPECT_FALSE(std::move(numbers).unwrap().empty());
 }
 
+TEST(MjDexWorkspaceTest, ScansOnlyTheVisibleDefinitionOfADuplicateDexClass)
+{
+    const auto source = dexResource("hello_extra.dex");
+    WorkspaceBase primary;
+    ASSERT_FALSE(primary.open(refOf(source.u8string())).is_err());
+    auto firstBytes = primary.dexDomain()->assembleSmali(
+        "com/mjt/dexfix/Extra",
+        ".class public Lcom/mjt/dexfix/Extra;\n.super Ljava/lang/Object;\n");
+    ASSERT_FALSE(firstBytes.is_err());
+    const auto apk = test::getTempOutPath("mjt_duplicate_dex_class.apk");
+    test::writeRawZip(apk, {{"classes.dex", std::move(firstBytes).unwrap()},
+                            {"classes2.dex", readBytes(source)}});
+
+    WorkspaceBase workspace;
+    ASSERT_FALSE(workspace.open(refOf(apk.string())).is_err());
+    const auto* domain = workspace.dexDomain();
+    ASSERT_NE(domain, nullptr);
+    ASSERT_EQ(domain->classCount(), 1U);
+    auto visibleClass = domain->classInfo("com/mjt/dexfix/Extra");
+    ASSERT_FALSE(visibleClass.is_err());
+    EXPECT_EQ(std::move(visibleClass).unwrap().resourceUri, "classes.dex");
+
+    const auto refs = domain->buildReferenceScan();
+    EXPECT_TRUE(refs.methodReferences().empty());
+    auto hits = domain->searchInstructions("const-wide", {});
+    ASSERT_FALSE(hits.is_err());
+    EXPECT_TRUE(std::move(hits).unwrap().empty());
+
+    auto db = openOrDie(freshDbPath());
+    auto ingested = ingestIntoAnalysisDb(workspace, db);
+    ASSERT_FALSE(ingested.is_err()) << ingested.unwrap_err().message;
+    EXPECT_EQ(std::move(ingested).unwrap().classes, 1U);
+}
+
 TEST(MjDexWorkspaceTest, AnswersEngineXrefAndHierarchySurfaces)
 {
     WorkspaceBase workspace;
