@@ -229,26 +229,27 @@ ca::Result<XrefReport, XrefError> collectXref(const std::string& jarPath,
 
     // from：该类方法体发出的全部引用；成员选择器过滤 sourceMethod[/Descriptor]。
     if (wantFrom) {
+        const auto matchesSourceMember = [&](const workspace::ReferenceSite& site) {
+            return member.empty() ||
+                   (site.sourceMethod == nameRef &&
+                    (memberDescriptor.empty() || site.sourceDescriptor == descRef));
+        };
         for (const auto& reference : index.methodReferencesFromClass(classRef)) {
-            if (!member.empty() && reference.site.sourceMethod != memberName.c_str()) continue;
-            if (!member.empty() && !memberDescriptor.empty() &&
-                reference.site.sourceDescriptor != memberDescriptor)
-                continue;
+            if (!matchesSourceMember(reference.site)) continue;
             pushReference(result, reference);
         }
         for (const auto& reference : index.fieldReferencesFromClass(classRef)) {
-            if (!member.empty() && reference.site.sourceMethod != memberName.c_str()) continue;
-            if (!member.empty() && !memberDescriptor.empty() &&
-                reference.site.sourceDescriptor != memberDescriptor)
-                continue;
+            if (!matchesSourceMember(reference.site)) continue;
             pushReference(result, reference);
         }
         for (const auto& reference : index.typeReferencesFromClass(classRef)) {
-            if (!member.empty() && reference.site.sourceMethod != memberName.c_str()) continue;
-            if (!member.empty() && !memberDescriptor.empty() &&
-                reference.site.sourceDescriptor != memberDescriptor)
-                continue;
+            if (!matchesSourceMember(reference.site)) continue;
             pushReference(result, reference.site, reference.targetType.ref(), "type");
+        }
+        for (const auto& reference : index.dynamicReferences()) {
+            if (reference.site.sourceClass != classRef || !matchesSourceMember(reference.site))
+                continue;
+            pushReference(result, reference.site, reference.target.ref(), "dynamic");
         }
     }
 

@@ -3,6 +3,8 @@
 ///              / 单类过滤 / 错误分支 / 文本与 JSON 渲染确定性。
 #include <gtest/gtest.h>
 
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -81,6 +83,75 @@ TEST(MjtCliStringsTest, MinLenFiltersShortValuesByByteLength)
     EXPECT_EQ(findValue(info, "hello world"), nullptr);          // 11 字节
     EXPECT_NE(findValue(info, "zeta_payload_xyz"), nullptr);     // 16 字节
     EXPECT_NE(findValue(info, "ENCRYPTED_BLOB_0123456789abcdef"), nullptr); // 31 字节
+}
+
+TEST(MjtCliStringsTest, CountsDexTableEntriesOncePerUnit)
+{
+    const auto resources = test::getTopProjectPath() / "test_resource" / "dex";
+    const auto dex = resources / "hello_refs.dex";
+    auto whole = collectStrings(dex.string(), "", 1);
+    ASSERT_TRUE(whole.is_ok()) << whole.unwrap_err().message;
+    const auto dexInfo = std::move(whole).unwrap();
+    EXPECT_EQ(dexInfo.classesScanned, 3);
+    const auto* sharedType = findValue(dexInfo, "Ljava/lang/Object;");
+    ASSERT_NE(sharedType, nullptr);
+    EXPECT_EQ(sharedType->count, 1);
+    EXPECT_EQ(sharedType->utf8, 1);
+    ASSERT_NE(findValue(dexInfo, "Subject.java"), nullptr);
+
+    const auto read = [&](const char* filename) {
+        std::ifstream input(resources / filename, std::ios::binary);
+        return std::vector<ca::u8>(std::istreambuf_iterator<char>(input),
+                                   std::istreambuf_iterator<char>());
+    };
+    const auto apk = test::getTempOutPath("mjt_cli_strings_multidex.apk");
+    cli_fixture::writeRawZip(apk, {{"classes.dex", read("hello_refs.dex")},
+                                   {"classes2.dex", read("hello_extra.dex")}});
+    auto apkReport = collectStrings(apk.string(), "", 1);
+    ASSERT_TRUE(apkReport.is_ok()) << apkReport.unwrap_err().message;
+    const auto apkInfo = std::move(apkReport).unwrap();
+    EXPECT_EQ(apkInfo.classesScanned, 4);
+    const auto* acrossUnits = findValue(apkInfo, "Ljava/lang/Object;");
+    ASSERT_NE(acrossUnits, nullptr);
+    EXPECT_EQ(acrossUnits->count, 2);
+    EXPECT_EQ(acrossUnits->utf8, 2);
+}
+
+TEST(MjtCliStringsTest, ExtractsStandaloneClassWithoutJarAccounting)
+{
+    const auto path = test::getTempOutPath("mjt_cli_strings_standalone.class");
+    {
+        const auto bytes = cli_fixture::assembleWordsClass();
+        std::ofstream output(path, std::ios::binary);
+        output.write(reinterpret_cast<const char*>(bytes.data()),
+                     static_cast<std::streamsize>(bytes.size()));
+        ASSERT_TRUE(output);
+    }
+    auto report = collectStrings(path.string(), "", 1);
+    ASSERT_TRUE(report.is_ok()) << report.unwrap_err().message;
+    const auto info = std::move(report).unwrap();
+    EXPECT_EQ(info.classesScanned, 1);
+    EXPECT_EQ(info.classesSkipped, 0);
+    EXPECT_NE(findValue(info, "hello world"), nullptr);
+}
+
+TEST(MjtCliStringsTest, FiltersDexStringsByOwningClass)
+{
+    const auto dex = test::getTopProjectPath() / "test_resource" / "dex" / "hello_refs.dex";
+    auto selected = collectStrings(dex.string(), "com/mjt/dexfix/Subject", 10);
+    ASSERT_TRUE(selected.is_ok()) << selected.unwrap_err().message;
+    const auto info = std::move(selected).unwrap();
+    EXPECT_EQ(info.classesScanned, 1);
+    const auto* literal = findValue(info, "hook-fired");
+    ASSERT_NE(literal, nullptr);
+    EXPECT_EQ(literal->count, 1);
+    EXPECT_EQ(literal->string, 1);
+    EXPECT_EQ(findValue(info, "Subject.java"), nullptr);
+    EXPECT_EQ(findValue(info, "sCache"), nullptr);
+
+    auto missing = collectStrings(dex.string(), "fixture/Missing", 1);
+    ASSERT_TRUE(missing.is_err());
+    EXPECT_EQ(std::move(missing).unwrap_err().kind, StringsError::Kind::ClassNotFound);
 }
 
 TEST(MjtCliStringsTest, ClassFilterRestrictsScan)

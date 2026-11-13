@@ -91,7 +91,7 @@ mjt.cli.decompile.reason.parent_or_self=名字含相对路径段（. 或 ..）
 mjt.cli.decompile.reason.empty_segment=名字含空路径段
 
 # ── strings ─────────────────────────────────────────────────
-mjt.cli.strings.help=抽取 jar 类常量池字符串（整 jar 或单类），去重并按出现次数排序
+mjt.cli.strings.help=抽取 JAR、APK 或 DEX 中的字符串，去重并按出现次数排序
 mjt.cli.strings.class_help=只抽取一个类（内部名 slash 形，如 fixture/Alpha）
 mjt.cli.strings.min_len_help=最短字符串长度（字节，缺省 1）
 mjt.cli.strings.json_help=以 JSON 输出同一数据
@@ -102,8 +102,8 @@ mjt.cli.strings.scanned=已扫描 {0} 个类（跳过: {1}）
 mjt.cli.strings.summary=去重字符串: {0}（出现 {1} 次）
 mjt.cli.strings.written=报告已写出: {0}
 mjt.cli.strings.err.invalid_min_len=--min-len 必须是正整数: {0}
-mjt.cli.strings.err.class_not_found=jar 中找不到类: {0}
-mjt.cli.strings.err.open_failed=无法打开 jar: {0}
+mjt.cli.strings.err.class_not_found=输入中找不到类: {0}
+mjt.cli.strings.err.open_failed=无法读取输入: {0}
 mjt.cli.strings.err.write_failed=无法写出输出文件: {0}
 
 # ── xref ────────────────────────────────────────────────────
@@ -149,23 +149,23 @@ mjt.cli.classes.err.analysis_failed=jar 分析失败: {0}
 mjt.cli.classes.err.write_failed=无法写出输出文件: {0}
 
 # ── disasm ──────────────────────────────────────────────────
-mjt.cli.disasm.help=输出单类的规范化 jasm 文本（与 MCP class_query kind=jasm 同源）；不依赖反编译器
-mjt.cli.disasm.class_help=要反汇编的类（内部名 slash 形，如 fixture/Alpha）；必须存在于 jar
-mjt.cli.disasm.output_help=jasm 文本写入文件；stdout 只留文本
-mjt.cli.disasm.written=jasm 文本已写出: {0}
-mjt.cli.disasm.err.class_not_found=jar 中找不到类: {0}
-mjt.cli.disasm.err.open_failed=无法打开 jar: {0}
+mjt.cli.disasm.help=输出单类的反汇编文本，JVM 使用 jasm，APK/DEX 使用 Smali
+mjt.cli.disasm.class_help=要反汇编的类（使用带斜杠的内部名，如 fixture/Alpha）
+mjt.cli.disasm.output_help=将反汇编文本写入文件
+mjt.cli.disasm.written=反汇编文本已写出: {0}
+mjt.cli.disasm.err.class_not_found=输入中找不到类: {0}
+mjt.cli.disasm.err.open_failed=无法打开输入: {0}
 mjt.cli.disasm.err.class_info_failed=读取类信息失败: {0}
 mjt.cli.disasm.err.disasm_failed=反汇编失败: {0}
 mjt.cli.disasm.err.write_failed=无法写出输出文件: {0}
 
 # ── subs ────────────────────────────────────────────────────
 mjt.cli.subs.help=列出单类的字段与方法（access 旗标与 native 标记）；不依赖反编译器
-mjt.cli.subs.class_help=要列举的类（内部名 slash 形，如 fixture/Alpha）；必须存在于 jar
+mjt.cli.subs.class_help=要列举的类（使用带斜杠的内部名，如 fixture/Alpha）
 mjt.cli.subs.json_help=以 JSON 输出同一数据
 mjt.cli.subs.title=subs: {0}
 mjt.cli.subs.class_kind=类形态: {0}
 mjt.cli.subs.counted=字段: {0}, 方法: {1}
-mjt.cli.subs.err.class_not_found=jar 中找不到类: {0}
-mjt.cli.subs.err.open_failed=无法打开 jar: {0}
+mjt.cli.subs.err.class_not_found=输入中找不到类: {0}
+mjt.cli.subs.err.open_failed=无法打开输入: {0}
 mjt.cli.subs.err.class_info_failed=读取类信息失败: {0}

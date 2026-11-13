@@ -200,12 +200,13 @@ std::string elementClassOf(std::string_view arrayDescriptor)
     return support::objectClassFromArrayDescriptor(arrayDescriptor);
 }
 
-/// @brief 引用扫描的三桶（buildReferenceScan 与引用查询共用）。
+/// @brief 引用扫描结果（buildReferenceScan 与引用查询共用）。
 struct RefIndex
 {
     std::vector<MethodReference> methods;
     std::vector<FieldReference>  fields;
     std::vector<TypeReference>   types;
+    std::vector<DynamicReference> dynamicCalls;
 };
 
 /// @brief DEX method_handle_item tags for field access and method invocation.
@@ -227,6 +228,14 @@ const EncodedArrayItem* callSiteOf(DexFile& dex, ca::u32 index)
         values[1].index >= dex.stringCount() || values[2].index >= dex.protoIds.size())
         return nullptr;
     return site;
+}
+
+std::string callSiteTargetText(DexFile& dex, const EncodedArrayItem& site)
+{
+    const auto name = textOf(dex.string(site.values[1].index));
+    const auto descriptor = protoDescriptorOf(dex, site.values[2].index);
+    if (name.empty() || descriptor.empty()) return {};
+    return name + descriptor;
 }
 
 void addMethodReference(RefIndex& out, const MethodKey& target, const ReferenceSite& at,
@@ -265,6 +274,8 @@ void scanCallSiteReferences(DexFile& dex, ca::u32 index, const ReferenceSite& at
 {
     const auto* site = callSiteOf(dex, index);
     if (site == nullptr) return;
+    const auto target = callSiteTargetText(dex, *site);
+    if (!target.empty()) out.dynamicCalls.push_back({utf8(target), at.clone()});
     addHandleReference(dex, site->values.front().index, at, out, MethodReferenceKind::Bootstrap);
     for (ca::usize i = 3; i < site->values.size(); ++i) {
         const auto& arg = site->values[i];
@@ -275,12 +286,9 @@ void scanCallSiteReferences(DexFile& dex, ca::u32 index, const ReferenceSite& at
 
 /// @brief 单类引用扫描：类头声明（super/interfaces，class 级引用 insnIndex=-1）
 ///        + 逐方法指令事实（语义逐条对齐 reference_scan.cpp 的 JVM 扫描）。
-void scanClassRefs(DexFile& dex, ca::u32 classDefIdx, RefIndex& out)
+void scanClassRefs(DexFile& dex, ca::u32 classDefIdx, const std::string& sourceClass,
+                   RefIndex& out)
 {
-    const std::string sourceClass =
-        internalNameOfDescriptor(textOf(dex.classDescriptor(classDefIdx)));
-    if (sourceClass.empty()) return;
-
     // class 头声明：super 与直接接口是 class 级类型引用（无源方法）。
     const std::string super =
         internalNameOfDescriptor(textOf(dex.superclassDescriptor(classDefIdx)));
@@ -378,29 +386,17 @@ std::string methodTargetText(const MethodKey& key)
     return key.owner + "." + key.name + key.descriptor;
 }
 
-RefIndex scanAllRefs(const std::vector<std::unique_ptr<DexFile>>& dexes)
-{
-    RefIndex out;
-    for (const std::unique_ptr<DexFile>& dex : dexes) {
-        if (!dex) continue;
-        for (ca::u32 classDefIdx = 0; classDefIdx < dex->classCount(); ++classDefIdx) {
-            scanClassRefs(*dex, classDefIdx, out);
-        }
-    }
-    return out;
-}
-
 /// @brief 引用三桶 → ReferenceInfo 精确目标查询（xrefsTo*/calleesOfMethod
 ///        共用；行序 sortReferences 收口，无 supporting 标注）。目标文本
 ///        引擎口径：方法/字段 owner + "." + name + descriptor，类型为内名。
 std::vector<ReferenceInfo> collectReferenceInfos(
-    const RefIndex& index,
+    const ReferenceScan& scan,
     const std::function<bool(const MethodReference&)>& methodMatch,
     const std::function<bool(const FieldReference&)>& fieldMatch,
     const std::function<bool(const TypeReference&)>& typeMatch)
 {
     std::vector<ReferenceInfo> result;
-    for (const MethodReference& reference : index.methods) {
+    for (const MethodReference& reference : scan.methodReferences()) {
         if (!methodMatch(reference)) continue;
         result.push_back(referenceInfo(
             reference.site,
@@ -409,7 +405,7 @@ std::vector<ReferenceInfo> collectReferenceInfos(
                 reference.target.descriptor.to_std_string(),
             methodReferenceKind(reference.kind)));
     }
-    for (const FieldReference& reference : index.fields) {
+    for (const FieldReference& reference : scan.fieldReferences()) {
         if (!fieldMatch(reference)) continue;
         result.push_back(referenceInfo(
             reference.site,
@@ -418,7 +414,7 @@ std::vector<ReferenceInfo> collectReferenceInfos(
                 reference.target.descriptor.to_std_string(),
             fieldReferenceKind(reference.kind)));
     }
-    for (const TypeReference& reference : index.types) {
+    for (const TypeReference& reference : scan.typeReferences()) {
         if (!typeMatch(reference)) continue;
         result.push_back(
             referenceInfo(reference.site, reference.targetType.to_std_string(), "type"));
@@ -810,8 +806,8 @@ WorkspaceResult<std::unique_ptr<DexDomain>> DexDomain::loadFromDexBytes(
         const std::string name =
             internalNameOfDescriptor(textOf(dex.classDescriptor(classDefIdx)));
         if (name.empty()) continue;
-        domain->byName_.emplace(name, DexDomain::Slot{0, classDefIdx});
-        domain->classOrder_.push_back(name);
+        if (domain->byName_.emplace(name, DexDomain::Slot{0, classDefIdx}).second)
+            domain->classOrder_.push_back(name);
     }
     return ca::core::Ok(std::move(domain));
 }
@@ -1160,9 +1156,13 @@ bool DexDomain::hasDynamicReferenceTables() const noexcept
 
 ReferenceScan DexDomain::buildReferenceScan() const
 {
-    RefIndex index = scanAllRefs(dexes_);
+    RefIndex index;
+    for (const auto& name : classOrder_) {
+        const auto& slot = byName_.at(name);
+        scanClassRefs(*dexes_[slot.dexIndex], slot.classDefIndex, name, index);
+    }
     return ReferenceScan::fromParts(std::move(index.methods), std::move(index.fields),
-                                    std::move(index.types));
+                                    std::move(index.types), std::move(index.dynamicCalls));
 }
 
 WorkspaceResult<std::vector<ReferenceInfo>> DexDomain::xrefsToMethod(
@@ -1172,9 +1172,9 @@ WorkspaceResult<std::vector<ReferenceInfo>> DexDomain::xrefsToMethod(
         return ca::core::Err(domainError(WorkspaceError::InvalidArgument, "xref method",
                                          "owner, name and descriptor are required"));
     }
-    const RefIndex index = scanAllRefs(dexes_);
+    const auto scan = buildReferenceScan();
     return ca::core::Ok(collectReferenceInfos(
-        index,
+        scan,
         [&](const MethodReference& reference) {
             return reference.target.owner.to_std_string() == owner &&
                    reference.target.name.to_std_string() == name &&
@@ -1191,9 +1191,9 @@ WorkspaceResult<std::vector<ReferenceInfo>> DexDomain::xrefsToField(
         return ca::core::Err(domainError(WorkspaceError::InvalidArgument, "xref field",
                                          "owner, name and descriptor are required"));
     }
-    const RefIndex index = scanAllRefs(dexes_);
+    const auto scan = buildReferenceScan();
     return ca::core::Ok(collectReferenceInfos(
-        index,
+        scan,
         [](const MethodReference&) { return false; },
         [&](const FieldReference& reference) {
             return reference.target.owner.to_std_string() == owner &&
@@ -1210,9 +1210,9 @@ WorkspaceResult<std::vector<ReferenceInfo>> DexDomain::xrefsToClass(
         return ca::core::Err(domainError(WorkspaceError::InvalidArgument, "xref class",
                                          "internal name is required"));
     }
-    const RefIndex index = scanAllRefs(dexes_);
+    const auto scan = buildReferenceScan();
     return ca::core::Ok(collectReferenceInfos(
-        index,
+        scan,
         [](const MethodReference&) { return false; },
         [](const FieldReference&) { return false; },
         [&](const TypeReference& reference) {
@@ -1262,10 +1262,8 @@ WorkspaceResult<std::vector<ReferenceInfo>> DexDomain::calleesOfMethod(
             const auto* callSite = callSiteOf(dex, insn.index);
             if (callSite == nullptr) continue;
             const auto& values = callSite->values;
-            const auto callName = textOf(dex.string(values[1].index));
-            const auto callDescriptor = protoDescriptorOf(dex, values[2].index);
-            if (!callName.empty() && !callDescriptor.empty())
-                result.push_back(referenceInfo(at, callName + callDescriptor, "dynamic"));
+            const auto target = callSiteTargetText(dex, *callSite);
+            if (!target.empty()) result.push_back(referenceInfo(at, target, "dynamic"));
             const auto bootstrap = methodKeyOf(dex, dex.methodHandles[values[0].index].targetIdx);
             if (bootstrap.valid())
                 result.push_back(referenceInfo(at, methodTargetText(bootstrap), "bootstrap"));
@@ -1357,6 +1355,21 @@ WorkspaceResult<std::vector<MethodOverrideInfo>> DexDomain::overridesOfMethod(
 }
 
 //-- 常量事实面 ------------------------------------------------------------------
+
+void DexDomain::visitStringTableValues(
+    const std::function<void(std::string_view)>& visit) const
+{
+    for (const auto& dex : dexes_) {
+        for (ca::u32 index = 0; index < dex->stringCount(); ++index) {
+            const auto raw = dex->string(index);
+            if (raw.is_err()) continue;
+            const auto bytes = raw.unwrap();
+            const auto value = mjbase::jasm::classFileUtf8ToString(
+                std::string_view(bytes.data(), bytes.size()));
+            visit(value);
+        }
+    }
+}
 
 WorkspaceResult<std::vector<DbStringRecord>> DexDomain::cpStringRecords(
     const std::string& internalName) const
@@ -1516,39 +1529,35 @@ WorkspaceResult<std::vector<SearchHit>> DexDomain::searchInstructions(
     const std::regex* patternPtr = pattern.has_value() ? &*pattern : nullptr;
 
     std::vector<SearchHit> hits;
-    for (ca::u32 dexIndex = 0; dexIndex < dexes_.size(); ++dexIndex) {
-        DexFile& dex = *dexes_[dexIndex];
-        for (ca::u32 classDefIdx = 0; classDefIdx < dex.classCount(); ++classDefIdx) {
-            const std::string owner =
-                internalNameOfDescriptor(textOf(dex.classDescriptor(classDefIdx)));
-            if (!matchesSearchScope(owner, options)) continue;
-            auto data = dex.classData(classDefIdx);
-            if (data.is_err() || data.unwrap() == nullptr) continue;
-            const ClassData* classData = data.unwrap();
-            for (const auto* group :
-         {&classData->directMethods, &classData->virtualMethods}) {
-                for (const EncodedMethod& method : *group) {
-                    const MethodKey key = methodKeyOf(dex, method.methodIndex);
-                    if (!key.valid()) continue;
-                    const DecodedBody body = decodeMethodBody(dex, method);
-                    for (ca::u32 index = 0; index < body.insns.size(); ++index) {
-                        const Insn& insn = body.insns[index];
-                        if (options.opcode >= 0 &&
-                            static_cast<ca::i32>(insn.opcode) != options.opcode) {
-                            continue;
-                        }
-                        const std::string line = renderInsnLine(dex, insn);
-                        if (!matchesText(line, query, options, patternPtr)) continue;
-                        SearchHit hit;
-                        hit.resourceUri = utf8(dexUris_[dexIndex]);
-                        hit.kind        = Utf8String::from_cstr("instruction");
-                        hit.owner       = utf8(owner);
-                        hit.name        = utf8(key.name);
-                        hit.descriptor  = utf8(key.descriptor);
-                        hit.instructionIndex = static_cast<ca::i32>(index);
-                        hit.value       = utf8(line);
-                        hits.push_back(std::move(hit));
+    for (const auto& owner : classOrder_) {
+        if (!matchesSearchScope(owner, options)) continue;
+        const auto& slot = byName_.at(owner);
+        DexFile& dex = *dexes_[slot.dexIndex];
+        auto data = dex.classData(slot.classDefIndex);
+        if (data.is_err() || data.unwrap() == nullptr) continue;
+        const ClassData* classData = data.unwrap();
+        for (const auto* group : {&classData->directMethods, &classData->virtualMethods}) {
+            for (const EncodedMethod& method : *group) {
+                const MethodKey key = methodKeyOf(dex, method.methodIndex);
+                if (!key.valid()) continue;
+                const DecodedBody body = decodeMethodBody(dex, method);
+                for (ca::u32 index = 0; index < body.insns.size(); ++index) {
+                    const Insn& insn = body.insns[index];
+                    if (options.opcode >= 0 &&
+                        static_cast<ca::i32>(insn.opcode) != options.opcode) {
+                        continue;
                     }
+                    const std::string line = renderInsnLine(dex, insn);
+                    if (!matchesText(line, query, options, patternPtr)) continue;
+                    SearchHit hit;
+                    hit.resourceUri = utf8(dexUris_[slot.dexIndex]);
+                    hit.kind        = Utf8String::from_cstr("instruction");
+                    hit.owner       = utf8(owner);
+                    hit.name        = utf8(key.name);
+                    hit.descriptor  = utf8(key.descriptor);
+                    hit.instructionIndex = static_cast<ca::i32>(index);
+                    hit.value       = utf8(line);
+                    hits.push_back(std::move(hit));
                 }
             }
         }

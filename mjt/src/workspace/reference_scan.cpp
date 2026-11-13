@@ -55,12 +55,14 @@ void ReferenceScan::build(const model::ResourceContainer& container)
 
 ReferenceScan ReferenceScan::fromParts(std::vector<MethodReference> methods,
                                        std::vector<FieldReference>  fields,
-                                       std::vector<TypeReference>   types)
+                                       std::vector<TypeReference>   types,
+                                       std::vector<DynamicReference> dynamicCalls)
 {
     ReferenceScan scan;
     scan.methods_ = std::move(methods);
     scan.fields_  = std::move(fields);
     scan.types_   = std::move(types);
+    scan.dynamicCalls_ = std::move(dynamicCalls);
     return scan;
 }
 
@@ -81,6 +83,7 @@ void ReferenceScan::buildFiltered(const model::ResourceContainer&               
     methods_.clear();
     fields_.clear();
     types_.clear();
+    dynamicCalls_.clear();
     container.visitResources([&](std::string_view uri, const model::IResource& resource) {
         if (filter != nullptr && filter->find(uri) == filter->end()) return;
         const auto* classResource = ca::core::tag_cast::dyn_cast<const model::ClassResource>(&resource);

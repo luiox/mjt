@@ -53,8 +53,8 @@ mjt 的主制品打开面（`WorkspaceBase::open`）按扩展名路由 Container
 
 - DEX 的 `invoke-custom` 和 `invoke-custom/range` 在 MCP 和 Python SDK 的出向
   方法查询中返回 `dynamic`（调用点的名称与描述符）和 `bootstrap`（引导方法）。
-  成员反查和 CLI `xref` 可找到引导方法及 `method_handle` 引用。动态调用的最终目标
-  由运行时决定。
+  CLI `xref --direction from` 也列出动态调用点、引导方法与 `method_handle` 引用。
+  成员反查可定位引导方法及方法句柄。动态调用的最终目标由运行时决定。
 
 - `edit_apply kind=smali` 接收类内部名 `class`、完整 Smali `source` 和新的
   `.dex` 输出 `path`。`dry_run=true` 只汇编并返回字节数。APK 中的类会输出
@@ -149,9 +149,9 @@ dex 文件一个）+ 类索引（internal_name → {dexIdx, classDefIdx}）+ 引
 - `class_query kind=list/class`：dex 会话走 `dexDomain()`；`kind=jasm`：dex 类走
   `smaliText`，响应附 `format:"smali"`。
 - MCP 的 DEX 反编译、Smali 写入和混合挂载见 §2.1。
-- CLI：`open` 扩展名路由天然接受 apk/dex，info/classes/xref/subs 直接可用；
-  strings/disasm/decompile/jar fix 对 dex 输入给出明确错误或空结果
-  （jbc 解码零命中，语义为「无 class」）。
+- CLI 的 `info`、`classes`、`xref`、`subs` 支持 APK/DEX，`disasm` 对
+  DEX 类输出 Smali。`strings` 可扫描整个输入的 DEX 字符串表，或用 `--class`
+  查询指定类引用的字符串。
 
 ## 4. 数据映射（dex → analysis.db）
 

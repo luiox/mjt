@@ -15,6 +15,7 @@
 /// Err）跳过该类/方法，不致命。注解类型引用未随迁。
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -121,6 +122,10 @@ public:
         const std::string& owner, const std::string& name, const std::string& descriptor) const;
 
     //-- 常量事实面（ingest 桥喂库形状）----------------------------------------
+
+    /// @brief Visit each decodable string_ids entry once per loaded DEX unit.
+    ///        The UTF-8 view is borrowed for the duration of the callback.
+    void visitStringTableValues(const std::function<void(std::string_view)>& visit) const;
 
     /// @brief 类的字符串切片（引用集口径：const-string 值 + 静态字符串初值 +
     ///        自身/成员名字与描述符，facet 预分同 constantUtf8Facet）。

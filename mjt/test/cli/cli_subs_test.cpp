@@ -80,6 +80,22 @@ TEST(MjtCliSubsTest, MarksNativeMethods)
     EXPECT_FALSE(plain->native);
 }
 
+TEST(MjtCliSubsTest, ListsDexMembers)
+{
+    const auto dex = test::getTopProjectPath() / "test_resource" / "dex" / "hello_refs.dex";
+    auto report = collectSubs(dex.u8string(), "com/mjt/dexfix/Subject");
+    ASSERT_TRUE(report.is_ok()) << report.unwrap_err().message;
+    const auto info = std::move(report).unwrap();
+    EXPECT_EQ(info.fields, 1);
+    EXPECT_EQ(info.methods, 4);
+    const auto* field = findMember(info, "field", "sCache");
+    ASSERT_NE(field, nullptr);
+    EXPECT_EQ(field->descriptor, "Ljava/lang/String;");
+    const auto* method = findMember(info, "method", "onEvent");
+    ASSERT_NE(method, nullptr);
+    EXPECT_EQ(method->descriptor, "(I)V");
+}
+
 TEST(MjtCliSubsTest, FieldsPrecedeMethodsAndOrderIsStable)
 {
     const auto jar    = cli_fixture::writeClassesJar();

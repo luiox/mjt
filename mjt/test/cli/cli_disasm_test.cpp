@@ -59,6 +59,18 @@ TEST(MjtCliDisasmTest, InterfaceClassDisassemblesWithoutCodeBody)
     EXPECT_NE(info.jasm.find("(I)V"), std::string::npos);
 }
 
+TEST(MjtCliDisasmTest, EmitsSmaliForDexClass)
+{
+    const auto dex = test::getTopProjectPath() / "test_resource" / "dex" / "hello_refs.dex";
+    auto report = collectDisasm(dex.u8string(), "com/mjt/dexfix/Subject");
+    ASSERT_TRUE(report.is_ok()) << report.unwrap_err().message;
+    const auto info = std::move(report).unwrap();
+    EXPECT_NE(info.jasm.find("Lcom/mjt/dexfix/Subject;"), std::string::npos);
+    EXPECT_NE(info.jasm.find("onEvent(I)V"), std::string::npos);
+    EXPECT_NE(info.jasm.find("const-string"), std::string::npos);
+    EXPECT_NE(info.jasm.find("hook-fired"), std::string::npos);
+}
+
 TEST(MjtCliDisasmTest, UnknownClassIsUsageError)
 {
     const auto jar    = cli_fixture::writeClassesJar();

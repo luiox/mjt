@@ -91,7 +91,7 @@ mjt.cli.decompile.reason.parent_or_self=name contains a relative path segment (.
 mjt.cli.decompile.reason.empty_segment=name contains an empty path segment
 
 # ── strings ─────────────────────────────────────────────────
-mjt.cli.strings.help=extract constant-pool strings from jar classes (whole jar or a single class), deduplicated with occurrence counts
+mjt.cli.strings.help=extract strings from JAR, APK, or DEX input, deduplicated with occurrence counts
 mjt.cli.strings.class_help=restrict extraction to one class (internal name, slash form, e.g. fixture/Alpha)
 mjt.cli.strings.min_len_help=minimum string length in bytes (default 1)
 mjt.cli.strings.json_help=emit the same data as JSON
@@ -102,8 +102,8 @@ mjt.cli.strings.scanned=scanned {0} classes (skipped: {1})
 mjt.cli.strings.summary=unique strings: {0} (occurrences: {1})
 mjt.cli.strings.written=report written to: {0}
 mjt.cli.strings.err.invalid_min_len=--min-len must be a positive integer: {0}
-mjt.cli.strings.err.class_not_found=class not found in jar: {0}
-mjt.cli.strings.err.open_failed=cannot open jar: {0}
+mjt.cli.strings.err.class_not_found=class not found in input: {0}
+mjt.cli.strings.err.open_failed=cannot read input: {0}
 mjt.cli.strings.err.write_failed=cannot write the output file: {0}
 
 # ── xref ────────────────────────────────────────────────────
@@ -149,23 +149,23 @@ mjt.cli.classes.err.analysis_failed=jar analysis failed: {0}
 mjt.cli.classes.err.write_failed=cannot write the output file: {0}
 
 # ── disasm ──────────────────────────────────────────────────
-mjt.cli.disasm.help=print the normalized jasm text of one class (same source as the MCP class_query kind=jasm facet); no decompiler involved
-mjt.cli.disasm.class_help=class to disassemble (internal name, slash form, e.g. fixture/Alpha); must exist in the jar
-mjt.cli.disasm.output_help=write the jasm text to a file; stdout keeps the text only
-mjt.cli.disasm.written=jasm text written to: {0}
-mjt.cli.disasm.err.class_not_found=class not found in jar: {0}
-mjt.cli.disasm.err.open_failed=cannot open jar: {0}
+mjt.cli.disasm.help=print one class as jasm (JVM) or Smali (APK/DEX)
+mjt.cli.disasm.class_help=class to disassemble (internal name with slashes, e.g. fixture/Alpha)
+mjt.cli.disasm.output_help=write disassembly to a file
+mjt.cli.disasm.written=disassembly written to: {0}
+mjt.cli.disasm.err.class_not_found=class not found in input: {0}
+mjt.cli.disasm.err.open_failed=cannot open input: {0}
 mjt.cli.disasm.err.class_info_failed=cannot read class info: {0}
 mjt.cli.disasm.err.disasm_failed=disassembly failed: {0}
 mjt.cli.disasm.err.write_failed=cannot write the output file: {0}
 
 # ── subs ────────────────────────────────────────────────────
 mjt.cli.subs.help=list the fields and methods of one class with access flags and native markers; no decompiler involved
-mjt.cli.subs.class_help=class to list (internal name, slash form, e.g. fixture/Alpha); must exist in the jar
+mjt.cli.subs.class_help=class to list (internal name with slashes, e.g. fixture/Alpha)
 mjt.cli.subs.json_help=emit the same data as JSON
 mjt.cli.subs.title=subs: {0}
 mjt.cli.subs.class_kind=class kind: {0}
 mjt.cli.subs.counted=fields: {0}, methods: {1}
-mjt.cli.subs.err.class_not_found=class not found in jar: {0}
-mjt.cli.subs.err.open_failed=cannot open jar: {0}
+mjt.cli.subs.err.class_not_found=class not found in input: {0}
+mjt.cli.subs.err.open_failed=cannot open input: {0}
 mjt.cli.subs.err.class_info_failed=cannot read class info: {0}

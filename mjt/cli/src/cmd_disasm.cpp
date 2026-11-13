@@ -1,5 +1,5 @@
 /// @file        cmd_disasm.cpp
-/// @brief       `mjt disasm` 命令核心：单类 jasm 文本（stdout 缺省，-o 落盘）。
+/// @brief       `mjt disasm` 输出 JVM 类的 jasm 或 DEX 类的 Smali。
 ///
 /// 地基：workspace getJasm 读面（MCP class_query kind=jasm 同源能力）——
 /// 类选择器经 classInfo（URI / 内名双解析）定位，jasm 文本由 mjbase jasm
@@ -15,6 +15,7 @@
 #include "shared/output_sink.hpp"
 #include "workspace/workspace.hpp"
 #include "workspace/analysis_ops.hpp"
+#include "workspace/dex_domain.hpp"
 #include "workspace/workspace_types.hpp"
 
 namespace mjt::cli {
@@ -48,6 +49,19 @@ ca::Result<DisasmReport, DisasmError> collectDisasm(const std::string& jarPath,
         workspace::WorkspaceErrorInfo info = std::move(opened).unwrap_err();
         return ca::Err(disasmError(DisasmError::Kind::Runtime, "mjt.cli.disasm.err.open_failed",
                                    {info.message}));
+    }
+
+    if (const auto* dex = ws.dexDomain()) {
+        auto smali = dex->smaliText(internalName);
+        if (smali.is_err()) {
+            const auto error = std::move(smali).unwrap_err();
+            if (error.code == workspace::WorkspaceError::NotFound)
+                return ca::Err(disasmError(DisasmError::Kind::ClassNotFound,
+                                           "mjt.cli.disasm.err.class_not_found", {internalName}));
+            return ca::Err(disasmError(DisasmError::Kind::Runtime,
+                                       "mjt.cli.disasm.err.disasm_failed", {error.message}));
+        }
+        return ca::Ok(DisasmReport{jarPath, internalName, std::move(smali).unwrap()});
     }
 
     // 类选择器定位（URI / 内名双解析）：NotFound → 退出码 1，其余 → 退出码 2。
