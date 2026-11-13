@@ -198,9 +198,16 @@ Json decompilerAvailabilityJson(const DecompilerAvailability& availability,
             {"unavailable_reason", availability.unavailableReason}};
 }
 
-Json decompilerAvailabilityList(const DecompilerSessionSettings& settings)
+Json decompilerAvailabilityList(const DecompilerSessionSettings& settings, bool dexBacked)
 {
     Json backends = Json::array();
+    if (dexBacked) {
+        auto effective = settings;
+        effective.backend = "jadx";
+        backends.push_back(decompilerAvailabilityJson(
+            inspectDecompiler(DecompilerKind::Jadx, {}, settings.javaProgram), effective));
+        return backends;
+    }
     backends.push_back(decompilerAvailabilityJson(
         inspectDecompiler(DecompilerKind::Cfr, settings.cfrJar, settings.javaProgram), settings));
     backends.push_back(decompilerAvailabilityJson(

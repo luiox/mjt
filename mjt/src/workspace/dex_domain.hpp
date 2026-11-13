@@ -60,6 +60,7 @@ public:
 
     /// @brief dex 文件条目 URI 清单（装载序）。
     const std::vector<std::string>& dexUris() const noexcept { return dexUris_; }
+    const std::vector<ca::str::Utf8String>& dexLoadErrors() const noexcept { return dexLoadErrors_; }
 
     /// @brief 类总数（跨 dex 文件的 class_def 总数）。
     ca::usize classCount() const noexcept { return classOrder_.size(); }
@@ -166,6 +167,7 @@ private:
     /// 按需填缓存——与 WorkspaceBase 的 lvt 懒算旗标 mutable 同型。
     mutable std::vector<std::unique_ptr<dex::core::DexFile>> dexes_;
     std::vector<std::string>                                 dexUris_;
+    std::vector<ca::str::Utf8String>                         dexLoadErrors_;
     /// internal name → 类槽（装载时建）。
     std::unordered_map<std::string, Slot> byName_;
     /// 类名清单（跨 dex 文件的 class_def 序；listClasses 行序锚）。
