@@ -34,6 +34,7 @@ struct JasmClassText
 {
     std::string internalName;
     std::string source;   ///< 规范化 Jasm 全文（LF）
+    bool smali = false;
 };
 
 struct JasmMethodText

@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 
 #include <string>
+#include <vector>
 
 #include "commands.hpp"
 #include "shared/output_sink.hpp"
@@ -62,6 +63,34 @@ TEST(MjtCliXrefTest, ToDirectionFindsClassLevelReferenceEdges)
         if (reference.sourceMethod.to_std_string().empty())
             EXPECT_EQ(reference.instructionIndex, -1);
     }
+}
+
+TEST(MjtCliXrefTest, FindsDynamicCallsBootstrapAndHandleReferencesInDex)
+{
+    const auto dex = test::getTopProjectPath() / "test_resource" / "dex" / "invoke_custom.dex";
+    const std::string owner = "com/mjt/dexfix/Dynamic";
+    auto report = collectXref(dex.string(), owner, "run(I)I", "from", 200);
+    ASSERT_TRUE(report.is_ok()) << report.unwrap_err().message;
+    const auto info = std::move(report).unwrap();
+    EXPECT_TRUE(findReference(info, "bootstrap", owner, "run",
+        owner + ".bootstrap(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;"
+                "Ljava/lang/invoke/MethodType;Ljava/lang/invoke/MethodHandle;)"
+                "Ljava/lang/invoke/CallSite;"));
+    EXPECT_TRUE(findReference(info, "method_handle", owner, "run", owner + ".identity(I)I"));
+    EXPECT_TRUE(findReference(info, "method_handle", owner, "run", owner + ".valueI"));
+    std::vector<ca::i32> dynamicSites;
+    for (const auto& reference : info.references) {
+        if (reference.kind != "dynamic") continue;
+        EXPECT_EQ(reference.target, "apply(I)I");
+        dynamicSites.push_back(reference.instructionIndex);
+    }
+    EXPECT_EQ(dynamicSites, (std::vector<ca::i32>{1, 3}));
+
+    auto incoming = collectXref(dex.string(), owner, "", "to", 200);
+    ASSERT_TRUE(incoming.is_ok()) << incoming.unwrap_err().message;
+    const auto incomingInfo = std::move(incoming).unwrap();
+    for (const auto& reference : incomingInfo.references)
+        EXPECT_NE(reference.kind, "dynamic");
 }
 
 TEST(MjtCliXrefTest, ToDirectionMemberFilterShrinksToExactTarget)

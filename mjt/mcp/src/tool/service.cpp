@@ -315,6 +315,7 @@ Json McpToolService::openProjectBody(const Json& arguments, const std::string& r
         result["persistence_hint"] =
             "this project is temporary and its bundle is deleted on project_close; "
             "reopen with the same project_dir to persist analysis state and edits";
+    addProjectWarnings(*instance, result);
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!sessions_.emplace(reservedId, instance).second)

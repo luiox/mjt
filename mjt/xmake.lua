@@ -13,6 +13,12 @@ target("mjt_shared")
 
     add_packages("mjbase", {public = true})
     add_packages("libjhasm")
+    -- DEX 面（src/workspace 的 dex 域代码）直接消费 libdex；包头/库路径经
+    -- 本 target 接口传递，binary 侧链接由各 mjt_binary_link_closure 显式
+    -- 点名 "libsmali","libdex" 消费序对（包级 links 同序但 target 级先发、
+    -- 去重保首个——GNU ld 单遍扫描下 libdex 不得先于 libsmali 出现，
+    -- Linux CI 实证；同 libjbc 经 mjt_mcp_core 的惯例）。
+    add_packages("libdex")
     -- 注：workspace 导出面（#74）直接使用 jzip 面，但不在本 target 挂
     -- libjzip 包——头路径经 mjbase 公开依赖链传递（同 mjt/test/cli/
     -- cli_fixture.hpp 惯例），符号经各 binary 的 add_links 闭包解析。
@@ -80,7 +86,7 @@ target("mjt-mcp")
     -- 被依赖在后），否则 auto 排序把 libca 包归档排到 mjt_shared 前，链接期
     -- 报 ca::process 等符号 undefined（Linux CI 实证）。闭包序与 unittest 同款。
      mjt_binary_link_closure("mjt_mcp_core", "mjt_shared", "mjbase")
-    mjt_binary_link_closure("libjhasm", "libjclassfile", "libjstr", "libjbc", "libjzip", "sqlite3")
+    mjt_binary_link_closure("libjhasm", "libjclassfile", "libjstr", "libjbc", "libsmali", "libdex", "libjzip", "sqlite3")
     add_files("mcp/src/main.cpp")
 
     set_rundir("$(projectdir)")
@@ -126,7 +132,7 @@ target("mjt")
     -- libjdk_finder 由 mjbase 闭包 add_links 引用，其 -libpath 在此显式给。
     add_packages("libjdk_finder")
      mjt_binary_link_closure("mjt_cli_core", "mjt_shared", "mjbase")
-    mjt_binary_link_closure("libjhasm", "libjclassfile", "libjstr", "libjbc", "libjzip", "libjdk_finder", "sqlite3")
+    mjt_binary_link_closure("libjhasm", "libjclassfile", "libjstr", "libjbc", "libsmali", "libdex", "libjzip", "libjdk_finder", "sqlite3")
     add_files("cli/src/main.cpp")
 
     set_rundir("$(projectdir)")
@@ -142,7 +148,7 @@ if has_config("with_tests") then
         -- xmake 3.x 不把静态 target 依赖传进 binary 链接：显式给全闭包，按
         -- 「消费者在前、被依赖在后」排序（与 mjt_mcp_unittest 同款）。
          mjt_binary_link_closure("mjt_shared", "mjbase")
-        mjt_binary_link_closure("libjhasm", "libjclassfile", "libjstr", "libjbc", "libjzip", "test_helper", "libjdk_finder", "sqlite3")
+        mjt_binary_link_closure("libjhasm", "libjclassfile", "libjstr", "libjbc", "libsmali", "libdex", "libjzip", "test_helper", "libjdk_finder", "sqlite3")
         add_files("test/workspace/*.cpp")
         set_rundir("$(projectdir)")
 
@@ -163,7 +169,7 @@ if has_config("with_tests") then
         -- xmake 3.x 不把静态 target 依赖传进 binary 链接：显式给全闭包，按
         -- 「消费者在前、被依赖在后」排序，另含 libmcp 及其 http/net/io 链。
          mjt_binary_link_closure("mjt_mcp_core", "mjt_shared", "mjbase")
-        mjt_binary_link_closure("libjhasm", "libjclassfile", "libjstr", "libjbc", "libjzip", "test_helper", "libjdk_finder", "sqlite3")
+        mjt_binary_link_closure("libjhasm", "libjclassfile", "libjstr", "libjbc", "libsmali", "libdex", "libjzip", "test_helper", "libjdk_finder", "sqlite3")
         -- 注：libca_i18n 为 headeronly target（无 .lib 产物），只入 add_deps 不入 add_links。
         add_includedirs("mcp/src")
         add_files("mcp/test/*.cpp")
@@ -189,7 +195,7 @@ if has_config("with_tests") then
         add_defines('MJT_VERSION="' .. MJT_VERSION .. '"')
         -- 链接闭包与 mjt_workspace_unittest 同款，外加 mjt_cli_core。
          mjt_binary_link_closure("mjt_cli_core", "mjt_shared", "mjbase")
-        mjt_binary_link_closure("libjhasm", "libjclassfile", "libjstr", "libjbc", "libjzip", "test_helper", "libjdk_finder", "sqlite3")
+        mjt_binary_link_closure("libjhasm", "libjclassfile", "libjstr", "libjbc", "libsmali", "libdex", "libjzip", "test_helper", "libjdk_finder", "sqlite3")
         add_includedirs("cli/src")
         add_files("test/cli/*.cpp")
         set_rundir("$(projectdir)")
@@ -212,7 +218,7 @@ if has_config("with_tests") then
         -- 引用，其 -libpath 在此显式给（unittest 侧来自 test_helper 的 public 包）。
         add_packages("libjdk_finder")
         mjt_binary_link_closure("mjt_shared", "mjbase")
-        mjt_binary_link_closure("libjhasm", "libjclassfile", "libjstr", "libjbc", "libjzip", "libjdk_finder", "sqlite3")
+        mjt_binary_link_closure("libjhasm", "libjclassfile", "libjstr", "libjbc", "libsmali", "libdex", "libjzip", "libjdk_finder", "sqlite3")
         add_files("bench/ingest_bench.cpp")
         set_rundir("$(projectdir)")
 

@@ -58,6 +58,10 @@ if has_config("with_pysdk") then
         -- MUtf8StringRef 双参构造），显式 add_packages 会把旧 lib dir 排进
         -- 链接序，与 mjbase 包的 0.0.2 撞版本（LNK2019 实证）。消费方式与
         -- mjt-mcp binary 同款：只挂 deps + 显式闭包。
+        -- 例外：libdex 不在 mjbase 传导面——workspace 源（本 target 直编
+        -- mjt/workspace/**.cpp 含 dex 域）需要其头路径与 /utf-8 旗标，显式
+        -- 挂包；链接经下方闭包的 libsmali/libdex 消费序对。
+        add_packages("libdex")
         add_includedirs("src")
         add_includedirs(mjtSharedSrc)
         add_includedirs(path.join(pybind11Root, "include"))
@@ -79,7 +83,7 @@ if has_config("with_pysdk") then
         -- 口径；链面与 mjt-mcp binary 同款，mcp 编排专有件除外）。
         mjt_binary_link_closure("mjbase", "libjhasm",
                                 "libjclassfile",
-                                "libjstr", "libjbc", "libjzip")
+                                "libjstr", "libjbc", "libsmali", "libdex", "libjzip")
 
         -- util 层随 pyd 同目录部署（--script / 外部 import mjt 都从 pyd 旁加载）。
         after_build(function (target)
@@ -94,6 +98,8 @@ if has_config("with_pysdk") then
 
             add_packages("mjbase")
             add_packages("gtest")
+            -- libdex：workspace 源直编（含 dex 域）需要头路径（同 mjt_pysdk）。
+            add_packages("libdex")
             add_includedirs("src")
             add_includedirs(mjtSharedSrc)
             add_includedirs(path.join(pybind11Root, "include"))
@@ -108,7 +114,7 @@ if has_config("with_pysdk") then
             add_files(path.join(mjtSharedSrc, "workspace", "**.cpp"))
             mjt_binary_link_closure("mjbase", "libjhasm",
                                     "libjclassfile",
-                                    "libjstr", "libjbc", "libjzip")
+                                    "libjstr", "libjbc", "libsmali", "libdex", "libjzip")
             set_rundir("$(projectdir)")
             add_defines('MJT_PYTHON_HOME_DEFAULT="' .. pyHome .. '"')
 

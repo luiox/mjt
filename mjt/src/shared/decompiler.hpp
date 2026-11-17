@@ -43,6 +43,7 @@ enum class DecompilerKind
     ///        后端（接线评估见 luiox/mjt#62）。产物发现/版本提取均按可执行件
     ///        口径（MJT_JCDC_EXE / 文件名回退），decompilerJar 字段承载其路径。
     Jcdc,
+    Jadx,
 };
 
 ///@brief 外部反编译请求。
@@ -79,6 +80,8 @@ struct DecompileRequest
     ///不认 Windows 盘符路径——共享层先把含冒号路径改写成相对路径，仍含冒号
     ///则丢弃该参数，宁缺上下文不炸请求）。jar 输入自带全部上下文，不消费本字段。
     std::string classPath;
+    /// @brief DEX/APK class to decompile (JADX only, JVM internal name).
+    std::string targetClass;
     ///@brief 可选协作取消查询；返回 true 时终止正在运行的反编译器子进程。
     std::function<bool()> cancellationRequested;
 };

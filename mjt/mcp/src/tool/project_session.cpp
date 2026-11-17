@@ -5,13 +5,10 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
-#include <map>
 #include <system_error>
 #include <vector>
 
 #include "libca/str/utf8_string.hpp"
-
-#include "jbc/core/reader.hpp"
 
 #include "mjbase/mapping/shadow_alias_format.hpp"
 #include "mjbase/project/analysis_db.hpp"
@@ -24,6 +21,8 @@
 #include "shared/status_convert.hpp"
 #include "workspace/analysis_db_heal.hpp"
 #include "workspace/analysis_ingest.hpp"
+#include "workspace/dex_domain.hpp"
+#include <nlohmann/json.hpp>
 
 //mask 出口状态完整类型：~ProjectSession 在此实例化 unique_ptr<MaskExitState>
 //的删除器。
@@ -145,16 +144,28 @@ ca::Status registerPrimaryInput(const fs::path&    bundleDir,
 
     const auto pathKey = mjbase::project::copyLedgerText(jarPath);
     const auto fingerprintKey = mjbase::project::copyLedgerText(fingerprint);
-    AnalysisInput input;
-    input.path        = pathKey.clone();
-    input.fingerprint = fingerprintKey.clone();
-    input.role        = mjbase::project::AnalysisInputRole::Primary;
-
     if (const auto* existing = project.findInput(pathKey.ref())) {
+        if (existing->role != mjbase::project::AnalysisInputRole::Primary)
+            return ca::ErrStatus(ca::StatusCode::INVALID_ARGUMENT,
+                                 "project path is registered as a supporting container");
         if (existing->fingerprint.ref().equals(fingerprintKey.ref())) return ca::OkStatus();
-        if (project.removeInput(pathKey.ref()) != 1)
-            return ca::ErrStatus(ca::StatusCode::INTERNAL,
-                                 "register primary container: stale input could not be removed");
+        // mjbase forbids removing an input with mounted children. Update just the
+        // fingerprint in the validated entity so dependency and annotation IDs survive.
+        auto encoded = mjbase::project::writeAnalysisProjectText(project);
+        if (encoded.is_err())
+            return analysisProjectError(std::move(encoded).unwrap_err(), "serialize project entity");
+        auto entity = nlohmann::json::parse(std::move(encoded).unwrap().to_std_string());
+        for (auto& registered : entity.at("inputs")) {
+            if (registered.at("path") == jarPath) {
+                registered.at("fingerprint") = fingerprint;
+                break;
+            }
+        }
+        const auto updated = entity.dump();
+        auto refreshed = mjbase::project::parseAnalysisProjectText(utf8Ref(updated));
+        if (refreshed.is_err())
+            return analysisProjectError(std::move(refreshed).unwrap_err(), "refresh primary input");
+        project = std::move(refreshed).unwrap();
     }
     else {
         for (const auto& registered : project.inputs()) {
@@ -164,10 +175,14 @@ ca::Status registerPrimaryInput(const fs::path&    bundleDir,
                 "project already binds a different primary container: " +
                     registered.path.to_std_string() + "; create a new project instead");
         }
+        AnalysisInput input;
+        input.path        = pathKey.clone();
+        input.fingerprint = fingerprintKey.clone();
+        input.role        = mjbase::project::AnalysisInputRole::Primary;
+        if (!project.addInput(std::move(input)))
+            return ca::ErrStatus(ca::StatusCode::INTERNAL,
+                                 "register primary container: input rejected");
     }
-    if (!project.addInput(std::move(input)))
-        return ca::ErrStatus(ca::StatusCode::INTERNAL,
-                             "register primary container: input rejected");
     auto written = mjbase::project::writeAnalysisProjectFile(
         utf8Ref(projectFile.string()), project);
     if (written.is_err()) return analysisProjectError(std::move(written).unwrap_err(), "write project entity");
@@ -193,6 +208,9 @@ ca::Status registerRoleInputImpl(const fs::path&                    bundleDir,
     const auto fingerprintKey = mjbase::project::copyLedgerText(fingerprint);
     const auto parentKey      = mjbase::project::copyLedgerText(parent);
     if (const auto* existing = project.findInput(pathKey.ref())) {
+        if (existing->role == mjbase::project::AnalysisInputRole::Primary)
+            return ca::ErrStatus(ca::StatusCode::INVALID_ARGUMENT,
+                                 "primary container cannot be mounted as a dependency");
         if (existing->fingerprint.ref().equals(fingerprintKey.ref()) &&
             existing->role == role &&
             existing->parent.ref().equals(parentKey.ref())) return ca::OkStatus();
@@ -239,6 +257,91 @@ ca::Status removeRoleInputImpl(const fs::path&                    bundleDir,
 }
 
 }   //namespace
+
+namespace {
+
+ca::Status restoreMount(ProjectSession& session, const AnalysisInput& input)
+{
+    using mjbase::model::ContainerRole;
+    using mjbase::project::AnalysisInputRole;
+    const auto path = input.path.to_std_string();
+    const auto expected = input.fingerprint.to_std_string();
+    const auto changed = [&] {
+        return ca::ErrStatus(ca::StatusCode::FAILED_PRECONDITION, "container fingerprint changed");
+    };
+    if (input.role == AnalysisInputRole::Support) {
+        auto restored = session.workspace->addSupportingRole(input.path.ref(), utf8Ref("support"));
+        if (restored.is_err()) return shared::toCaStatus(restored.unwrap_err());
+        auto support = std::move(restored).unwrap();
+        if (support.fingerprint.to_std_string() == expected) return ca::OkStatus();
+        session.containerRegistry.detachBySupportId(support.id.to_std_string());
+        return changed();
+    }
+
+    std::string fingerprint;
+    const auto status = containerFingerprint(path, fingerprint);
+    if (status.is_err()) return status;
+    if (fingerprint != expected) return changed();
+    auto imported = mjt::workspace::importSupportingContainer(path);
+    if (imported.is_err()) return shared::toCaStatus(imported.unwrap_err());
+    auto artifact = std::move(imported).unwrap();
+
+    ProjectSession::MountedContainerRecord record;
+    record.id = path;
+    record.path = path;
+    record.fingerprint = std::move(fingerprint);
+    record.role = input.role == AnalysisInputRole::Runtime ? ContainerRole::Runtime
+                                                          : ContainerRole::Library;
+    record.roleLabel = std::string(mjbase::model::to_string(record.role));
+    record.supportId = session.containerRegistry.nextSupportId();
+    record.container = std::move(artifact.working);
+    record.dexDomain = std::move(artifact.dexDomain);
+    if (session.containerRegistry.findByFingerprint(record.fingerprint))
+        return ca::ErrStatus(ca::StatusCode::ALREADY_EXISTS, "supporting content already attached");
+    auto mounted = session.containerStack->mount(record.id, record.role, record.container.get());
+    if (mounted.is_err())
+        return ca::ErrStatus(ca::StatusCode::FAILED_PRECONDITION,
+                             mjbase::model::to_string(mounted.unwrap_err()));
+    session.containerRegistry.records().push_back(std::move(record));
+    return ca::OkStatus();
+}
+
+ca::Status restoreProjectMounts(ProjectSession& session)
+{
+    const auto path = (fs::u8path(session.projectDir) / "project.json").u8string();
+    auto loaded = mjbase::project::readAnalysisProjectFile(utf8Ref(path));
+    if (loaded.is_err())
+        return analysisProjectError(std::move(loaded).unwrap_err(), "read persisted mounts");
+    const auto project = std::move(loaded).unwrap();
+    for (const auto& input : project.inputs()) {
+        if (input.role == mjbase::project::AnalysisInputRole::Primary) continue;
+        const auto status = restoreMount(session, input);
+        if (status.is_err())
+            session.mountRestoreErrors.emplace(input.path.clone(),
+                                                mjbase::project::copyLedgerText(status.to_string()));
+    }
+    return ca::OkStatus();
+}
+
+}   // namespace
+
+void addProjectWarnings(const ProjectSession& session, nlohmann::json& result)
+{
+    const auto add = [&](const char* field, const auto& errors) {
+        if (errors.empty()) return;
+        auto& values = result[field] = nlohmann::json::array();
+        for (const auto& error : errors) values.push_back(error.to_std_string());
+        result["analysis_incomplete"] = true;
+    };
+    if (!session.mountRestoreErrors.empty()) {
+        auto& values = result["mount_restore_errors"] = nlohmann::json::array();
+        for (const auto& [path, error] : session.mountRestoreErrors)
+            values.push_back(path.to_std_string() + ": " + error.to_std_string());
+        result["analysis_incomplete"] = true;
+    }
+    if (const auto* dex = session.workspace->dexDomain())
+        add("dex_load_errors", dex->dexLoadErrors());
+}
 
 ///@brief ProjectStoreError → ca::Status（声明见头；kind 决定码：锁冲突按占用
 ///        反馈面回 PERMISSION_DENIED，schema 违约回 INVALID_ARGUMENT，section
@@ -322,9 +425,6 @@ ca::Status openProjectSession(const std::string&               jarPath,
     std::string fingerprint;
     const auto fingerprintStatus = fileFingerprint(jar, fingerprint);
     if (fingerprintStatus.is_err()) return fingerprintStatus;
-    const auto registered = registerPrimaryInput(dirText, jar.string(), fingerprint);
-    if (registered.is_err()) return registered;
-
     auto session = std::make_shared<ProjectSession>();
     session->projectDir = dirText;
     session->temporary  = projectDir.empty();
@@ -335,6 +435,8 @@ ca::Status openProjectSession(const std::string&               jarPath,
     //台账损毁，会话不落半开状态。
     const auto bound = session->workspace->bindLedgerStore(utf8Ref(dirText));
     if (bound.is_err()) return shared::toCaStatus(bound.unwrap_err());
+    const auto registered = registerPrimaryInput(dirText, jar.string(), fingerprint);
+    if (registered.is_err()) return registered;
     //分析缓存绑定同一 bundle（纯数据绑定零触盘；清单不可载 = 会话不落半开，
     //与台账同一 fail-closed 纪律）。缓存引擎不获取 store.lock——单写者锁已归
     //台账引擎，写路径前置条件（调用方持锁）由会话串行面保证。
@@ -418,6 +520,10 @@ ca::Status openProjectSession(const std::string&               jarPath,
     session->workspace->bindContainerRegistry(&session->containerRegistry);
     //角色化容器栈：primary>library>runtime 解析序；容器对象借用自会话登记表。
     session->containerStack = std::make_unique<mjbase::model::MountedContainerSet>();
+    if (!created) {
+        const auto restored = restoreProjectMounts(*session);
+        if (restored.is_err()) return restored;
+    }
 
     outSession     = std::move(session);
     outCreated     = created;
@@ -537,30 +643,6 @@ const ProjectSession::MountedContainerRecord* findMountedContainer(
         if (record.id == id) return &record;
     }
     return nullptr;
-}
-
-std::map<std::string, std::string> mountedClassInventory(const ProjectSession&    session,
-                                                         mjbase::model::ContainerRole role)
-{
-    std::map<std::string, std::string> inventory;
-    if (!session.containerStack) return inventory;
-    //直接遍历挂载记录（visitRole 的访问器首参是条目 URI，不带容器 id）。
-    for (const auto& mounted : session.containerStack->containers()) {
-        if (mounted.role != role) continue;
-        const std::string containerId = mounted.id.to_std_string();
-        mounted.container->visitResources(
-            [&](std::string_view, const mjbase::model::IResource& resource) {
-                const auto* classResource = ca::core::tag_cast::dyn_cast<
-                    const mjbase::model::ClassResource>(&resource);
-                if (classResource == nullptr) return;
-                const auto& bytes = classResource->get();
-                auto parsed = jbc::core::readClass(jbc::core::ByteView(bytes));
-                if (parsed.is_err()) return;
-                const auto name = std::string{std::move(parsed).unwrap().file->thisName()};
-                if (!name.empty()) inventory.emplace(name, containerId);
-            });
-    }
-    return inventory;
 }
 
 }   //namespace mjt::mcp

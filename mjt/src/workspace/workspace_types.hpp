@@ -346,6 +346,9 @@ struct InstructionDetailInfo final
     ca::i32                          cpIndex        = -1;
     ca::str::Utf8String              operandText;
     ca::str::Utf8String              operandComment;
+    ca::i32                          branchTargetPc = -1;
+    ca::i32                          payloadPc      = -1;
+    bool                             isPayload      = false;
     bool                             isSwitch       = false;
     ca::i32                          switchDefaultPc = -1;
     std::vector<SwitchCaseInfo>      switchCases;

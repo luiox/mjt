@@ -15,6 +15,8 @@
 
 namespace mjt::workspace {
 
+class DexDomain;
+
 /// @file container_registry.hpp
 /// @brief 会话级容器登记表：一个挂载容器一条记录，workspace 支撑面、
 ///        角色化容器栈与工程登记共用同一事实源。
@@ -32,6 +34,7 @@ struct ContainerRecord final
         mjbase::model::ContainerRole::Library;                        ///< library/runtime 角色
     std::string                                         roleLabel = "support";  ///< support/library/runtime 标签
     std::shared_ptr<mjbase::model::ResourceContainer>   container;  ///< 共享容器字节视图
+    std::shared_ptr<DexDomain>                           dexDomain;
 };
 
 /// @brief 会话内唯一的容器登记面：登记、查重、摘除与句柄分配。
@@ -40,6 +43,19 @@ class ContainerRegistry final
 public:
     std::vector<ContainerRecord>&       records() noexcept { return records_; }
     const std::vector<ContainerRecord>& records() const noexcept { return records_; }
+
+    /// @brief 角色解析序与 MountedContainerSet 一致，同角色保留挂载序。
+    std::vector<const ContainerRecord*> resolutionOrder() const
+    {
+        std::vector<const ContainerRecord*> order;
+        order.reserve(records_.size());
+        for (const auto& record : records_) order.push_back(&record);
+        std::stable_sort(order.begin(), order.end(),
+                         [](const ContainerRecord* left, const ContainerRecord* right) {
+                             return left->role < right->role;
+                         });
+        return order;
+    }
 
     /// @brief 分配一个会话内单调的 support 句柄。
     std::string nextSupportId() { return "support-" + std::to_string(nextId_++); }

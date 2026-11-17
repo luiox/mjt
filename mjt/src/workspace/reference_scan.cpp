@@ -53,6 +53,19 @@ void ReferenceScan::build(const model::ResourceContainer& container)
     buildFiltered(container, nullptr);
 }
 
+ReferenceScan ReferenceScan::fromParts(std::vector<MethodReference> methods,
+                                       std::vector<FieldReference>  fields,
+                                       std::vector<TypeReference>   types,
+                                       std::vector<DynamicReference> dynamicCalls)
+{
+    ReferenceScan scan;
+    scan.methods_ = std::move(methods);
+    scan.fields_  = std::move(fields);
+    scan.types_   = std::move(types);
+    scan.dynamicCalls_ = std::move(dynamicCalls);
+    return scan;
+}
+
 void ReferenceScan::buildFor(const model::ResourceContainer&         container,
                              const std::vector<ca::str::Utf8String>& uris)
 {
@@ -70,6 +83,7 @@ void ReferenceScan::buildFiltered(const model::ResourceContainer&               
     methods_.clear();
     fields_.clear();
     types_.clear();
+    dynamicCalls_.clear();
     container.visitResources([&](std::string_view uri, const model::IResource& resource) {
         if (filter != nullptr && filter->find(uri) == filter->end()) return;
         const auto* classResource = ca::core::tag_cast::dyn_cast<const model::ClassResource>(&resource);
@@ -249,14 +263,16 @@ std::vector<TypeReference> ReferenceScan::typeReferencesFromClass(
     return result;
 }
 
-std::string methodReferenceKind(MethodReferenceKind)
+std::string_view methodReferenceKind(MethodReferenceKind kind)
 {
+    if (kind == MethodReferenceKind::Bootstrap) return "bootstrap";
+    if (kind == MethodReferenceKind::MethodHandle) return "method_handle";
     return "direct";
 }
 
-std::string fieldReferenceKind(FieldReferenceKind)
+std::string_view fieldReferenceKind(FieldReferenceKind kind)
 {
-    return "direct";
+    return kind == FieldReferenceKind::MethodHandle ? "method_handle" : "direct";
 }
 
 ReferenceInfo referenceInfo(const ReferenceSite& site, std::string_view target, std::string_view kind)

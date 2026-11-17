@@ -31,5 +31,6 @@ rule("mjt.win_utf8_manifest")
         if target:kind() ~= "binary" then return end
         local manifest = path.join(os.projectdir(), "xmake", "win_utf8.manifest")
         assert(os.isfile(manifest), "utf8 argv manifest missing: " .. manifest)
-        target:add("ldflags", "/MANIFEST:EMBED", "/MANIFESTINPUT:" .. manifest, {force = true})
+        target:add("ldflags", "/MANIFEST:EMBED", {"/MANIFESTINPUT:" .. manifest},
+                   {force = true, expand = false})
     end)

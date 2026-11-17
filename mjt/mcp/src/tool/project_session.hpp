@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include <nlohmann/json_fwd.hpp>
+
 #include "libca/core/result.hpp"
 #include "libca/core/status.hpp"
 
@@ -84,6 +86,7 @@ struct ProjectSession final
     mjt::workspace::ContainerRegistry containerRegistry;
     ///角色化容器栈（primary>library>runtime 解析序、shadowed 记录、角色遍历）。
     std::unique_ptr<mjbase::model::MountedContainerSet> containerStack;
+    std::map<ca::str::Utf8String, ca::str::Utf8String> mountRestoreErrors;
 
     ///分析库会话（shadow 落分析库：renames 覆盖层按稳定 ID 键控的真源）。
     ///bundle 固定文件 analysis.mjdb，openProjectSession 时 ReadWrite 打开 +
@@ -98,6 +101,8 @@ struct ProjectSession final
     ///（完整类型可见处）。
     std::unique_ptr<MaskExitState> maskExit;
 };
+
+void addProjectWarnings(const ProjectSession& session, nlohmann::json& result);
 
 ///@brief 打开工程会话：创建/复用 bundle、登记 primary 容器、绑定台账引擎。
 ///
@@ -170,12 +175,6 @@ ca::Status flushAnalysisCache(ProjectSession& session);
 ///@brief 挂载记录按 id 查找；未命中 nullptr。
 const ProjectSession::MountedContainerRecord* findMountedContainer(
     const ProjectSession& session, const std::string& id);
-
-///@brief 挂载栈指定角色的类清点：类内部名 → 容器 id（visitRole 扫描 + 类名
-///        探针；畸形类跳过）。角色过滤查询的站点归属面；容器内容不可变，
-///        每次调用重建（挂载集合量级小）。
-std::map<std::string, std::string> mountedClassInventory(
-    const ProjectSession& session, mjbase::model::ContainerRole role);
 
 ///@brief ProjectStoreError → ca::Status（kind 决定码；供 MCP 工具面统一转换）。
 ca::Status projectStoreStatus(mjbase::project::ProjectStoreError error, const char* operation);

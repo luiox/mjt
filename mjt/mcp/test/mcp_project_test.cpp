@@ -663,5 +663,90 @@ TEST(McpProjectTest, MountsRoleContainersWithShadowTrackingAndRoleFilters)
     ASSERT_FALSE(closed.at("result").at("isError"));
 }
 
+TEST(McpProjectTest, ResolvesLibraryBeforeRuntimeRegardlessOfMountOrder)
+{
+    const auto sharedSource = [](const std::string& parent, const std::string& descriptor) {
+        return ".super " + parent + R"JASM(
+.class public super mcp/Shared {
+  .method public static dispatch )JASM" + descriptor + R"JASM( {
+    code: {
+      invokestatic )JASM" + parent + R"JASM(.value ()I
+      ireturn
+    }
+  }
+}
+)JASM";
+    };
+    const auto runtime = writeMountedJar(
+        "mjt_mcp_resolution_a_runtime.jar",
+        {{"mcp/RuntimeBase.class", classSourceFor("mcp/RuntimeBase", "1")},
+         {"mcp/Shared.class", sharedSource("mcp/RuntimeBase", "(I)I")},
+         {"META-INF/versions/9/mcp/Shared.class", sharedSource("mcp/RuntimeBase", "(J)I")}});
+    const auto library = writeMountedJar(
+        "mjt_mcp_resolution_z_library.jar",
+        {{"mcp/LibraryBase.class", classSourceFor("mcp/LibraryBase", "2")},
+         {"mcp/Shared.class", sharedSource("mcp/LibraryBase", "()I")}});
+
+    McpSessionHarness server;
+    const auto opened = call(server, "project_open", {{"path", writeFixture().string()}});
+    ASSERT_FALSE(opened.at("result").at("isError")) << payload(opened).dump();
+    const auto id = payload(opened).at("project_id").get<std::string>();
+    const auto attach = [&](const char* role, const std::filesystem::path& path) {
+        return call(server, "container_mount",
+                    {{"project_id", id}, {"role", role}, {"path", path.string()}});
+    };
+    const auto runtimeMount = attach("runtime", runtime);
+    ASSERT_FALSE(runtimeMount.at("result").at("isError")) << payload(runtimeMount).dump();
+    const auto libraryMount = attach("library", library);
+    ASSERT_FALSE(libraryMount.at("result").at("isError")) << payload(libraryMount).dump();
+    const auto& libraryInfo = payload(libraryMount).at("container");
+    const auto& shadowed = payload(libraryMount).at("shadowed");
+    ASSERT_EQ(1U, shadowed.size());
+    EXPECT_EQ(libraryInfo.at("id"), shadowed.at(0).at("winner"));
+
+    const auto checkCallees = [&](const char* target, const Json& supportId) {
+        for (const bool resolved : {false, true}) {
+            const auto response = call(server, "xref_query",
+                                       {{"project_id", id},
+                                        {"kind", "references"},
+                                        {"target", "method"},
+                                        {"direction", "from"},
+                                        {"owner", "mcp/Shared"},
+                                        {"name", "dispatch"},
+                                        {"resolved", resolved}});
+            ASSERT_FALSE(response.at("result").at("isError")) << payload(response).dump();
+            const auto& rows = payload(response).at("items");
+            ASSERT_EQ(1U, rows.size());
+            EXPECT_EQ(target, rows.at(0).at("target"));
+            EXPECT_EQ(supportId, rows.at(0).at("source").at("support_id"));
+        }
+    };
+    checkCallees("mcp/LibraryBase.value()I", libraryInfo.at("support_id"));
+
+    const auto shadowedReferences = call(server, "xref_query",
+                                         {{"project_id", id},
+                                          {"kind", "references"},
+                                          {"target", "method"},
+                                          {"owner", "mcp/RuntimeBase"},
+                                          {"name", "value"},
+                                          {"descriptor", "()I"}});
+    ASSERT_FALSE(shadowedReferences.at("result").at("isError")) << payload(shadowedReferences).dump();
+    EXPECT_TRUE(payload(shadowedReferences).at("items").empty());
+
+    const auto relations = call(server, "xref_query",
+                                {{"project_id", id}, {"kind", "relations"}, {"class", "mcp/Shared"}});
+    ASSERT_FALSE(relations.at("result").at("isError")) << payload(relations).dump();
+    EXPECT_EQ(Json::array({"java/lang/Object", "mcp/LibraryBase"}),
+              payload(relations).at("superclasses"));
+
+    const auto detached = call(server, "container_mount",
+                               {{"project_id", id},
+                                {"action", "detach"},
+                                {"role", "library"},
+                                {"support_id", libraryInfo.at("support_id")}});
+    ASSERT_FALSE(detached.at("result").at("isError")) << payload(detached).dump();
+    checkCallees("mcp/RuntimeBase.value()I", payload(runtimeMount).at("container").at("support_id"));
+}
+
 }   //namespace
 }   //namespace mjt::mcp

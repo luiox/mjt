@@ -4,8 +4,8 @@
 /// ReferenceIndex 的直接引用切片：只回答「哪些扫描过的 class 和方法体
 /// 直接引用给定的 method/field/type」。反射事实族中 class-string 形态
 /// 事实已随迁（字符串常量按 remapper 反射语法识别为类型引用候选）；常量反射
-/// 成员查找、method handle、lambda bootstrap、别名传播与注解/签名/结构元数据
-/// 类型引用未随迁——那些是独立的共享分析设施，待主线落（见批次报告）。
+/// 成员查找、JVM method handle、JVM lambda bootstrap、别名传播与注解/签名/
+/// 结构元数据类型引用未随迁。DEX 的引导方法与方法句柄由 DexDomain 扫描。
 /// 本扫描件覆盖：方法调用（invoke 家族）、字段访问（get/put 家族）、显式类型指令
 /// （new/checkcast/instanceof/anewarray/multianewarray）、LDC class 常量、
 /// LDC class-string 反射候选、member owner 类型引用与 class 头声明
@@ -17,6 +17,7 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <vector>
 
@@ -64,16 +65,19 @@ struct ReferenceSite
     }
 };
 
-/// @brief 方法引用种类。本切片只产出 Direct（编码事实）。
+/// @brief 方法引用种类。
 enum class MethodReferenceKind : ca::u8
 {
     Direct,
+    Bootstrap,
+    MethodHandle,
 };
 
-/// @brief 字段引用种类。本切片只产出 Direct（编码事实）。
+/// @brief 字段引用种类。
 enum class FieldReferenceKind : ca::u8
 {
     Direct,
+    MethodHandle,
 };
 
 /// @brief 一条方法引用事实。
@@ -108,6 +112,13 @@ struct TypeReference
     TypeReference clone() const { return {targetType.clone(), site.clone()}; }
 };
 
+/// @brief Encoded name and descriptor of a dynamic call site, with no target owner.
+struct DynamicReference
+{
+    ca::str::Utf8String target;
+    ReferenceSite       site;
+};
+
 /// @brief 引用扫描结果与查询面（值语义；build 可重复调用全量重建）。
 class ReferenceScan
 {
@@ -120,6 +131,14 @@ public:
     void buildFor(const model::ResourceContainer&         container,
                   const std::vector<ca::str::Utf8String>& uris);
 
+    /// @brief 预建注入面（dex 域扫描结果的装配口）：行序
+    ///        由调用方保证（dex 域 = class_def 序 + 指令程序序，与 build 的
+    ///        容器遍历序同构）。
+    static ReferenceScan fromParts(std::vector<MethodReference> methods,
+                                   std::vector<FieldReference>  fields,
+                                   std::vector<TypeReference>   types,
+                                   std::vector<DynamicReference> dynamicCalls);
+
     /// 精确目标查询：编码目标为 owner/name/descriptor 的方法引用。
     std::vector<MethodReference> methodReferencesTo(const ca::str::Utf8StringRef& owner,
                                                     const ca::str::Utf8StringRef& name,
@@ -130,6 +149,8 @@ public:
     const std::vector<FieldReference>& fieldReferences() const noexcept { return fields_; }
     /// 全部类型引用。
     const std::vector<TypeReference>& typeReferences() const noexcept { return types_; }
+    /// Encoded dynamic calls in scan order.
+    const std::vector<DynamicReference>& dynamicReferences() const noexcept { return dynamicCalls_; }
     /// 来源方法查询：owner.name(descriptor) 方法体发出的全部方法引用。
     std::vector<MethodReference> methodReferencesFrom(const ca::str::Utf8StringRef& owner,
                                                       const ca::str::Utf8StringRef& name,
@@ -154,13 +175,14 @@ private:
     std::vector<MethodReference> methods_;
     std::vector<FieldReference>  fields_;
     std::vector<TypeReference>   types_;
+    std::vector<DynamicReference> dynamicCalls_;
 };
 
-/// @brief MethodReferenceKind → DTO kind 文本（本切片恒 "direct"）。
-std::string methodReferenceKind(MethodReferenceKind kind);
+/// @brief MethodReferenceKind → DTO kind 文本。
+std::string_view methodReferenceKind(MethodReferenceKind kind);
 
-/// @brief FieldReferenceKind → DTO kind 文本（本切片恒 "direct"）。
-std::string fieldReferenceKind(FieldReferenceKind kind);
+/// @brief FieldReferenceKind → DTO kind 文本。
+std::string_view fieldReferenceKind(FieldReferenceKind kind);
 
 /// @brief ReferenceInfo 组装与稳定排序（xref 查询共用）。site 已是 Utf8String
 ///        域，此处按 DTO（std::string）投影。

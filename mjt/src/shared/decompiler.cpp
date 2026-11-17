@@ -108,6 +108,7 @@ std::string decompilerName(DecompilerKind kind)
         case DecompilerKind::Cfr: return "CFR";
         case DecompilerKind::Vineflower: return "Vineflower";
         case DecompilerKind::Jcdc: return "jcdc";
+        case DecompilerKind::Jadx: return "JADX";
     }
     return "CFR";
 }
@@ -133,6 +134,7 @@ const char* decompilerEnvironmentVariable(DecompilerKind kind)
         case DecompilerKind::Cfr: return "MJT_CFR_JAR";
         case DecompilerKind::Vineflower: return "MJT_VINEFLOWER_JAR";
         case DecompilerKind::Jcdc: return "MJT_JCDC_EXE";
+        case DecompilerKind::Jadx: return "MJT_JADX_JAR";
     }
     return "MJT_CFR_JAR";
 }
@@ -145,6 +147,7 @@ std::vector<std::string> decompilerHomeCandidates(DecompilerKind kind)
     switch (kind) {
         case DecompilerKind::Cfr: return {"cfr.jar"};
         case DecompilerKind::Vineflower: return {"vineflower.jar", "vineflower-fat.jar"};
+        case DecompilerKind::Jadx: return {"jadx.jar"};
         case DecompilerKind::Jcdc: break;
     }
 #if defined(_WIN32)
@@ -166,7 +169,7 @@ std::string probeDecompilerJarDirectory(const fs::path& directory, DecompilerKin
     if (kind == DecompilerKind::Jcdc) return {};
     std::error_code error;
     if (!fs::is_directory(directory, error) || error) return {};
-    const std::string prefix = kind == DecompilerKind::Cfr ? "cfr" : "vineflower";
+    const std::string prefix = decompilerKindId(kind);
     std::vector<std::string> hits;
     for (fs::directory_iterator it(directory,
                                    fs::directory_options::skip_permission_denied,
@@ -957,6 +960,7 @@ ca::StatusOr<DecompilerKind> parseDecompilerKind(const std::string& name)
     if (name == "cfr") return ca::Ok(DecompilerKind::Cfr);
     if (name == "vineflower") return ca::Ok(DecompilerKind::Vineflower);
     if (name == "jcdc") return ca::Ok(DecompilerKind::Jcdc);
+    if (name == "jadx") return ca::Ok(DecompilerKind::Jadx);
     return ca::Err(shared::errStatus(ca::StatusCode::INVALID_ARGUMENT,
                                          "mjt.shared.err.unknown_decompiler", {name}));
 }
@@ -967,6 +971,7 @@ const char* decompilerKindId(DecompilerKind kind) noexcept
         case DecompilerKind::Cfr: return "cfr";
         case DecompilerKind::Vineflower: return "vineflower";
         case DecompilerKind::Jcdc: return "jcdc";
+        case DecompilerKind::Jadx: return "jadx";
     }
     return "cfr";
 }
@@ -1062,11 +1067,17 @@ ca::StatusOr<DecompileResult> decompile(const DecompileRequest& request)
     const auto outputExt = output.extension().string();
     const bool classInput = equalsNoCase(inputExt, ".class");
     const bool jarInput   = equalsNoCase(inputExt, ".jar");
-    if (!classInput && !jarInput) {
+    const bool dexInput = equalsNoCase(inputExt, ".dex") || equalsNoCase(inputExt, ".apk");
+    const bool jadx = request.kind == DecompilerKind::Jadx;
+    if (jadx && (!dexInput || request.targetClass.empty())) {
+        return ca::Err(ca::ErrStatus(ca::StatusCode::INVALID_ARGUMENT,
+                                     "JADX requires an APK or DEX and a target class"));
+    }
+    if (!classInput && !jarInput && !jadx) {
         return ca::Err(
             shared::errStatus(ca::StatusCode::INVALID_ARGUMENT, "mjt.shared.err.input_kind"));
     }
-    if (classInput && !equalsNoCase(outputExt, ".java")) {
+    if ((classInput || jadx) && !equalsNoCase(outputExt, ".java")) {
         return ca::Err(
             shared::errStatus(ca::StatusCode::INVALID_ARGUMENT, "mjt.shared.err.output_java"));
     }
@@ -1192,9 +1203,18 @@ ca::StatusOr<DecompileResult> decompile(const DecompileRequest& request)
             arguments.push_back("-Dsun.stdout.encoding=UTF-8");
             arguments.push_back("-Dsun.stderr.encoding=UTF-8");
             arguments.push_back("-Xmx" + std::to_string(request.maxMemoryMiB) + "m");
-            arguments.push_back("-jar");
-            arguments.push_back(decompilerJar);
-            if (request.kind == DecompilerKind::Cfr) {
+            if (jadx) {
+                std::string className = request.targetClass;
+                std::replace(className.begin(), className.end(), '/', '.');
+                arguments.insert(arguments.end(),
+                                 {"-cp", decompilerJar, "jadx.cli.JadxCLI", "--no-res",
+                                  "--output-format", "java", "--output-dir", generatedRoot.u8string(),
+                                  "--single-class", className, "--single-class-output",
+                                  (generatedRoot / "Class.java").u8string(),
+                                  actualInput.u8string()});
+            }
+            else if (request.kind == DecompilerKind::Cfr) {
+                arguments.insert(arguments.end(), {"-jar", decompilerJar});
                 //子进程 argv 按 libca 全库 UTF-8 窄串纪律交付：u8string 与 契约
                 //同源（UTF-8 ACP 进程里 .string 同值，零漂移；GBK ACP 进程里不再
                 //ACP 再编码）。
@@ -1209,6 +1229,7 @@ ca::StatusOr<DecompileResult> decompile(const DecompileRequest& request)
                 }
             }
             else {
+                arguments.insert(arguments.end(), {"-jar", decompilerJar});
                 //vineflower 选项必须在 source 之前（--<option>=<value> 单 token
                 //等号形）：--add-external 挂原 jar 保单类反编译的跨类型上下文。
                 if (classInput && !request.classPath.empty())
@@ -1260,8 +1281,9 @@ ca::StatusOr<DecompileResult> decompile(const DecompileRequest& request)
         std::string backendSummary;
         if (!cause.empty()) backendSummary = decompilerName(request.kind) + ": " + cause;
 
-        if (classInput) {
-            auto status = normalizeClassOutput(generatedRoot, input, output, backendSummary);
+        if (classInput || jadx) {
+            auto status = normalizeClassOutput(
+                generatedRoot, jadx ? fs::path("Class.class") : input, output, backendSummary);
             if (status.is_err()) return ca::Err(std::move(status));
         }
         else {

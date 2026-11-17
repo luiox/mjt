@@ -59,6 +59,9 @@ std::vector<mjbase::project::DbStringRecord> cpStringRecords(const jbc::core::Cl
 ///        SearchHit 去重后同集）。
 std::vector<ca::str::Utf8String> resourceStringRecords(const std::vector<ca::u8>& bytes);
 
+/// @brief APK manifest strings from the AXML string pool (UTF-8 or UTF-16).
+std::vector<ca::str::Utf8String> androidManifestStringRecords(const std::vector<ca::u8>& bytes);
+
 /// @brief 数值文本格式化（引擎 numberText 逐字节）：整型十进制；浮点
 ///        max_digits10 + defaultfloat（1.0f → "1"）。
 std::string numberText(ca::i64 value);
@@ -83,6 +86,14 @@ NumberNarrowKeys numberNarrowKeys(const std::string& query);
 ///        整型行带 valueInt；浮点行带 valueBits（统一经 double 位型，float
 ///        先宽化——查询侧同键）且值可整表示、|v| < 2^63 时另带 valueInt。
 std::vector<mjbase::project::DbNumberRecord> cpNumberRecords(const jbc::core::ClassFile& cf);
+
+/// @brief 数值行装配原语（dex 域常量面与 JVM 面共用单源）：整型行 /
+///        Float 行（位型收窄键 = 宽化后 double 的 IEEE 位型）/ Double 行。
+///        insnIndex/opcode 由调用方填（常量池行恒 -1/-1）。
+mjbase::project::DbNumberRecord dbIntNumberRecord(ca::i64 insnIndex, ca::i32 opcode,
+                                                  mjbase::project::DbNumberKind kind, ca::i64 value);
+mjbase::project::DbNumberRecord dbFloat32NumberRecord(ca::i64 insnIndex, ca::i32 opcode, float value);
+mjbase::project::DbNumberRecord dbFloat64NumberRecord(ca::i64 insnIndex, ca::i32 opcode, double value);
 
 /// @brief 单个方法的数值字面量切片（name+descriptor 身份键，库成员行解析用）。
 struct MethodNumberSlice

@@ -32,6 +32,8 @@
 #include "mjbase/renamer/shadow_alias.hpp"
 #include "workspace/constant_scan.hpp"
 #include "workspace/analysis_ops.hpp"
+#include "workspace/container_io.hpp"
+#include "workspace/dex_domain.hpp"
 #include "workspace/jar_ops.hpp"
 #include "workspace/search_match.hpp"
 
@@ -257,6 +259,24 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
             for (const auto& mounted : session.containerStack->containers()) {
                 if (mounted.role != wanted) continue;
                 const std::string id = mounted.id.to_std_string();
+                const auto* record = findMountedContainer(session, id);
+                const auto* dex = record ? record->dexDomain.get() : nullptr;
+                if (dex && kind == "classes") {
+                    auto classes = dex->listClassSummaries();
+                    if (classes.is_err()) {
+                        const auto status = shared::toCaStatus(classes.unwrap_err());
+                        return toolError("list mounted DEX classes failed", &status);
+                    }
+                    for (const auto& cls : std::move(classes).unwrap()) {
+                        const auto name = cls.internalName.to_std_string();
+                        if (!matchesText(name)) continue;
+                        values.push_back(
+                            {{"uri", mjbase::model::MountedContainerSet::mountAddress(
+                                         id, cls.resourceUri.to_std_string()).to_std_string()},
+                             {"container", id}, {"kind", "class"}, {"class", name}});
+                    }
+                    continue;
+                }
                 mounted.container->visitResources(
                     [&](std::string_view entryUriView, const mjbase::model::IResource& resource) {
                         const std::string entryUri{entryUriView};
@@ -428,13 +448,34 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
             cacheJson["session_misses"]    = session.cacheMisses;
         }
 
-        return toolResult({{"project_id", arguments.at("project_id")},
+        //容器形态投影（container_io 格式口径）+ dex 会话披露面：artifact_kind
+        //按主制品格式命名；dex 会话附 dex 单元清单与版本（只读分析原型的
+        //会话事实，非 dex 会话空清单/0）。
+        const char* artifactKind = "none";
+        switch (current->format()) {
+            case workspace::ContainerFormat::Jar:       artifactKind = "jar";   break;
+            case workspace::ContainerFormat::ClassFile: artifactKind = "class"; break;
+            case workspace::ContainerFormat::Apk:       artifactKind = "apk";   break;
+            case workspace::ContainerFormat::Dex:       artifactKind = "dex";   break;
+            case workspace::ContainerFormat::None:      artifactKind = "none";  break;
+        }
+        Json dexUnits = Json::array();
+        ca::u32 dexVersion = 0;
+        if (current->isDexBacked()) {
+            for (const auto& unit : current->dexDomain()->dexUris()) dexUnits.push_back(unit);
+            dexVersion = current->dexDomain()->dexVersion();
+        }
+
+        Json result = {{"project_id", arguments.at("project_id")},
                            {"project_dir", session.projectDir},
                            {"persistence", session.temporary ? "temporary" : "project"},
                            {"source_path", current->sourcePath().to_std_string()},
                            {"revision", current->revision()},
                            {"dirty", current->isDirty()},
                            {"exportable", current->canExport()},
+                           {"artifact_kind", artifactKind},
+                           {"dex_units", std::move(dexUnits)},
+                           {"dex_version", dexVersion},
                            {"containers", std::move(containers)},
                            {"ledger", std::move(ledgerJson)},
                            {"cache", std::move(cacheJson)},
@@ -442,9 +483,11 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
                                //settings 由 session 工具在状态锁下修改；执行体
                                //不持状态锁，读取默认值时短持（M1 同一口径）。
                                std::lock_guard<std::mutex> lock(mutex_);
-                               return decompilerAvailabilityList(decompilerSettings_);
+                               return decompilerAvailabilityList(decompilerSettings_, current->isDexBacked());
                            }()},
-                           {"store_lock", std::move(lockJson)}});
+                           {"store_lock", std::move(lockJson)}};
+        addProjectWarnings(session, result);
+        return toolResult(std::move(result));
     }
     if (op == "workspace_resources") {
         auto resources = workspace::listResources(*working, arguments.value("include_classes", true));
@@ -998,12 +1041,36 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         return toolResult(std::move(paged));
     }
     if (op == "class_list") {
-        auto classes = workspace::listClassSummaries(*working);
-        if (classes.is_err()) { const auto err = shared::toCaStatus(classes.unwrap_err()); return toolError("list classes failed", &err); }
+        //dex 会话：类清单走 dex 域（ClassInfo 行折算 ClassSummary 摘要，
+        //resource_uri 取 ClassInfo.resourceUri，响应键与 jar 路径零漂移）。
+        std::vector<workspace::ClassSummary> summaries;
+        if (current->isDexBacked()) {
+            auto classes = current->dexDomain()->listClasses();
+            if (classes.is_err()) { const auto err = shared::toCaStatus(classes.unwrap_err()); return toolError("list classes failed", &err); }
+            auto list = std::move(classes).unwrap();
+            summaries.reserve(list.size());
+            for (auto& clazz : list) {
+                workspace::ClassSummary summary;
+                summary.resourceUri    = std::move(clazz.resourceUri);
+                summary.internalName   = std::move(clazz.internalName);
+                summary.superName      = std::move(clazz.superName);
+                summary.access         = clazz.access;
+                summary.version        = clazz.version;
+                summary.interfaceCount = clazz.interfaces.size();
+                summary.fieldCount     = clazz.fields.size();
+                summary.methodCount    = clazz.methods.size();
+                summaries.push_back(std::move(summary));
+            }
+        }
+        else {
+            auto classes = workspace::listClassSummaries(*working);
+            if (classes.is_err()) { const auto err = shared::toCaStatus(classes.unwrap_err()); return toolError("list classes failed", &err); }
+            summaries = std::move(classes).unwrap();
+        }
         Json paged;
         std::string pageError;
         // ClassSummary 携 move-only Utf8String：unwrap 走移动重载。
-        if (!classSummaryPage(std::move(classes).unwrap(), arguments, paged, pageError))
+        if (!classSummaryPage(std::move(summaries), arguments, paged, pageError))
             return toolError(pageError);
         return toolResult(std::move(paged));
     }
@@ -1015,6 +1082,12 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         Json        slotError;
         if (!slot::resolveClassArgument(*current, arguments, "class", true, className, slotError))
             return slotError;
+        //dex 会话：类详情走 dex 域（lvt 显示名策略是 JVM 面概念，不适用）。
+        if (current->isDexBacked()) {
+            auto value = current->dexDomain()->classInfo(className);
+            if (value.is_err()) { const auto err = shared::toCaStatus(value.unwrap_err()); return toolError("get class failed", &err); }
+            return toolResult(classJson(std::move(value).unwrap()));
+        }
         auto value = workspace::classInfo(*working, utf8Ref(className), current->lvtJarFallbackFlag());
         if (value.is_err()) { const auto err = shared::toCaStatus(value.unwrap_err()); return toolError("get class failed", &err); }
         // ClassInfo 携 move-only Utf8String：unwrap 走移动重载。
@@ -1063,6 +1136,16 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         Json        slotError;
         if (!slot::resolveClassArgument(*current, arguments, "class", true, className, slotError))
             return slotError;
+        //dex 会话：文本视图走 smali 反汇编（format 投影标注；按内名直取，
+        //不经 resolveClassUri 的 .class 条目面——dex 条目不是类资源）。
+        if (current->isDexBacked()) {
+            auto smali = current->dexDomain()->smaliText(className);
+            if (smali.is_err())
+                { const auto err = shared::toCaStatus(smali.unwrap_err()); return toolError("get smali text failed", &err); }
+            return toolResult({{"class", className},
+                               {"format", "smali"},
+                               {"jasm", std::move(smali).unwrap()}});
+        }
         auto selected = workspace::classInfo(*working, utf8Ref(className), current->lvtJarFallbackFlag());
         if (selected.is_err())
             { const auto err = shared::toCaStatus(selected.unwrap_err()); return toolError("select class for Jasm failed", &err); }
@@ -1099,31 +1182,72 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
         if (!slot::memberDescriptorMismatch(*current, ownerRaw, memberName, descriptor,
                                             false, mismatchError))
             return mismatchError;
+        const auto* dex = current->dexDomain();
+        const auto ownerRef = utf8Ref(ownerRaw);
+        const auto nameRef = utf8Ref(memberName);
+        const auto descriptorRef = utf8Ref(descriptor);
         if (op == "method_get") {
-            auto value = workspace::methodInfo(*working, utf8Ref(ownerRaw), utf8Ref(memberName), utf8Ref(descriptor), current->lvtJarFallbackFlag());
+            auto value = dex ? dex->methodInfo(ownerRaw, memberName, descriptor)
+                             : workspace::methodInfo(*working, ownerRef, nameRef, descriptorRef,
+                                                     current->lvtJarFallbackFlag());
             if (value.is_err()) { const auto err = shared::toCaStatus(value.unwrap_err()); return toolError("get method failed", &err); }
             // MethodInfo 携 move-only Utf8String：unwrap 走移动重载。
             return toolResult(methodJson(std::move(value).unwrap()));
         }
         if (op == "method_bytecode") {
-            auto value = workspace::methodBytecode(*working, utf8Ref(ownerRaw), utf8Ref(memberName), utf8Ref(descriptor), current->lvtJarFallbackFlag());
+            auto value = dex ? dex->methodBytecode(ownerRaw, memberName, descriptor)
+                             : workspace::methodBytecode(*working, ownerRef, nameRef, descriptorRef,
+                                                         current->lvtJarFallbackFlag());
             if (value.is_err()) { const auto err = shared::toCaStatus(value.unwrap_err()); return toolError("get method bytecode failed", &err); }
             // MethodBytecode 携 move-only Utf8String：unwrap 走移动重载。
             auto info = std::move(value).unwrap();
+            const bool resolved = arguments.value("resolved", false);
+            const bool detailed = dex != nullptr || resolved;
+            workspace::MethodInstructions details;
+            if (detailed && !info.instructions.empty()) {
+                auto rendered = current->methodInstructions(ownerRef, nameRef, descriptorRef, resolved);
+                if (rendered.is_err()) {
+                    const auto err = shared::toCaStatus(rendered.unwrap_err());
+                    return toolError("render method instructions failed", &err);
+                }
+                details = std::move(rendered).unwrap();
+                if (details.instructions.size() != info.instructions.size())
+                    return toolError("instruction details do not match method bytecode");
+            }
             Json instructions = Json::array();
-            for (const auto& item : info.instructions)
-                instructions.push_back({{"index", item.index},
-                                        {"opcode", item.opcode},
-                                        {"mnemonic", item.mnemonic.to_std_string()},
-                                        //mjbase instructionNodeType 语义归类
-                                        //（invoke/field/ldc/cp_ref/…），单一
-                                        //事实源在基座，此处直取不再本地重建。
-                                        {"node_type", item.nodeType.to_std_string()}});
-            //指令摘要只有 index/opcode/mnemonic/node_type,操作数级证据在
-            //jasm 全文;两份一次取齐,调用方不必退回自写解析器。
+            for (ca::usize index = 0; index < info.instructions.size(); ++index) {
+                const auto& item = info.instructions[index];
+                Json row{{"index", item.index},
+                         {"opcode", item.opcode},
+                         {"mnemonic", item.mnemonic.to_std_string()},
+                         {"node_type", item.nodeType.to_std_string()}};
+                if (detailed) {
+                    const auto& detail = details.instructions[index];
+                    row["pc"] = detail.pc;
+                    row["operand_text"] = detail.operandText.to_std_string();
+                    row["operand_comment"] = detail.operandComment.to_std_string();
+                    if (detail.cpIndex >= 0) row["constant_index"] = detail.cpIndex;
+                    if (detail.branchTargetPc >= 0) row["branch_target_pc"] = detail.branchTargetPc;
+                    if (detail.payloadPc >= 0) row["payload_pc"] = detail.payloadPc;
+                    if (detail.isPayload) row["payload"] = true;
+                    if (detail.isSwitch) {
+                        Json cases = Json::array();
+                        for (const auto& entry : detail.switchCases)
+                            cases.push_back({{"key", entry.key}, {"target_pc", entry.targetPc}});
+                        row["switch_cases"] = std::move(cases);
+                        if (detail.switchDefaultPc >= 0)
+                            row["switch_default_pc"] = detail.switchDefaultPc;
+                    }
+                }
+                instructions.push_back(std::move(row));
+            }
             Json payload{{"method", methodJson(std::move(info.method))},
                          {"instructions", std::move(instructions)}};
-            auto jasm = workspace::getMethodJasm(*working, utf8Ref(ownerRaw), utf8Ref(memberName), utf8Ref(descriptor));
+            if (dex != nullptr) {
+                payload["format"] = "smali";
+                return toolResult(std::move(payload));
+            }
+            auto jasm = workspace::getMethodJasm(*working, ownerRef, nameRef, descriptorRef);
             if (jasm.isOk()) {
                 payload["jasm"] = utf8(jasm.value->source.ref());
             } else {
@@ -1133,7 +1257,9 @@ std::optional<Json> McpToolService::callWorkspaceQueryTool(
             }
             return toolResult(std::move(payload));
         }
-        auto value = workspace::getMethodJasm(*working, utf8Ref(ownerRaw), utf8Ref(memberName), utf8Ref(descriptor));
+        if (dex != nullptr)
+            return toolError("DEX methods use class_query kind=bytecode or kind=jasm for class Smali");
+        auto value = workspace::getMethodJasm(*working, ownerRef, nameRef, descriptorRef);
         if (!value.isOk()) {
             Json diagnostics = Json::array();
             for (const auto& item : value.diagnostics) diagnostics.push_back(diagnosticJson(item));

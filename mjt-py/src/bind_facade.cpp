@@ -126,6 +126,7 @@ py::dict jasmClassTextToPy(const JasmClassText& text)
     py::dict out;
     out["internal_name"] = text.internalName;
     out["source"]        = text.source;
+    if (text.smali) out["format"] = "smali";
     return out;
 }
 
@@ -188,19 +189,23 @@ void bindFacade(py::module_& m)
 
 
     // ── 会话生命周期 ──
+    const auto openArtifact = [](const std::string& path,
+                                 std::optional<mjt::workspace::ContainerFormat> expected) {
+        auto& session = FacadeRegistry::instance().create();
+        try {
+            facadeImportJar(session, path);
+            if (expected && session.ws.format() != *expected)
+                throw std::invalid_argument("input format does not match the requested opener");
+        }
+        catch (...) {
+            FacadeRegistry::instance().close(session.handle);
+            throw;
+        }
+        return session.handle;
+    };
     m.def(
         "open_jar",
-        [](const std::string& path) {
-            auto& session = FacadeRegistry::instance().create();
-            try {
-                facadeImportJar(session, path);
-            }
-            catch (...) {
-                FacadeRegistry::instance().close(session.handle);
-                throw;
-            }
-            return session.handle;
-        },
+        [openArtifact](const std::string& path) { return openArtifact(path, std::nullopt); },
         py::arg("path"), "打开 jar 并导入全部资源，返回新容器句柄。\n\n"
         "Args:\n"
         "    path: jar 文件路径。\n"
@@ -211,6 +216,12 @@ void bindFacade(py::module_& m)
         "    ValueError: path 为空。\n"
         "    RuntimeError: 路径不是文件或读取/解析失败（打开失败不泄漏句柄）。\n"
         "    mjt.DeadlineExceeded: 协作层 deadline 越限。");
+    m.def("open_apk", [openArtifact](const std::string& path) {
+        return openArtifact(path, mjt::workspace::ContainerFormat::Apk);
+    }, py::arg("path"), "打开 APK 供查询，返回容器句柄。");
+    m.def("open_dex", [openArtifact](const std::string& path) {
+        return openArtifact(path, mjt::workspace::ContainerFormat::Dex);
+    }, py::arg("path"), "打开独立 DEX 供查询，返回容器句柄。");
 
     m.def("new_container", []() { return FacadeRegistry::instance().create().handle; },
           "新建空容器。\n\n"

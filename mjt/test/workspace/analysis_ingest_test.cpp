@@ -117,6 +117,13 @@ std::filesystem::path writeFixtureJar()
     container.addResource("workspace/notice.txt",
                           std::make_unique<mjbase::model::UnknownResource>(
                               "workspace/notice.txt", std::move(noticeBytes)));
+    // manifest 条目（run 扫描含 manifest 面）：两行属性，CRLF 分隔。
+    const std::string manifestText =
+        "Manifest-Version: 1.0\r\nImplementation-Title: mjt-ingest-manifest-run\r\n\r\n";
+    std::vector<ca::u8> manifestBytes(manifestText.begin(), manifestText.end());
+    container.addResource("META-INF/MANIFEST.MF",
+                          std::make_unique<mjbase::model::UnknownResource>(
+                              "META-INF/MANIFEST.MF", std::move(manifestBytes)));
     const auto path = test::getTempOutPath("mjt_analysis_ingest_input.jar");
     mjbase::model::ResourceHelper::exportToJar(container, path.string());
     return path;
@@ -228,10 +235,7 @@ TEST(MjAnalysisIngestTest, ImportsHierarchyMembersAndReferences)
     ASSERT_TRUE(std::move(base).unwrap().has_value());
 }
 
-// DISABLED：main 上从未编译通过的半成品断言（mjt_workspace_unittest 不在
-// CI 门；归属确认后恢复前缀即重跑）。非 PR 99 回归——PR 对 ingest 桥仅做
-// 成员→自由函数的等价换发。
-TEST(MjAnalysisIngestTest, DISABLED_RegistersEntryIdentityAndKeepsIdsAcrossReingest)
+TEST(MjAnalysisIngestTest, RegistersEntryIdentityAndKeepsIdsAcrossReingest)
 {
     const auto jarPath = writeFixtureJar();
     const auto dbPath  = freshDbPath();
@@ -245,9 +249,11 @@ TEST(MjAnalysisIngestTest, DISABLED_RegistersEntryIdentityAndKeepsIdsAcrossReing
         auto first = ingestIntoAnalysisDb(workspace, db);
         ASSERT_TRUE(first.is_ok());
         const auto firstStats = std::move(first).unwrap();
-        // 三个 class 条目（mjbase#167 起写出不再合成父目录占位条目）。
-        EXPECT_EQ(3U, firstStats.entries);
-        EXPECT_EQ(3U, firstStats.createdEntries);
+        // 五个条目：3 class + notice + manifest（资源面 fixture 条目，
+        // LandsResourceStringsForNonClassEntries 专项覆盖；mjbase#167 起写出
+        // 不再合成父目录占位条目）。
+        EXPECT_EQ(5U, firstStats.entries);
+        EXPECT_EQ(5U, firstStats.createdEntries);
         EXPECT_EQ(0U, firstStats.tombstonedEntries);
 
         // 输入登记：主容器一行，path 为打开路径，sha256 为容器内容锚形状。
@@ -260,19 +266,21 @@ TEST(MjAnalysisIngestTest, DISABLED_RegistersEntryIdentityAndKeepsIdsAcrossReing
         EXPECT_GT(inputs[0].size, 0);
         const ca::i64 inputId = inputs[0].inputId;
 
-        // 条目登记：class 条目 kind/形态旗标/内容锚形状齐备（无目录占位行）。
+        // 条目登记：class 条目 kind/形态旗标/内容锚形状齐备（无目录占位行）；
+        // 非 class 条目只核形态旗标与内容锚。
         auto entriesListed = db.listEntries(inputId);
         ASSERT_TRUE(entriesListed.is_ok());
         auto entries = std::move(entriesListed).unwrap();
-        ASSERT_EQ(3U, entries.size());
+        ASSERT_EQ(5U, entries.size());
         std::map<std::string, ca::i64> entryIds;
         for (const mjbase::project::DbEntryInfo& row : entries) {
-            EXPECT_EQ("class", row.kind.to_std_string());
             EXPECT_TRUE(row.regular);
             EXPECT_FALSE(row.tombstoned);
             EXPECT_EQ(64U, row.sha256.to_std_string().size());
             EXPECT_GT(row.size, 0);
-            entryIds[row.path.to_std_string()] = row.entryId;
+            if (row.kind.to_std_string() == "class") {
+                entryIds[row.path.to_std_string()] = row.entryId;
+            }
         }
         ASSERT_EQ(3U, entryIds.size());
         ASSERT_EQ(1U, entryIds.count("workspace/Subject.class"));
@@ -288,15 +296,16 @@ TEST(MjAnalysisIngestTest, DISABLED_RegistersEntryIdentityAndKeepsIdsAcrossReing
         auto second = ingestIntoAnalysisDb(workspace, db);
         ASSERT_TRUE(second.is_ok());
         const auto secondStats = std::move(second).unwrap();
-        EXPECT_EQ(3U, secondStats.entries);
+        EXPECT_EQ(5U, secondStats.entries);
         EXPECT_EQ(0U, secondStats.createdEntries);
         EXPECT_EQ(0U, secondStats.tombstonedEntries);
 
         auto relisted = db.listEntries(inputId);
         ASSERT_TRUE(relisted.is_ok());
         auto rowsAgain = std::move(relisted).unwrap();
-        ASSERT_EQ(3U, rowsAgain.size());
+        ASSERT_EQ(5U, rowsAgain.size());
         for (const mjbase::project::DbEntryInfo& row : rowsAgain) {
+            if (row.kind.to_std_string() != "class") continue;
             const auto id = entryIds.find(row.path.to_std_string());
             ASSERT_NE(id, entryIds.end());
             EXPECT_EQ(id->second, row.entryId);
@@ -365,10 +374,7 @@ TEST(MjAnalysisIngestTest, FlagsIrregularEntryPathsAsNonRegular)
     ASSERT_TRUE(db.save().is_ok());
 }
 
-// DISABLED：main 上从未编译通过的半成品断言（mjt_workspace_unittest 不在
-// CI 门；归属确认后恢复前缀即重跑）。非 PR 99 回归——PR 对 ingest 桥仅做
-// 成员→自由函数的等价换发。
-TEST(MjAnalysisIngestTest, DISABLED_LandsProducerRegistryAndBatchOwnership)
+TEST(MjAnalysisIngestTest, LandsProducerRegistryAndBatchOwnership)
 {
     // 注册表接线（#143 §3.6 批 4）：导入桥自报 trusted 身份、一次导入一个
     // full_import 批、计数与 AnalysisIngestStats 对账、作用域锚
@@ -510,15 +516,13 @@ TEST(MjAnalysisIngestTest, DISABLED_LandsProducerRegistryAndBatchOwnership)
     ASSERT_TRUE(db.save().is_ok());
 }
 
-
 /// @brief 资源串事实面（schema v13）：非 class 条目的可打印 run 经抽取层
 ///        （constant_scan::resourceStringRecords，引擎 resourceStrings 逐字节
 ///        同形）落 resources 表，整库单事务（replaceResources）；manifest 与
 ///        fixture 自带资源条目的 run 均可经 searchResourceStringsPaged 查回。
-// DISABLED：main 上从未编译通过的半成品断言（mjt_workspace_unittest 不在
-// CI 门；归属确认后恢复前缀即重跑）。非 PR 99 回归——PR 对 ingest 桥仅做
-// 成员→自由函数的等价换发。
-TEST(MjAnalysisIngestTest, DISABLED_LandsResourceStringsForNonClassEntries)
+// 真修在场（manifest fixture + 空成员切片不落锚）：资源串/批次锚两断言
+// 重跑（PR 99 曾以 DISABLED 收敛 main 上从未编译通过的旧断言）。
+TEST(MjAnalysisIngestTest, LandsResourceStringsForNonClassEntries)
 {
     const auto jarPath = writeFixtureJar();
     const auto dbPath  = freshDbPath();
