@@ -33,7 +33,7 @@ enum class ContainerFormat : ca::u8
     None = 0,
     Jar,
     ClassFile,
-    Apk,   ///< apk 容器（dex 域装载；只读分析原型，docs/apk-dex-support-plan.md §3）
+    Apk,   ///< apk 容器（dex 域装载，设计见 docs/apk-dex-support.md）
     Dex,   ///< 裸 dex 文件（dex 域装载）
 };
 
