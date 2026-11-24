@@ -9,7 +9,7 @@
 ///
 /// 身份语法裁决：dex 的类型描述符（"Lcom/foo;Bar;"）、方法 proto（"(II)V"）
 /// 与 JVM 内部名/描述符语法同形，本层零转换直通——analysis.db 的类事实/
-/// refs/常量面按同一身份语法键控，灌库零漂移（见 docs/apk-dex-support-plan.md §4）。
+/// refs/常量面按同一身份语法键控（见 docs/apk-dex-support.md「分析数据库映射」）。
 ///
 /// 容错纪律与 JVM 扫描同款 fail-open：单类/单方法解码失败（libdex Result
 /// Err）跳过该类/方法，不致命。注解类型引用未随迁。
